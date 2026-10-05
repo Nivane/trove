@@ -60,7 +60,9 @@ _KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 
 #: 全量调用点(2026-09-29 设计稿 §2 盘点 32 处;计入 scripts、补上它漏计的
 #: ``embedding`` 后共 34 处;B6 假设层起草 +1 → 35 处;A4 历史蒸馏 CLI +1
-#: → 36 处,形状照 distill_lessons:render + build_distill_prompt)。
+#: → 36 处,形状照 distill_lessons:render + build_distill_prompt;A5 该
+#: 提炼点从 CLI 迁入 ``history_distill.run_lesson_distill``(CLI 与蒸馏管理
+#: 端共用一处,总数仍 36)。
 CALL_SITES: dict[str, str] = {
     # ── agent 会话层:提示词都来自 render ──
     "trove/agent/session.py::SessionManager.compact_session#1": "Av",
@@ -80,6 +82,9 @@ CALL_SITES: dict[str, str] = {
     "trove/services/kb/init_pipeline.py::_draft_init_chunk#1": "Av",
     "trove/services/kb/init_pipeline.py::_draft_init_chunk#2": "A",
     "trove/services/kb/init_pipeline.py::_draft_init_chunk#3": "A",
+    # 历史蒸馏的教训提炼(材料来自行为记录,提示词管线与 distill_lessons 同源);
+    # CLI 与蒸馏管理端任务共用这一处 —— 网关由调用方注入,调用点只有这一个
+    "trove/services/kb/history_distill.py::run_lesson_distill#1": "Ab",
     "trove/services/kb/semantic_draft.py::draft_semantic_annotations#1": "Av",
     "trove/services/kb/semantic_draft.py::draft_refusal_extension#1": "A",
     "trove/services/kb/synthetic.py::generate_synthetic_examples#1": "A",
@@ -110,8 +115,6 @@ CALL_SITES: dict[str, str] = {
     "trove/workflow/nodes/semantics.py::make_semantics.semantics#1": "A",
     # ── 脚本:批量蒸馏,走 build_distill_prompt ──
     "scripts/distill_lessons.py::main#1": "Ab",
-    # 历史蒸馏的教训提炼(材料来自行为记录,提示词管线与上行同源)
-    "scripts/distill_history.py::main#1": "Ab",
 }
 
 

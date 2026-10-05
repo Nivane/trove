@@ -505,6 +505,134 @@ class TestRunDistill:
         assert len(hits) == 1
 
 
+# ── 教训提炼(注入 fake llm;CLI 与管理端共用管线) ────────
+
+
+def _lesson_json(pattern: str, note: str) -> str:
+    import json
+    return json.dumps({"pattern": pattern, "note": note,
+                       "sql_snippet": "SELECT 1"}, ensure_ascii=False)
+
+
+class _FakeLLM:
+    """脚本化网关替身:按序吐响应;Exception 项 = 该次调用抛错。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append({"model": model, "messages": messages, **kwargs})
+        r = self.responses.pop(0) if self.responses else ""
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+class TestRunLessonDistill:
+    """run_lesson_distill:材料筛选 → 解析/噪声过滤 → pattern 去重 → pending 落库。
+
+    零网络:llm 是注入的脚本化替身(模块自身不 import 网关,见下方结构测试)。
+    """
+
+    async def _run(self, kb, records, responses, **kw):
+        from trove.services.kb.history_distill import run_lesson_distill
+
+        llm = _FakeLLM(responses)
+        out = await run_lesson_distill(
+            kb, "demo", records, llm=llm, model="draft/model", **kw)
+        return out, llm
+
+    async def test_lands_pending_lessons_out_of_ranking(self, kb):
+        rec = _rec("贷款余额为负的客户有哪些?", "SELECT 1",
+                   verdict="RETRY: 空结果", corrections=["把 status 当数字比较"])
+        out, llm = await self._run(kb, [rec], [
+            _lesson_json("贷款余额为负的客户", "status 是字符串枚举,比较用字符串字面量"),
+        ])
+        assert out["error"] == ""
+        assert out["material"] == 1 and out["lessons"] == 1
+        assert out["duplicates"] == 0 and out["items"][0]["pattern"] == "贷款余额为负的客户"
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["model"] == "draft/model"
+        # 提示词走既有管线:user 消息带问题原文
+        assert "贷款余额为负的客户有哪些?" in llm.calls[0]["messages"][1]["content"]
+        # 门位:pending 不进检索;confirmed_only=False 可见且 confirmed=False
+        all_lessons = await kb.list_lessons("demo", confirmed_only=False)
+        assert len(all_lessons) == 1 and all_lessons[0]["confirmed"] is False
+        assert await kb.list_lessons("demo") == []
+        assert await kb.search_lessons("贷款余额为负的客户", "demo") == []
+
+    async def test_parse_fail_and_noise_are_counted_skips(self, kb):
+        recs = [
+            _rec("问题一怎么了", "SELECT 1", verdict="RETRY: 空结果"),
+            _rec("问题二怎么了", "SELECT 1", verdict="RETRY: 空结果"),
+            _rec("问题三怎么了", "SELECT 1", verdict="RETRY: 空结果"),
+        ]
+        out, _ = await self._run(kb, recs, [
+            "not json at all",                      # parse 失败
+            _lesson_json("完全不在这句里出现", "x"),   # pattern 不在问题原文 → 噪声
+            _lesson_json("问题三怎么了", "答案三"),
+        ])
+        assert out["parse_failed"] == 1 and out["noise"] == 1
+        assert out["lessons"] == 1 and len(out["items"]) == 1
+
+    async def test_rerun_is_idempotent(self, kb):
+        rec = _rec("重复蒸馏的问题", "SELECT 1", verdict="RETRY: 空结果")
+        resp = _lesson_json("重复蒸馏的问题", "只该落一次")
+        out1, _ = await self._run(kb, [rec], [resp])
+        assert len(out1["items"]) == 1
+        out2, _ = await self._run(kb, [rec], [resp])
+        assert out2["lessons"] == 1 and out2["duplicates"] == 1
+        assert out2["items"] == []
+        assert len(await kb.list_lessons("demo", confirmed_only=False)) == 1
+
+    async def test_llm_failure_writes_nothing_and_reports(self, kb):
+        recs = [
+            _rec("第一条失败记录", "SELECT 1", verdict="RETRY: 空结果"),
+            _rec("第二条失败记录", "SELECT 1", verdict="RETRY: 空结果"),
+        ]
+        out, _ = await self._run(kb, recs, [
+            _lesson_json("第一条失败记录", "先成功"),
+            RuntimeError("model down"),
+        ])
+        # 写入只在全部提炼完成后发生:报错时磁盘零改动(不半写)
+        assert out["error"] == "model down"
+        assert out["items"] == []
+        # 先同步镜像再读(镜像表由 sync 建立;若 lessons.yml 真被写过,
+        # sync 会把它读进来 → 空读 = 磁盘上确实没有)
+        await kb.ensure_synced("demo")
+        assert await kb.list_lessons("demo", confirmed_only=False) == []
+
+    async def test_dry_run_lists_but_writes_nothing(self, kb):
+        rec = _rec("演练的问题", "SELECT 1", verdict="RETRY: 空结果")
+        out, _ = await self._run(
+            kb, [rec], [_lesson_json("演练的问题", "不该落盘")], dry_run=True)
+        assert out["dry_run"] is True and len(out["items"]) == 1
+        assert await kb.list_lessons("demo", confirmed_only=False) == []
+        assert not (kb.kb_dir / "demo" / "lessons.yml").exists()
+
+    async def test_success_records_are_not_material(self, kb):
+        out, llm = await self._run(
+            kb, [_rec("干净成功", "SELECT 1", verdict="OK")], [])
+        assert out["material"] == 0 and llm.calls == []
+
+    async def test_max_items_caps_material(self, kb):
+        recs = [_rec(f"失败问题{i}", "SELECT 1", verdict="RETRY: 空结果")
+                for i in range(5)]
+        out, llm = await self._run(
+            kb, recs, [_lesson_json(f"失败问题{i}", f"教训{i}") for i in range(2)],
+            max_items=2)
+        assert out["material"] == 2 and len(llm.calls) == 2
+
+    async def test_missing_llm_is_an_error_not_a_silent_pass(self, kb):
+        from trove.services.kb.history_distill import run_lesson_distill
+
+        out = await run_lesson_distill(
+            kb, "demo", [_rec("q", "SELECT 1", verdict="RETRY: x")],
+            llm=None, model="m")
+        assert out["error"]
+
+
 # ── 结构性约束:核心不可能调 LLM ──────────────────────────
 
 

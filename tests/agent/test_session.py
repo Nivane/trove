@@ -1783,6 +1783,112 @@ class TestQueryAudit:
         # 审计写失败被吞,查询链路不受影响
 
 
+class TestRefusalAudit:
+    """``query.refused`` 审计:拒绝轮**为什么**被拒(独立 action)。
+
+    ``query.execute`` 对拒绝轮也写行,但拒绝轮的卫生清理把 sql 清零,
+    那一行答不了「为什么被拒」——reason / compile_miss 在这里,拒绝频率
+    报表(query.refused 的只读投影)据此聚合。
+    """
+
+    def _manager_with_auth(self, auth):
+        from trove.agent.session import SessionManager
+
+        return SessionManager(None, None, None, None, auth=auth)
+
+    def _auth(self):
+        class _Store:
+            async def get_user_by_id(self, uid):
+                return {"id": 7, "username": "bob"}
+
+        class _Auth:
+            def __init__(self):
+                self.entries = []
+                self.store = _Store()
+
+            async def record_audit(self, action, user=None, method="",
+                                   path="", status=None, details=None):
+                self.entries.append({"action": action, "user": user,
+                                     "details": details})
+
+        return _Auth()
+
+    async def test_uncovered_refusal_records_reason_and_miss(self):
+        auth = self._auth()
+        manager = self._manager_with_auth(auth)
+        final = WorkflowState(
+            session_id="s1", run_id="r1", user_id="7",
+            question="各分行贷款余额?", datasource="demo",
+            refusal={
+                "reason": "uncovered", "question": "各分行贷款余额?",
+                "datasource": "demo",
+                "compile_miss": {"reason": "unknown_cardinality",
+                                 "component": "account, loan"},
+            },
+        )
+        session = type("S", (), {"user_id": "7"})()
+
+        await manager._audit_refusal(session, final)
+
+        assert len(auth.entries) == 1
+        entry = auth.entries[0]
+        assert entry["action"] == "query.refused"
+        assert entry["user"] == {"id": 7, "username": "bob"}
+        d = entry["details"]
+        assert d["reason"] == "uncovered"
+        assert d["question"] == "各分行贷款余额?"
+        assert d["datasource"] == "demo"
+        assert d["run_id"] == "r1"
+        assert d["miss_reason"] == "unknown_cardinality"
+        assert d["miss_component"] == "account, loan"
+
+    async def test_topic_refusal_records_topic_without_miss(self):
+        auth = self._auth()
+        manager = self._manager_with_auth(auth)
+        final = WorkflowState(
+            session_id="s1", user_id="7", question="这个域的问题?",
+            datasource="demo",
+            refusal={"reason": "topic_out_of_scope", "question": "这个域的问题?",
+                     "topic": "风控域"},
+        )
+        await manager._audit_refusal(type("S", (), {"user_id": "7"})(), final)
+        d = auth.entries[0]["details"]
+        assert d["reason"] == "topic_out_of_scope"
+        assert d["topic"] == "风控域"
+        assert "miss_reason" not in d and "miss_component" not in d
+
+    async def test_non_refusal_round_writes_nothing(self):
+        auth = self._auth()
+        manager = self._manager_with_auth(auth)
+        final = WorkflowState(session_id="s1", question="q", user_id="7")
+        await manager._audit_refusal(type("S", (), {"user_id": "7"})(), final)
+        assert auth.entries == []
+
+    async def test_audit_skipped_without_auth(self):
+        manager = self._manager_with_auth(None)
+        final = WorkflowState(
+            session_id="s1", question="q",
+            refusal={"reason": "uncovered", "question": "q"},
+        )
+        await manager._audit_refusal(type("S", (), {"user_id": "7"})(), final)
+        # 无 auth → 静默跳过
+
+    async def test_audit_never_blocks_on_auth_failure(self):
+        class _Auth:
+            store = None
+
+            async def record_audit(self, *a, **k):
+                raise RuntimeError("audit db down")
+
+        manager = self._manager_with_auth(_Auth())
+        final = WorkflowState(
+            session_id="s1", question="q", user_id="7",
+            refusal={"reason": "uncovered", "question": "q"},
+        )
+        await manager._audit_refusal(type("S", (), {"user_id": "7"})(), final)
+        # 审计写失败被吞,拒绝链路不受影响
+
+
 class TestRefusalInSummary:
     """A1:拒绝出口活在 summary 里,不依赖 steps。
 

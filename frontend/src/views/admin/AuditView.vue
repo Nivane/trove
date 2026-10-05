@@ -35,6 +35,104 @@
       </div>
     </div>
 
+    <!-- ── 拒绝频率报表(A5):哪些问题问得多却答不了 ──
+         数据不可读时显式「不可用」(绝不铺一排 0);覆盖面自述就近在
+         卡底 —— 「查不成的绿是假绿」的同一纪律,反向也成立。 -->
+    <div class="admin-card refusal-card">
+      <div class="card-toolbar">
+        <span class="card-title">{{ t('refusalReport', ui.lang) }}</span>
+        <span class="spacer" />
+        <el-select
+          v-model="refusalDays"
+          class="refusal-days"
+          :aria-label="t('refusalWindow', ui.lang)"
+        >
+          <el-option
+            v-for="d in [7, 30, 90]"
+            :key="d"
+            :value="d"
+            :label="t('refusalDaysOption', ui.lang, d)"
+          />
+        </el-select>
+      </div>
+      <div v-if="refusalLoading" class="refusal-loading">
+        <el-skeleton :rows="3" animated />
+      </div>
+      <div v-else-if="refusal && refusal.available === false" class="refusal-degraded">
+        <AlertTriangle :size="15" />
+        <span>{{ t('refusalUnavailable', ui.lang) }}</span>
+        <span v-if="refusal.note" class="cell-mono refusal-note-inline">{{ refusal.note }}</span>
+      </div>
+      <template v-else-if="refusal">
+        <div class="stat-grid refusal-stats">
+          <div class="stat-card">
+            <span class="stat-icon warn"><AlertTriangle :size="18" /></span>
+            <div class="stat-meta">
+              <span class="stat-label">{{ t('refusalTotal', ui.lang) }}</span>
+              <span class="stat-value">{{ refusal.total ?? '—' }}</span>
+              <span class="stat-sub">{{ t('refusalScopeWindow', ui.lang) }}</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon accent"><GitBranch :size="18" /></span>
+            <div class="stat-meta">
+              <span class="stat-label">{{ t('refusalRelationMissing', ui.lang) }}</span>
+              <span class="stat-value">{{ refusal.relationship_missing?.count ?? '—' }}</span>
+              <span class="stat-sub">{{ t('refusalRelationHint', ui.lang) }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="refusal-cols">
+          <div class="refusal-col">
+            <h4>{{ t('refusalTopQuestions', ui.lang) }}</h4>
+            <ul v-if="refusal.top_questions?.length" class="refusal-list">
+              <li v-for="q in refusal.top_questions" :key="q.question">
+                <span class="refusal-q">{{ q.question }}</span>
+                <span class="pill pill-neutral">{{ q.count }}</span>
+                <span class="refusal-reasons">{{ (q.reasons || []).join(' · ') }}</span>
+              </li>
+            </ul>
+            <p v-else class="cell-muted">{{ t('refusalNone', ui.lang) }}</p>
+          </div>
+          <div class="refusal-col">
+            <h4>{{ t('refusalRelationQuestions', ui.lang) }}</h4>
+            <ul
+              v-if="refusal.relationship_missing?.top_questions?.length"
+              class="refusal-list"
+            >
+              <li
+                v-for="q in refusal.relationship_missing.top_questions"
+                :key="q.question"
+              >
+                <span class="refusal-q">{{ q.question }}</span>
+                <span class="pill pill-neutral">{{ q.count }}</span>
+              </li>
+            </ul>
+            <p v-else class="cell-muted">{{ t('refusalNone', ui.lang) }}</p>
+          </div>
+        </div>
+        <div v-if="refusal.by_reason?.length" class="refusal-chips">
+          <span class="refusal-chips-label">{{ t('refusalByReason', ui.lang) }}</span>
+          <span v-for="r in refusal.by_reason" :key="r.reason" class="pill pill-neutral">
+            {{ r.reason }} · {{ r.count }}
+          </span>
+        </div>
+        <div v-if="refusal.by_miss?.length" class="refusal-chips">
+          <span class="refusal-chips-label">{{ t('refusalByMiss', ui.lang) }}</span>
+          <span v-for="r in refusal.by_miss" :key="r.reason" class="pill pill-neutral">
+            {{ r.reason }} · {{ r.count }}
+          </span>
+        </div>
+        <p v-if="refusal.capped" class="refusal-foot">{{ t('refusalCapped', ui.lang) }}</p>
+        <p
+          v-if="ui.lang === 'en' ? refusal.coverage_note_en : refusal.coverage_note"
+          class="refusal-foot"
+        >
+          {{ ui.lang === 'en' ? refusal.coverage_note_en : refusal.coverage_note }}
+        </p>
+      </template>
+    </div>
+
     <div class="admin-card">
       <div class="card-toolbar">
         <div class="audit-filters">
@@ -56,7 +154,7 @@
         </div>
         <span class="spacer" />
         <span class="view-count">{{ total }}</span>
-        <el-button class="refresh-btn" :loading="loading" @click="load">
+        <el-button class="refresh-btn" :loading="loading" @click="load(); loadRefusal()">
           <RefreshCw :size="15" class="btn-icon" />
           {{ t('refresh', ui.lang) }}
         </el-button>
@@ -140,6 +238,7 @@ import {
   ScrollText,
   ShieldCheck,
   AlertTriangle,
+  GitBranch,
 } from 'lucide-vue-next'
 import { apiGet } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
@@ -160,11 +259,63 @@ interface AuditEntry {
   [k: string]: unknown
 }
 
+interface RefusalQuestion {
+  question: string
+  count: number
+  reasons?: string[]
+  datasources?: string[]
+}
+
+interface RefusalReport {
+  available: boolean
+  total: number | null
+  capped?: boolean
+  note?: string
+  coverage_note: string
+  coverage_note_en: string
+  by_reason?: { reason: string; count: number }[]
+  by_miss?: { reason: string; count: number }[]
+  top_questions?: RefusalQuestion[]
+  relationship_missing?: {
+    reasons?: string[]
+    count: number | null
+    top_questions?: RefusalQuestion[]
+  }
+}
+
 const ui = useUiStore()
 const entries = ref<AuditEntry[]>([])
 const loading = ref(false)
 const pageSize = ref(20)
 const total = ref(0)
+
+/* ── 拒绝频率报表(A5):独立于表格筛选的投影,有自己的窗口 ── */
+const refusal = ref<RefusalReport | null>(null)
+const refusalLoading = ref(false)
+const refusalDays = ref(30)
+
+async function loadRefusal() {
+  refusalLoading.value = true
+  try {
+    refusal.value = await apiGet<RefusalReport>(
+      `/v1/admin/audit/refusal-report?days=${refusalDays.value}`,
+    )
+  } catch (e) {
+    // 读不成**不铺零**:与后端降级同一形状(available:false + 原因),
+    // 卡面显式「不可用」而不是一排 0 或上一次窗口的旧读数。
+    refusal.value = {
+      available: false,
+      total: null,
+      coverage_note: '',
+      coverage_note_en: '',
+      note: e instanceof Error ? e.message : String(e),
+    }
+  } finally {
+    refusalLoading.value = false
+  }
+}
+
+watch(refusalDays, () => void loadRefusal())
 
 /* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
    user_id / action / page are the keys this page acknowledges, so a
@@ -264,5 +415,102 @@ onMounted(() => {
   // 坏的 ?page=abc 归一为 1,而不是让 URL 说谎
   if (values.page !== String(page.value)) values.page = String(page.value)
   void load()
+  void loadRefusal()
 })
 </script>
+
+<style scoped>
+/* ── 拒绝频率报表卡(A5) ──────────────────────────────────────────────
+   只服务本卡;全局类(stat-grid / pill / card-toolbar)与卡内局部类混用,
+   局部的一律 refusal- 前缀。 */
+.refusal-days {
+  width: 130px;
+}
+.refusal-loading,
+.refusal-degraded,
+.refusal-stats,
+.refusal-cols,
+.refusal-chips,
+.refusal-foot {
+  padding: 0 var(--sp-5);
+}
+.refusal-degraded {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-4);
+  padding-bottom: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--warn-text, var(--text-secondary));
+}
+.refusal-note-inline {
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+}
+.refusal-stats {
+  padding-top: var(--sp-4);
+}
+.refusal-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-5);
+  padding-top: var(--sp-4);
+}
+.refusal-col h4 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.refusal-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.refusal-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+.refusal-list li:last-child {
+  border-bottom: none;
+}
+.refusal-q {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+.refusal-reasons {
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+}
+.refusal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+}
+.refusal-chips-label {
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+}
+.refusal-foot {
+  padding-top: var(--sp-2);
+  padding-bottom: var(--sp-4);
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+@media (max-width: 900px) {
+  .refusal-cols {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -1,4 +1,4 @@
-"""历史蒸馏 —— 用户自己的行为记录 → 待审 KB 资产(确定性核心,零 LLM)。
+"""历史蒸馏 —— 用户自己的行为记录 → 待审 KB 资产(零 LLM 核心 + 注入式提炼)。
 
 「接入即建模」的冷启动不该是空白:每个真实部署在建模之前就已经积累了被
 回答过的问答(episodes / 审计 / lineage)。本模块把这些**用户自己的行为
@@ -13,9 +13,11 @@
    锚定唯一已声明数据集、名字未被占用;裸列 / CTE 遮蔽 / 未声明数据集
    一律不猜),只在两处历史特化:表名归一为数据集名、reason 换成
    ``history_*``(来路如实:这不是编译 MISS,是使用痕迹);
-3. 失败与修正 → 教训材料(``history_lesson_evidence`` 纯映射;LLM 提炼在
-   CLI 侧复用 ``lesson_distill`` 的既有管线)—— 本模块**不接收 gateway**,
-   服务层构造上不可能调 LLM(判定/蒸馏核心零 LLM 红线的同一条落法)。
+3. 失败与修正 → 教训材料(``history_lesson_evidence`` 纯映射);LLM 提炼
+   (``run_lesson_distill``)的模型网关由**调用方注入**(CLI 注入自建网关,
+   管理端任务注入 serve 的共享网关,测试注入 fake)—— 本模块自身不
+   import、不构造网关,三个确定性核心的签名里没有 llm 参数(零 LLM 红线
+   的同一条落法:构造上不可能凭空发起模型调用)。
 
 红线(与仓库纪律同源):
 
@@ -513,4 +515,131 @@ async def run_distill(
                 continue
             out["candidates"] += 1
             out["candidate_items"].append(item)
+    return out
+
+
+# ── 落库(教训;网关由调用方注入) ───────────────────────────
+
+
+async def run_lesson_distill(
+    kb: Any,
+    datasource: str,
+    records: list[HistoryRecord],
+    *,
+    llm: Any,
+    model: str,
+    dry_run: bool = False,
+    max_items: int = MAX_DISTILL_PER_RUN,
+) -> dict[str, Any]:
+    """records → pending 教训(提炼;LLM 网关由调用方注入)。
+
+    CLI 与管理端蒸馏任务**共用**这一条管线(同一段提示词、同一套过滤),
+    差别只在注入的网关实例。``llm`` 是调用方给的网关对象(鸭子类型,只用
+    ``llm.chat`` 一个方法;见模块 docstring:本模块不 import 也不构造它)。
+
+    - 材料 = ``is_lesson_material`` 且带提问原文的记录,截断到 ``max_items``
+      (显式上限;批量 ≠ 无限);
+    - 每条材料一次提炼:解析失败 / 管线噪声各自计数跳过;通过的条目再与
+      ``lessons.yml`` 既有 pattern 及批内重复去重(``dedupe_by_pattern``
+      既有管线)—— 重跑第二遍自然 0 条;
+    - ``dry_run=True`` 只算不写;
+    - **失败响亮**:任一条提炼抛错即返回 ``error``,此时磁盘**一个字节都
+      没改**(写入只在全部提炼完成后发生),调用方如实报失败不报成功;
+      单条落库失败不连坐整批(与示例/候选同纪律)。
+
+    返回 ``{material, lessons, duplicates, noise, parse_failed, items,
+    dry_run, error}``:``lessons`` = 通过解析与噪声过滤的条数,
+    ``duplicates`` = 其中与既有 pattern 重复的条数,实际写入
+    ``lessons - duplicates`` 条;``items`` = 写入(或 dry_run 下应写入)的
+    ``{pattern, note, question}`` 明细。
+    """
+    out: dict[str, Any] = {
+        "material": 0, "lessons": 0, "duplicates": 0, "noise": 0,
+        "parse_failed": 0, "items": [], "dry_run": dry_run, "error": "",
+    }
+    if kb is None or not datasource or not records:
+        return out
+    if llm is None:
+        out["error"] = "lesson distill requires an injected llm gateway"
+        return out
+
+    from trove.prompts import render
+    from trove.services.kb.lesson_distill import (
+        build_distill_prompt,
+        dedupe_by_pattern,
+        is_noise_lesson,
+        parse_lesson,
+    )
+
+    max_items = max(0, min(int(max_items or 0), MAX_DISTILL_PER_RUN))
+    material = [r for r in records if is_lesson_material(r) and r.question]
+    material = material[:max_items]
+    out["material"] = len(material)
+    if not material:
+        return out
+
+    system = render("lesson_distill/system")
+    pairs: list[tuple[HistoryRecord, dict[str, Any]]] = []
+    for rec in material:
+        failure = history_lesson_evidence(rec)
+        try:
+            response = await llm.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": build_distill_prompt(failure)},
+                ],
+                max_tokens=16000,
+            )
+        except Exception as e:
+            # 写入只在提炼全部完成后发生 —— 这里返回时磁盘零改动。
+            out["error"] = str(e)
+            return out
+        lesson = parse_lesson(response)
+        if lesson is None:
+            out["parse_failed"] += 1
+            continue
+        if is_noise_lesson(rec.question, lesson):
+            out["noise"] += 1
+            continue
+        pairs.append((rec, lesson))
+
+    out["lessons"] = len(pairs)
+    try:
+        # 读既有 pattern 前先懒同步镜像(与所有 KB 读路径同一纪律:镜像表
+        # 由 sync 建立,直接 _rows 会在全新 KB 上撞 "no such table")。
+        await kb.ensure_synced(datasource)
+        existing = await kb.list_lessons(datasource, confirmed_only=False)
+    except Exception as e:
+        out["error"] = f"list_lessons failed: {e}"
+        return out
+    fresh = dedupe_by_pattern([lesson for _, lesson in pairs], existing)
+    out["duplicates"] = len(pairs) - len(fresh)
+    # dedupe_by_pattern 原地返回入选条目(同一批 dict 对象)——按身份认回
+    # 来源记录;若哪天它改成拷贝语义,这里会 KeyError 响亮报错而不是静默
+    # 丢归属。
+    by_id = {id(lesson): rec for rec, lesson in pairs}
+    fresh_pairs = [(by_id[id(lesson)], lesson) for lesson in fresh]
+    out["items"] = [
+        {"pattern": str(lesson.get("pattern") or ""),
+         "note": str(lesson.get("note") or ""),
+         "question": rec.question}
+        for rec, lesson in fresh_pairs
+    ]
+    if dry_run:
+        return out
+    kept: list[dict[str, Any]] = []
+    for (rec, lesson), item in zip(fresh_pairs, out["items"]):
+        try:
+            await kb.append_lesson(
+                {**lesson, "confirmed": False}, datasource,
+                generator="history_distill",
+            )
+        except Exception as e:  # 单条失败不连坐
+            logger.warning(
+                "history lesson write failed (%s, %s): %s",
+                datasource, lesson.get("pattern"), e)
+            continue
+        kept.append(item)
+    out["items"] = kept
     return out

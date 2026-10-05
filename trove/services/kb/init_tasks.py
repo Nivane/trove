@@ -1,4 +1,4 @@
-"""In-process KB init task registry — 异步 /kb init + 进度轮询。
+"""In-process KB task registry — 异步 /kb init、/kb reload、历史蒸馏 + 进度轮询。
 
 `POST /admin/datasources/{name}/kb/init` 现在立即返回 202 + task_id,真正
 的初始化在后台 ``asyncio.create_task`` 跑;前端轮询
@@ -35,8 +35,15 @@ class InitTaskStore:
 
     # ── 写 ────────────────────────────────────────────────
 
-    def create(self, datasource: str, ds_id: str = "") -> dict[str, Any]:
-        """登记新运行任务;同源已有 running 任务 → 返回 None(调用方 409)。"""
+    def create(self, datasource: str, ds_id: str = "",
+               kind: str = "") -> dict[str, Any]:
+        """登记新运行任务;同源已有 running 任务 → 返回 None(调用方 409)。
+
+        ``kind`` 标记任务种类(``init`` / ``reload`` / ``distill``):注册表
+        按 datasource 键控、种类共享互斥(同一数据源的 KB 写操作天然串行);
+        需要区分「最近这次任务是不是我这类」的 status 端点在读侧用它过滤
+        (蒸馏轮询不能把刚跑完的 init 当成自己的完成态)。
+        """
         with self._lock:
             self._prune_locked()
             existing = self._by_ds.get(datasource)
@@ -48,6 +55,7 @@ class InitTaskStore:
                 "id": task_id,
                 "datasource": datasource,
                 "ds_id": ds_id,
+                "kind": kind,
                 "status": "running",
                 "stage": "queued",
                 "progress": 0,

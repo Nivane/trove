@@ -76,6 +76,16 @@
             <button
               type="button"
               role="menuitem"
+              class="menu-item"
+              :disabled="!values.ds || !initialized"
+              @click="askMenuAction('distill')"
+            >
+              <History :size="14" />
+              {{ t('kbDistill', ui.lang) }}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               class="menu-item is-danger"
               :disabled="!values.ds || !initialized"
               @click="askMenuAction('overwrite')"
@@ -124,8 +134,8 @@
       </template>
     </div>
 
-    <!-- init / reload / bulk progress -->
-    <div v-if="busy('init')" class="kb-init-progress" role="status">
+    <!-- init / reload / distill / bulk progress -->
+    <div v-if="busy('init') || busy('distill')" class="kb-init-progress" role="status">
       <el-progress :percentage="initProgress?.progress || 0" :stroke-width="8" />
       <div class="kb-init-stage">
         {{ initStageLabel(initProgress?.stage) }}
@@ -799,6 +809,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Check,
+  History,
   MoreHorizontal,
   Plus,
   Recycle,
@@ -916,7 +927,7 @@ const loading = ref(false)
 const loadError = ref('')
 const acting = ref(false)
 const menuOpen = ref(false)
-const menuAction = ref<'' | 'init' | 'merge' | 'overwrite' | 'delete'>('')
+const menuAction = ref<'' | 'init' | 'merge' | 'overwrite' | 'delete' | 'distill'>('')
 const menuOpen2 = ref(false)
 const busyMap: Record<string, boolean> = {}
 
@@ -1718,6 +1729,10 @@ function initStageLabel(stage?: string): string {
     examples: t('kbInitStageExamples', ui.lang),
     semantic: t('kbInitStageSemantic', ui.lang),
     write: t('kbInitStageWrite', ui.lang),
+    // 蒸馏任务阶段(collect/distill/lessons,见 admin.py 蒸馏端点的 stage 值)
+    collect: t('kbDistillStageCollect', ui.lang),
+    distill: t('kbDistillStageDistill', ui.lang),
+    lessons: t('kbDistillStageLessons', ui.lang),
     done: t('kbInitStageDone', ui.lang),
     error: t('kbInitStageError', ui.lang),
   }
@@ -1761,6 +1776,74 @@ async function initKb(overwrite = false, force = false) {
   } finally {
     notice.close()
     setBusy('init', false)
+    initProgress.value = null
+  }
+}
+
+interface DistillSummary {
+  records?: number
+  examples?: number
+  candidates?: number
+  lessons?: number
+  lessons_duplicate?: number
+  dry_run?: boolean
+}
+
+/** 蒸馏进度文案:一行内把 summary 读数摊开(与 toast 同一份数据)。 */
+function distillSummaryText(s?: DistillSummary): string {
+  if (!s) return ''
+  const parts = [
+    `${t('kbDistillRecords', ui.lang)} ${s.records ?? 0}`,
+    `${t('kbDistillExamples', ui.lang)} ${s.examples ?? 0}`,
+    `${t('kbDistillCandidates', ui.lang)} ${s.candidates ?? 0}`,
+    `${t('kbDistillLessons', ui.lang)} ${s.lessons ?? 0}`,
+  ]
+  if (s.lessons_duplicate) parts.push(`${t('kbDistillDup', ui.lang)} ${s.lessons_duplicate}`)
+  return parts.join(' · ')
+}
+
+async function pollDistillStatus(): Promise<DistillSummary | undefined> {
+  for (;;) {
+    await sleep(2000)
+    const st = await apiGet<{
+      status: string
+      stage?: string
+      progress?: number
+      detail?: string
+      error?: string
+      summary?: DistillSummary
+    }>(`/v1/admin/datasources/${encodeURIComponent(values.ds)}/kb/distill-history/status`)
+    initProgress.value = { stage: st.stage, progress: st.progress ?? 0, detail: st.detail }
+    if (st.status === 'done') {
+      initProgress.value = { stage: 'done', progress: 100 }
+      return st.summary
+    }
+    if (st.status === 'error') throw new Error(st.error || t('kbDistillFail', ui.lang))
+    if (st.status === 'idle') throw new Error(t('dsInitLost', ui.lang))
+  }
+}
+
+async function distillHistory() {
+  setBusy('distill', true)
+  initProgress.value = { stage: 'queued', progress: 0 }
+  const notice = ElMessage({
+    type: 'info',
+    message: t('dsInitStarted', ui.lang),
+    duration: 0,
+  })
+  try {
+    await apiPost(
+      `/v1/admin/datasources/${encodeURIComponent(values.ds)}/kb/distill-history`,
+      {},
+    )
+    const summary = await pollDistillStatus()
+    notifySuccess(t('kbDistillDone', ui.lang, distillSummaryText(summary)))
+    await loadAll()
+  } catch (e) {
+    toastError(e, t('kbDistillFail', ui.lang))
+  } finally {
+    notice.close()
+    setBusy('distill', false)
     initProgress.value = null
   }
 }
@@ -1809,7 +1892,7 @@ async function deleteKb() {
   }
 }
 
-function askMenuAction(action: 'init' | 'merge' | 'overwrite' | 'delete') {
+function askMenuAction(action: 'init' | 'merge' | 'overwrite' | 'delete' | 'distill') {
   menuOpen.value = false
   menuAction.value = action
   menuOpen2.value = true
@@ -1819,6 +1902,7 @@ const menuTitle = computed(() => {
   if (menuAction.value === 'overwrite') return t('kbOverwriteConfirmTitle', ui.lang, values.ds)
   if (menuAction.value === 'delete') return t('kbDeleteConfirmTitle', ui.lang, values.ds)
   if (menuAction.value === 'merge') return t('kbReinit', ui.lang)
+  if (menuAction.value === 'distill') return t('kbDistillConfirmTitle', ui.lang, values.ds)
   return t('dsInit', ui.lang)
 })
 
@@ -1826,6 +1910,7 @@ const menuConfirmText = computed(() => {
   if (menuAction.value === 'overwrite') return t('kbOverwrite', ui.lang)
   if (menuAction.value === 'delete') return t('kbDelete', ui.lang)
   if (menuAction.value === 'merge') return t('kbReinit', ui.lang)
+  if (menuAction.value === 'distill') return t('kbDistill', ui.lang)
   return t('dsInit', ui.lang)
 })
 
@@ -1845,6 +1930,7 @@ const menuImpact = computed(() => {
     ]
   }
   if (menuAction.value === 'merge') return [t('kbReinitConfirm', ui.lang)]
+  if (menuAction.value === 'distill') return [t('kbDistillConfirm', ui.lang)]
   return [t('dsInitConfirm', ui.lang)]
 })
 
@@ -1855,6 +1941,7 @@ async function runMenuAction() {
   else if (action === 'merge') await initKb(true, false)
   else if (action === 'overwrite') await initKb(true, true)
   else if (action === 'delete') await deleteKb()
+  else if (action === 'distill') await distillHistory()
   menuAction.value = ''
 }
 

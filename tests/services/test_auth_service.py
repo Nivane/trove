@@ -407,3 +407,59 @@ async def test_aggregate_query_audit_dedupes_filters_and_keeps_privacy(tmp_path)
         datasource="demo", since="2999-01-01T00:00:00+00:00") == []
     # 不限定数据源 → 两个数据源各一条;非 query.execute 的动作不算
     assert len(await store.aggregate_query_audit()) == 2
+
+
+async def test_aggregate_refusal_audit_counts_window_and_keeps_privacy(tmp_path):
+    """拒绝频率报表的审计读:total 精确、entries 带 miss 细节、不带用户归属。"""
+    store = AppDbStore(tmp_path / "app.db")
+    ts = datetime.now(timezone.utc).isoformat()
+    await store.append_audit(
+        ts=ts, user_id=7, username="alice", action="query.refused",
+        details={"question": "各分行存款余额", "datasource": "demo",
+                 "reason": "uncovered", "miss_reason": "unknown_cardinality",
+                 "miss_component": "account, loan", "run_id": "r1"})
+    await store.append_audit(
+        ts=ts, user_id=None, username="bob", action="query.refused",
+        details={"question": "哪个地区贷款最高?", "datasource": "demo",
+                 "reason": "uncovered", "miss_reason": "no_metric_match"})
+    # 非拒绝动作 + 坏 JSON + 远古行:都不该混进来
+    await store.append_audit(ts=ts, user_id=None, username="bob",
+                             action="query.execute",
+                             details={"question": "q", "sql": "SELECT 1"})
+
+    async def _bad_row():
+        conn = await store._conn()
+        try:
+            await conn.execute(
+                "INSERT INTO audit_log (ts, user_id, username, action, method,"
+                " path, status, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2020-01-01T00:00:00+00:00", None, "bob", "query.refused",
+                 "", "", 200, "{not json"))
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    await _bad_row()
+    await store.append_audit(
+        ts="2000-01-01T00:00:00+00:00", user_id=None, username="bob",
+        action="query.refused",
+        details={"question": "远古", "datasource": "demo", "reason": "no_model"})
+
+    data = await store.aggregate_refusal_audit()
+    assert data["total"] == 4  # 远古行也计数(窗口只在调用方给 since 时生效)
+    assert data["capped"] is False
+    # 坏 JSON 行被跳过:entries 少一行,但那行的计数仍在 total 里
+    assert len(data["entries"]) == 3
+    first = data["entries"][0]
+    assert first["question"] == "哪个地区贷款最高?"  # ts 相同 → id DESC 稳定序
+    assert first["miss_reason"] == "no_metric_match"
+    assert first["reason"] == "uncovered"
+    # 隐私边界:它回答「问过什么被拒了」,不回答「谁被拒了」
+    assert "username" not in first and "user_id" not in first
+
+    # since 过滤(字符串比较)与 capped 下界语义
+    assert (await store.aggregate_refusal_audit(
+        since="2999-01-01T00:00:00+00:00"))["total"] == 0
+    capped = await store.aggregate_refusal_audit(scan_limit=1)
+    assert capped["capped"] is True and len(capped["entries"]) == 1
+    assert capped["total"] == 4  # total 仍精确

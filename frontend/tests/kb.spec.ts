@@ -237,6 +237,21 @@ function mockApi() {
     if (path.startsWith('/v1/kb/examples/pending?')) return clone({ examples: PENDING })
     if (path.endsWith('/kb/init/status')) return { status: 'done', stage: 'done', progress: 100 }
     if (path.endsWith('/kb/reload/status')) return { status: 'done' }
+    if (path.endsWith('/kb/distill-history/status')) {
+      return {
+        status: 'done',
+        stage: 'done',
+        progress: 100,
+        summary: {
+          records: 3,
+          examples: 2,
+          candidates: 1,
+          lessons: 1,
+          lessons_duplicate: 0,
+          dry_run: false,
+        },
+      }
+    }
     return {}
   })
 
@@ -627,6 +642,28 @@ describe('KbView', () => {
     await findButton(dialog, 'Cancel')!.click()
     await settle()
     expect(calls('/v1/admin/datasources/demo/kb/init')).toHaveLength(0)
+  })
+
+  it('distill from history: confirm dialog → 202 → poll → summary', async () => {
+    mockApi()
+    const view = await mountView()
+    const more = view.find('[aria-label="More actions"]')
+    await more.trigger('click')
+    await findButton(view.find('.more-menu').element, 'Distill from history')!.click()
+    await settle()
+    const dialog = confirmDialog()
+    expect(dialog.textContent).toContain('Distill from history · demo')
+    expect(dialog.textContent).toContain('billed LLM')
+    await findButton(dialog, 'Distill from history')!.click()
+    // 轮询首次 sleep 是 2s(同 init 范式):等过第一轮才有 done + summary
+    await settle(2300)
+    // 触发体是空对象(limit/since 走服务端默认)
+    expect(calls('/v1/admin/datasources/demo/kb/distill-history')[0]).toEqual({})
+    // status 轮询走 apiGet(不进 calls() 记录)——它的端点与读数由下面
+    // 的 toast 断言钉住:summary 只可能来自 /kb/distill-history/status。
+    expect(bodyText()).toContain('Distillation finished')
+    expect(bodyText()).toContain('records 3')
+    expect(bodyText()).toContain('lessons 1')
   })
 
   it('overwrite and delete KB go through their own blast-radius dialogs', async () => {

@@ -810,3 +810,60 @@ class AppDbStore:
             else:
                 hit["seen"] += 1
         return list(seen.values())
+
+    async def aggregate_refusal_audit(
+        self, *, since: str = "", scan_limit: int = 2000,
+    ) -> dict[str, Any]:
+        """``query.refused`` 审计行的窗口读(拒绝频率报表用;跨用户,by design)。
+
+        ``total`` 是窗口内的精确计数(COUNT);``entries`` 是最新
+        ``scan_limit`` 行的已解析 details(附 ``ts``);窗口内行数超过读取
+        上限时 ``capped=True`` —— 此时 entries 的聚合计数是**下界**
+        (total 仍精确)。与 ``aggregate_query_audit`` 同纪律:JSON 解析在
+        Python 侧做(SQLite/PG 的 JSON 函数不同源,不引方言分支),解析不
+        了的行跳过。
+
+        返回项**不带 user 归属**:报表回答「问过什么被拒了」,不回答
+        「谁被拒了」(隐私边界;按人的拒绝明细走 /admin/audit 按 action
+        过滤的既有面)。
+        """
+        scan_limit = max(1, int(scan_limit or 0))
+        clauses, values = ["action = ?"], ["query.refused"]
+        if since:
+            clauses.append("ts >= ?")
+            values.append(since)
+        where = f"WHERE {' AND '.join(clauses)}"
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT COUNT(*) FROM audit_log {where}", values,
+            )
+            row = await cursor.fetchone()
+            total = int(row[0]) if row else 0
+            cursor = await conn.execute(
+                "SELECT ts, details_json FROM audit_log "
+                f"{where} ORDER BY ts DESC, id DESC LIMIT ?",
+                [*values, scan_limit],
+            )
+            rows = await _fetch_all(cursor)
+        finally:
+            await conn.close()
+        entries: list[dict[str, Any]] = []
+        for ts, details_json in rows:
+            try:
+                details = json.loads(details_json) if details_json else {}
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(details, dict):
+                continue
+            entries.append({
+                "question": str(details.get("question") or "").strip(),
+                "datasource": str(details.get("datasource") or ""),
+                "reason": str(details.get("reason") or ""),
+                "topic": str(details.get("topic") or ""),
+                "miss_reason": str(details.get("miss_reason") or ""),
+                "miss_component": str(details.get("miss_component") or ""),
+                "run_id": str(details.get("run_id") or ""),
+                "last_seen": str(ts or ""),
+            })
+        return {"total": total, "entries": entries, "capped": total > len(rows)}
