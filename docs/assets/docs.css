@@ -99,9 +99,44 @@ a:focus-visible, button:focus-visible {
   border-radius: 3px;
 }
 
-/* 骨架说明：首页不再单起一套 .shell/.col，与文档页共用 .doc-shell/.doc-col
-   （见下方「文档站（多页）」一节）；本节的落地页组件在 .doc-col 一节末尾
-   做了少量抵消，维持落地页自己的间距。 */
+/* 骨架说明：首页是独立落地页（方向 D）——不设 .doc-shell，因而没有文档站的
+   左栏目录与本页目录；自带一条顶部导航（.lnav，见下），只借 .doc-col 的正文
+   排版节奏（见下方「文档站（多页）」一节），列宽另给（.doc-col.landing）。
+   本节的落地页组件在 .doc-col 一节末尾做了少量抵消，维持落地页自己的间距。 */
+
+/* ── 落地页骨架（仅首页） ────────────────────────────────
+   正文列比文档页宽：1104 = 1040 正文 + 两侧 32 留白（与 D 稿的 1040 面板同宽）；
+   复合选择器 .doc-col.landing 的优先级压过 .doc-col 的 812，改宽不用 !important。 */
+.doc-col.landing {
+  max-width: 1104px;
+  margin-inline: auto;
+  padding-inline: 32px;
+  padding-block: 0 96px;
+}
+.lnav {
+  position: relative; z-index: 3;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 22px 0;
+}
+.lnav .wordmark {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-weight: 700; font-size: 21px; letter-spacing: -.01em;
+  color: #fff;
+}
+.lnav .wordmark .tld { color: #818cf8; }
+.lnav-links {
+  display: flex; align-items: center; gap: 28px;
+  font-size: 14px; color: #a1a1aa;
+}
+.lnav-links a { color: inherit; }
+.lnav-links a:hover { color: #fff; }
+.lnav .gh {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px;
+  padding: 7px 14px; font-size: 13px; color: #e4e4e7;
+  background: rgba(255,255,255,.03);
+}
+.lnav .gh:hover { background: rgba(255,255,255,.07); color: #fff; }
 
 /* ── Hero（仅首页；整页定格暗色——网格/光晕与版式见下方「海报 hero」一节） ── */
 .hero {
@@ -233,7 +268,7 @@ h1 {
 }
 .hero::after {
   content: "";
-  position: absolute; left: 50%; top: -220px; width: 900px; height: 540px;
+  position: absolute; left: 50%; top: -240px; width: 1100px; height: 640px;
   transform: translateX(-50%);
   background: radial-gradient(50% 55% at 50% 45%, rgba(99,102,241,.22), transparent 70%);
   pointer-events: none;
@@ -256,7 +291,7 @@ h1 {
    可在任意两字间断行，窄屏会把「决策」拆到两行；只在「 · 」处断。
    （窄屏字号/字距的收紧见文件尾的 620px 媒体查询） */
 .hero .chain { margin-top: 6px; color: var(--accent-bright); word-break: keep-all; }
-.hero .lede { margin: 0 auto 30px; max-width: 40em; font-size: 17.5px; }
+.hero .lede { margin: 0 auto 30px; max-width: 47em; font-size: 17.5px; }
 .hero .en { margin-inline: auto; text-align: left; }
 .hero .cta-row { justify-content: center; }
 .hero .cta {
@@ -304,7 +339,7 @@ h1 {
 .hp-dot.danger { background: #f87171; }
 
 .hp-scroll { overflow-x: auto; }
-.hp-svg { display: block; width: 100%; min-width: 560px; }
+.hp-svg { display: block; width: 100%; min-width: 700px; } /* 更宽的 viewBox（992），窄屏给足横向滚动量，文字不缩得太小 */
 .hp-svg .edge {
   stroke: rgba(129,140,248,.5); stroke-width: 1.6;
   stroke-dasharray: 4 4; animation: hp-dash .9s linear infinite;
@@ -345,6 +380,10 @@ h1 {
   .hero .eyebrow { font-size: 11px; letter-spacing: .03em; padding: 6px 12px; }
   .hero .chain { font-size: 12.5px; letter-spacing: .06em; }
   .hp-panel { margin-top: 28px; padding: 14px 14px 12px; }
+  .doc-col.landing { padding-inline: 24px; } /* 与文档页的页边距对齐 */
+  .lnav { padding: 16px 0; }
+  .lnav-links { gap: 0; }
+  .lnav-links a:not(.gh) { display: none; } /* 章节入口窄屏移出顶栏（hero 与页脚仍有） */
 }
 
 /* ── Sections ──────────────────────────────────────────── */
@@ -797,9 +836,10 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* ══════════════════════════════════════════════════════════
    文档站（多页）
-   全站 46 页共用这一套骨架（首页也在内）：左栏 .doc-nav（assets/nav.js
-   注入）+ 正文 .doc-col，宽屏再多一栏本页目录。共用上面的 token 与排版；
-   首页保留落地页组件（hero/.sec-head/footer），个中抵消见 .doc-col 一节末尾。
+   45 个文档页共用这一套骨架：左栏 .doc-nav（assets/nav.js 注入）+ 正文
+   .doc-col，宽屏再多一栏本页目录。首页是独立落地页，只借 .doc-col 的正文
+   排版、不设 .doc-shell（见文件头部「落地页骨架」一节）。共用上面的 token
+   与排版；首页保留落地页组件（hero/.sec-head/footer），抵消见 .doc-col 一节末尾。
    ══════════════════════════════════════════════════════════ */
 
 .doc-shell {
@@ -975,8 +1015,8 @@ footer .attribution p:last-child { margin-bottom: 0; }
 .doc-col table { font-size: 13.5px; }
 .doc-col th, .doc-col td { padding: 10px 14px; vertical-align: top; }
 
-/* 首页（docs/index.html）也穿这套骨架，但保留落地页组件，逐处抵消上面的
-   文档页排版，维持落地页自己的节奏：
+/* 首页（docs/index.html）借 .doc-col 的排版（列宽另给 .doc-col.landing），
+   但保留落地页组件，逐处抵消上面的文档页排版，维持落地页自己的节奏：
    - .sec-head 标题组：文档页 h2 的 58px 间距 + 顶部细线是「章节分隔」用的，
      落在标题组内部（sec-label 与 h2 之间）就成了错位；恢复全局 h2 间距。
    - <footer> 栏目：h4/列表间距按页脚自己的规则，不吃文档页标题与列表的。
