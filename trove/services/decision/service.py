@@ -23,15 +23,14 @@ never-firing scheduled job is indistinguishable from a healthy one.
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.core.serialize import json_safe
 from trove.services.analysis.engine import time_conds
 from trove.services.analysis.stats import MIN_BLOCKS
 from trove.services.decision.budget import DecisionBudget
@@ -98,17 +97,12 @@ def _jsonable(value: Any) -> Any:
     Postgres hands back ``Decimal`` and ``datetime``; a decision run stores
     its evidence as JSON, and a serialization failure there would abort
     ``finish_run`` and (before the runner guard) strand the job's schedule.
+
+    实现已升格共享(``core.serialize.json_safe``):分析柱的证据记录走同一条
+    序列化边界 —— 2026-10-05 归因答案在 UI 上「流中断」的根因就是同一个
+    未安全化的 ``Decimal``。此处保留旧名,调用点与测试按 ``_jsonable`` 读。
     """
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Decimal):
-        f = float(value)
-        return f if math.isfinite(f) else None
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return str(value)
+    return json_safe(value)
 
 
 def _contribution(

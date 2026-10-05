@@ -161,7 +161,14 @@ class SessionStore:
                     session.created_at.isoformat(),
                     session.updated_at.isoformat(),
                     session.summary or "", session.branch_parent,
-                    json.dumps(session.metadata, ensure_ascii=False),
+                    # default=str 是**最后一张网**(与 sse.py 同一约定):metadata
+                    # 混进没见过的类型时降级成字符串,而不是让整个回答丢失。
+                    # 2026-10-05 归因答案「流中断」正是这里缺这张网 —— 证据行
+                    # 里的 Decimal 让 json.dumps 抛 TypeError,生成器死在 done
+                    # 之前,答案既不送达也不落库。记录端已用
+                    # core.serialize.json_safe 保真化(Decimal → 数字),
+                    # 这里只兜没预见的类型。
+                    json.dumps(session.metadata, ensure_ascii=False, default=str),
                 ),
             )
             # 兼容旧 per-session 文件的 meta 表:持久化关键键
@@ -272,7 +279,8 @@ class SessionStore:
                     (
                         session.project_name, session.session_id, msg.role, msg.content,
                         msg.timestamp.isoformat(),
-                        json.dumps(msg.metadata, ensure_ascii=False),
+                        # default=str:最后一张网,理由见 create_session 注释。
+                        json.dumps(msg.metadata, ensure_ascii=False, default=str),
                     ),
                 )
             session.updated_at = datetime.now(timezone.utc)
@@ -629,7 +637,8 @@ class SessionStore:
                     (
                         session.project_name, session.session_id, msg.role, msg.content,
                         msg.timestamp.isoformat(),
-                        json.dumps(msg.metadata, ensure_ascii=False),
+                        # default=str:最后一张网,理由见 create_session 注释。
+                        json.dumps(msg.metadata, ensure_ascii=False, default=str),
                     ),
                 )
             await self._upsert_meta(conn, session.project_name, session.session_id, {

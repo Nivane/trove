@@ -1,6 +1,7 @@
 """Session store persistence tests."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -100,6 +101,32 @@ class TestSaveSession:
         loaded = await store.load_session(session.session_id, "/tmp/p")
         assert loaded.messages[0].metadata["sql"] == "SELECT 1"
         assert loaded.messages[0].metadata["token_usage"] == 150
+
+    async def test_metadata_with_db_typed_values_still_saves(self, tmp_home):
+        """metadata 混进 DB 原生类型时降级成字符串,而不是抛。
+
+        2026-10-05 归因答案「流中断」的落库侧回归门:当时 metadata 里是
+        ``summary.analysis.evidence.queries[].rows`` 的 ``Decimal``/``date``
+        (MySQL 驱动原样交回),``json.dumps`` 抛 TypeError → 生成器死在
+        ``done`` 之前,答案既不送达也不落库。记录端现已安全化
+        (``core.serialize``),这里的 ``default=str`` 只兜没预见的类型 ——
+        既有约定同 ``sse.py``。
+        """
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+
+        session.messages.append(Message(
+            role="assistant",
+            content="a",
+            metadata={"summary": {"analysis": {"evidence": {"queries": [
+                {"id": 1, "rows": [[Decimal("1.5"), date(2024, 1, 31)]]},
+            ]}}}},
+        ))
+        await store.save_session(session)  # 不抛 = 门
+
+        loaded = await store.load_session(session.session_id, "/tmp/p")
+        assert len(loaded.messages) == 1
+        assert loaded.messages[0].metadata["summary"]["analysis"]["evidence"]["queries"][0]["id"] == 1
 
 
 class TestDeleteAndList:

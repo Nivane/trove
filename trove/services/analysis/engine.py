@@ -21,6 +21,7 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.core.periods import base_period as _derive_periods
+from trove.core.serialize import json_safe
 from trove.services.analysis.decompose import (
     breakdown_signal,
     contribution,
@@ -56,6 +57,18 @@ logger = get_logger(__name__)
 
 #: 注入的执行器:只读一跳 SQL → (columns, rows)。超时/失败抛错由 runner 负责。
 HopRunner = Callable[[str, str], Awaitable[tuple[list[str], list[list[Any]]]]]
+
+
+def _record_rows(rows: list[list[Any]], keep: int) -> list[list[Any]]:
+    """证据/跳记录的截断视图:截到 ``keep`` + 逐格 JSON 安全化。
+
+    数学路径不经过这里 —— ``rows_to_map`` / ``rows_to_numden`` / ``num``
+    继续吃 ``_execute`` 交回的原始行(它们自己 float 化)。记录视图是要进
+    payload → summary → 落库/SSE 的旁路,``Decimal`` / ``date`` 原样进去
+    会让 ``json.dumps`` 在**交付段**抛错:2026-10-05 归因答案在 UI 上
+    「流中断」的根因(见 ``core.serialize``)。
+    """
+    return [[json_safe(cell) for cell in row] for row in rows[:keep]]
 
 
 # ── 语义模型解析(纯,只读模型)────────────────────────────
@@ -380,7 +393,7 @@ class AnalysisEngine:
             "sql": sql,
             "columns": list(cols),
             "row_count": len(rows),
-            "rows": [list(r) for r in rows[:keep]],
+            "rows": _record_rows(rows, keep),
             "truncated": len(rows) > keep,
         }
         if period:
@@ -427,11 +440,11 @@ class AnalysisEngine:
             if cur_sql:
                 cols, rows = await self._execute(cur_sql, datasource, purpose="probe", period="current")
                 cur_map = rows_to_numden(cols, rows)
-                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current"}
+                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "current"}
             if base_sql:
                 cols, rows = await self._execute(base_sql, datasource, purpose="probe", period="base")
                 base_map = rows_to_numden(cols, rows)
-                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base"}
+                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "base"}
         else:
             cur_sql = compile_hop(
                 self._sl, matched, dialect, metric_name, [dim_ref],
@@ -449,11 +462,11 @@ class AnalysisEngine:
             if cur_sql:
                 cols, rows = await self._execute(cur_sql, datasource, purpose="probe", period="current")
                 cur_map = rows_to_map(cols, rows)
-                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current"}
+                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "current"}
             if base_sql:
                 cols, rows = await self._execute(base_sql, datasource, purpose="probe", period="base")
                 base_map = rows_to_map(cols, rows)
-                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base"}
+                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "base"}
         signal = breakdown_signal(cur_map, base_map, ratio_parts)
         return cur_map, base_map, signal, hop_cur, hop_base
 
@@ -1010,12 +1023,12 @@ class AnalysisEngine:
             if cur_sql:
                 cols, rows = await self._execute(cur_sql, datasource, purpose="overall", period="current", keep=5)
                 cur_total = num(rows[0][-1]) if rows and rows[0] else 0.0
-                self._hops.append({"hop": 0, "sql": cur_sql, "columns": cols, "rows": rows[:5], "period": "current"})
+                self._hops.append({"hop": 0, "sql": cur_sql, "columns": cols, "rows": _record_rows(rows, 5), "period": "current"})
                 self._hop0_ok = True
             if base_sql and base_period:
                 cols, rows = await self._execute(base_sql, datasource, purpose="overall", period="base", keep=5)
                 base_total = num(rows[0][-1]) if rows and rows[0] else 0.0
-                self._hops.append({"hop": 0, "sql": base_sql, "columns": cols, "rows": rows[:5], "period": "base"})
+                self._hops.append({"hop": 0, "sql": base_sql, "columns": cols, "rows": _record_rows(rows, 5), "period": "base"})
             total_delta = cur_total - base_total
 
             # focus 属于计划的首维(问题里点名的那一项),探测时排除(要
@@ -1118,11 +1131,11 @@ class AnalysisEngine:
                         if cur_sql:
                             cols, rows = await self._execute(cur_sql, datasource, purpose="drilldown", period="current", filt=str(top["dim"]))
                             drill_cur = rows_to_numden(cols, rows)
-                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current", "filter": str(top["dim"])})
+                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "current", "filter": str(top["dim"])})
                         if base_sql:
                             cols, rows = await self._execute(base_sql, datasource, purpose="drilldown", period="base", filt=str(top["dim"]))
                             drill_base = rows_to_numden(cols, rows)
-                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base", "filter": str(top["dim"])})
+                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "base", "filter": str(top["dim"])})
                         drill_table = shift_share(drill_base, drill_cur)["rows"]
                     else:
                         cur_sql = compile_hop(
@@ -1138,11 +1151,11 @@ class AnalysisEngine:
                         if cur_sql:
                             cols, rows = await self._execute(cur_sql, datasource, purpose="drilldown", period="current", filt=str(top["dim"]))
                             drill_cur_v = rows_to_map(cols, rows)
-                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current", "filter": str(top["dim"])})
+                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "current", "filter": str(top["dim"])})
                         if base_sql and base_period:
                             cols, rows = await self._execute(base_sql, datasource, purpose="drilldown", period="base", filt=str(top["dim"]))
                             drill_base_v = rows_to_map(cols, rows)
-                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base", "filter": str(top["dim"])})
+                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": _record_rows(rows, 10), "period": "base", "filter": str(top["dim"])})
                         drill_table = contribution(drill_base_v, drill_cur_v)
 
             self._produced = True
@@ -1259,4 +1272,8 @@ def analysis_payload(
         payload["series"] = outcome.series
     if outcome.budget is not None:
         payload["evidence"]["budget"] = outcome.budget
-    return payload
+    # 出门前整包安全化(见 ``core.serialize``):记录视图已在源头逐格化
+    # (``_record_rows``),这里再兜一层是因为**标签**也可能是 DB 原生值
+    # (日期维度 → ``date`` 键,树/系列/贡献表的 dim 同理)—— 这份 payload
+    # 的契约就是 JSON(前端/回放/缓存同源同键),契约要在出口成立。
+    return json_safe(payload)
