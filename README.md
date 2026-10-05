@@ -211,7 +211,7 @@ docker compose down
 | 六种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
 | 接口与治理 | Web UI、REST(`/v1`)、MCP、CLI;管理端审批、审计、可观测 | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
-数据源按需装驱动:`uv sync --extra postgres|mysql|doris|clickhouse|duckdb`(SQLite 内置)。LLM 走 litellm 网关,OpenAI / DeepSeek / Anthropic / 任意兼容端点皆可,每节点可分档——强模型做反思裁决,便宜模型做规划与洞察。见 [配置参考](https://nivane.github.io/trove/reference/config.html)。
+数据源按需装驱动:`uv sync --extra postgres|mysql|doris|clickhouse|duckdb`(SQLite 内置);云仓另装 `--extra snowflake|bigquery`。LLM 走 litellm 网关,OpenAI / DeepSeek / Anthropic / 任意兼容端点皆可,每节点可分档——强模型做反思裁决,便宜模型做规划与洞察。见 [配置参考](https://nivane.github.io/trove/reference/config.html)。
 
 管理台(管理端)是同一套栈的另一半:数据源接入、知识库审议、语义模型与主题域、判定规则、行动提案审批、订阅与审计;用户可见的数据源与主题域按人授权。这是知识库的待审批队列——自动沉淀的教训与示例先进待审批,管理员确认后才进入检索:
 

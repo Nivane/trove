@@ -203,6 +203,12 @@ class Capabilities:
     supports_window_functions: bool = True
     supports_transactions: bool = True
     supports_json_type: bool = False
+    # 能不能发 ``EXPLAIN``(``registry.explain`` 读它)。缺省 True:既有方言
+    # 都给得出计划(最不济 sqlite 的 EXPLAIN QUERY PLAN),原行为不变;
+    # 给不出计划的方言(BigQuery 的 GoogleSQL 没有 EXPLAIN 语句)显式声明
+    # False —— 执行计划自省的降级必须是**声明驱动**的,而不是等一条必然
+    # 报错的 SQL 发到线上再归因。
+    supports_explain: bool = True
     dialect: str = ""
 
 

@@ -501,6 +501,11 @@ const TYPES: Record<string, TypeMeta> = {
     label: 'Snowflake',
     example: 'snowflake://user:pass@account/FIN/PUBLIC?warehouse=COMPUTE_WH',
   },
+  bigquery: {
+    value: 'bigquery',
+    label: 'BigQuery',
+    example: 'bigquery://my-project/analytics?location=US&service_account_file=/keys/gcp.json',
+  },
 }
 
 const typeOptions = Object.values(TYPES) as TypeMeta[]

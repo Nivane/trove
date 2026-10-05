@@ -218,7 +218,7 @@ class DatabaseAdapter(ABC):
     async def table_profiles(self) -> dict[str, TableProfile]:
         """批量表级画像,键为表名(设计 §9.2)。
 
-        默认实现只复用 ``get_schema()`` 已经有的事实 —— 七个适配器全都填了
+        默认实现只复用 ``get_schema()`` 已经有的事实 —— 八个适配器全都填了
         ``row_count_estimate``,所以成本轨的第 2 档今天就能覆盖**全部方言**,
         不需要为它新写任何方言 SQL。
 
@@ -251,7 +251,7 @@ class DatabaseAdapter(ABC):
     def dialect() -> str:
         """Return the SQL dialect name for this database type.
 
-        Examples: "sqlite", "postgres", "mysql", "snowflake".
+        Examples: "sqlite", "postgres", "mysql", "snowflake", "bigquery".
         """
         ...
 

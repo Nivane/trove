@@ -1,7 +1,7 @@
 """register_adapter —— 内置方言自注册 + 外部注册路径真能解析。
 
 ``register_adapter()`` 此前是全仓零调用的「死接口」:函数在,但没有任何
-一处代码走它,注册全靠一份硬编码 dict。现在它是**唯一**注册路径,内置 7
+一处代码走它,注册全靠一份硬编码 dict。现在它是**唯一**注册路径,内置 8
 个方言也经它自注册——这两件事都要有断言钉住,否则哪天有人"顺手"把 dict
 字面量加回来,接线又会静默断掉。
 """
@@ -63,10 +63,10 @@ def fake_dialect():
 
 
 def test_builtin_dialects_are_self_registered():
-    """内置 7 方言经 register_adapter() 自注册(import 即就位)。"""
+    """内置 8 方言经 register_adapter() 自注册(import 即就位)。"""
     assert {
         "sqlite", "mysql", "doris", "postgres", "clickhouse", "duckdb",
-        "snowflake",
+        "snowflake", "bigquery",
     } <= set(_ADAPTER_REGISTRY)
 
 
