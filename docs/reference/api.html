@@ -223,12 +223,13 @@ flowchart TB
         </thead>
         <tbody>
           <tr><td class="mono">/v1/admin/users</td><td>用户与 token</td></tr>
-          <tr><td class="mono">/v1/admin/datasources</td><td>数据源注册、测试、KB 初始化</td></tr>
+          <tr><td class="mono">/v1/admin/datasources</td><td>数据源注册、测试、KB 初始化；<span class="mono">…/kb/distill-history</span> 从历史蒸馏（202 长任务）</td></tr>
+          <tr><td class="mono">/v1/admin/actions</td><td>行动模板与提案；<span class="mono">…/proposals/batch</span> 批量批准 / 驳回（逐条结果）</td></tr>
           <tr><td class="mono">/v1/admin/jobs</td><td>定时任务 CRUD 与运行历史</td></tr>
           <tr><td class="mono">/v1/admin/skills</td><td>Skills 草案、确认、tier</td></tr>
           <tr><td class="mono">/v1/admin/drift</td><td>漂移检测与处置</td></tr>
           <tr><td class="mono">/v1/admin/decisions</td><td>决策规则</td></tr>
-          <tr><td class="mono">/v1/admin/audit</td><td>审计日志</td></tr>
+          <tr><td class="mono">/v1/admin/audit</td><td>审计日志；<span class="mono">/refusal-report</span> 拒绝频率报表（窗口天数为参）</td></tr>
           <tr><td class="mono">/v1/admin/memory…</td><td>画像与偏好草稿</td></tr>
         </tbody>
       </table>

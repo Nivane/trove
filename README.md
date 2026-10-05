@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-7200%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-7400%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -287,7 +287,7 @@ uv run python scripts/eval_bird.py --db-id financial \
 ## 开发
 
 ```bash
-uv run pytest                     # 全量 7200+ 测试,mocked LLM,零网络 / 零 key
+uv run pytest                     # 全量 7400+ 测试,mocked LLM,零网络 / 零 key
 uv run pytest tests/workflow/     # 只跑 LangGraph 图与节点
 uv run pytest -m "not slow"       # 跳过慢测试
 ```

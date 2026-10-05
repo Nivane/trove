@@ -110,6 +110,7 @@ flowchart LR
         <tbody>
           <tr><td class="mono">target</td><td>—</td><td>主力模型</td></tr>
           <tr><td class="mono">model_fast</td><td>—</td><td>轻量任务用的快速模型</td></tr>
+          <tr><td class="mono">model_draft</td><td>空 = 关闭</td><td>起草 / 判定类结构化短输出的便宜档（KB 建档注释、扩展草稿、偏好抽取等六处；空 = 逐字节回落）</td></tr>
           <tr><td class="mono">language</td><td class="mono">zh</td><td>回答语言</td></tr>
           <tr><td class="mono">hitl</td><td class="mono">false</td><td>执行前人工确认</td></tr>
           <tr><td class="mono">date_parser</td><td class="mono">true</td><td>相对时间解析</td></tr>
@@ -126,7 +127,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L4">conf/agent.yml:4 <span class="ref-line">target</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L34">conf/agent.yml:34 <span class="ref-line">hitl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L41">conf/agent.yml:41 <span class="ref-line">hitl</span></a>
     </p>
 
     <p>
@@ -138,9 +139,10 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L386">config.py:386 <span class="ref-line">AgentConfig</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L423">config.py:423 <span class="ref-line">confidence_score</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L406">config.py:406 <span class="ref-line">model_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L429">config.py:429 <span class="ref-line">confidence_score</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L56">config.py:56 <span class="ref-line">TracingConfig</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L84">conf/agent.yml:84 <span class="ref-line">reflect_skip</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L91">conf/agent.yml:91 <span class="ref-line">reflect_skip</span></a>
     </p>
 
     <h2 id="memory">memory 段</h2>
@@ -165,8 +167,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L152">conf/agent.yml:152 <span class="ref-line">auto_examples</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L154">conf/agent.yml:154 <span class="ref-line">promotion</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L159">conf/agent.yml:159 <span class="ref-line">auto_examples</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L161">conf/agent.yml:161 <span class="ref-line">promotion</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L58">models.py:58 <span class="ref-line">MemoryConfig</span></a>
     </p>
 
@@ -195,7 +197,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L226">conf/agent.yml:226 <span class="ref-line">gate_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L233">conf/agent.yml:233 <span class="ref-line">gate_enabled</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L177">config.py:177 <span class="ref-line">gate_enabled</span></a>
     </p>
 
@@ -295,7 +297,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L123">conf/agent.yml:123 <span class="ref-line">max_sessions_per_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L130">conf/agent.yml:130 <span class="ref-line">max_sessions_per_user</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L71">config.py:71 <span class="ref-line">RetentionConfig</span></a>
     </p>
 
@@ -332,7 +334,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L537">config.py:537 <span class="ref-line">resolve_env_vars</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L557">config.py:557 <span class="ref-line">resolve_env_vars</span></a>
     </p>
 
     <h2 id="next">继续读</h2>
@@ -354,7 +356,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 8b06b55</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

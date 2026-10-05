@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-7200%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-7400%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -287,7 +287,7 @@ Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 7200+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 7400+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```

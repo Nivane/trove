@@ -56,7 +56,7 @@
           <code>register_adapter(dialect, cls)</code>
           <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L45">registry.py:45 <span class="ref-line">register_adapter</span></a>
           是<strong>唯一</strong>入口：内置的 6 个方言在模块末尾走同一函数自我注册
-          <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L503">registry.py:503 <span class="ref-line">内置自我注册</span></a>——
+          <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L516">registry.py:516 <span class="ref-line">内置自我注册</span></a>——
           没有任何「内部第二条注册路径」。新增数据源 = 实现 <code>DatabaseAdapter</code> + 调一次这个函数。
           文件末尾还留着注释掉的一行 <code># register_adapter("snowflake", SnowflakeAdapter)</code> 作为样例——
           这是仓库里少见的「以未实现示例当文档」的写法，但它比任何文档都接近真实接法。
@@ -335,7 +335,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

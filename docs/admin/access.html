@@ -148,6 +148,25 @@
       </ol>
     </figure>
 
+    <p>
+      审计页还带一张<strong>拒绝频率报表</strong>卡（窗口 7 / 30 / 90 天）：
+      哪些问题被问得最多却答不了、按拒绝原因与 MISS 类型的分布、
+      以及「因关系未声明被拒」的<strong>单独子集</strong>——它只数关系类拒绝，
+      不把同一问题的其它拒绝混进来。数据来自 <code>query.refused</code> 审计行，
+      报表是纯聚合：回答「哪些问题答不了」，不带用户归属。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">读不到就说不读不到</span>
+      <div>
+        <p>审计库不可读时报表<strong>显式标「不可用」</strong>，绝不铺一排 0——
+        0 与「没读到」是两条不同的信息，查不成的绿是假绿。计数精确、明细超 2000 条标 capped。</p>
+        <p>覆盖面有一行如实自述：经对话链路的拒绝轮（Web/API 聊天、MCP、定时任务）都进表；
+        <strong>不含</strong>直接编译调用（<code>POST /v1/semantic/query</code> 不过会话管线）、
+        未启用鉴权的本地运行、评测运行（刻意排除）。</p>
+      </div>
+    </div>
+
     <h2 id="settings">系统设置：运行时开关</h2>
 
     <p>
@@ -206,6 +225,22 @@
         配置目录注入，不要写进仓库文件。详见<a href="../ops/deployment.html">部署与运维实操</a>。
       </p>
     </div>
+
+    <p>
+      还有第三档：<strong>起草模型</strong>（页面上的「起草模型」输入框，配置键
+      <code>llm.draft_model</code> / <code>agent.yml</code> 的 <code>model_draft</code>）。
+      它是「起草 / 判定类结构化短输出」的统一便宜档，收编六处调用：
+      KB 建档注释、拒绝后的模型扩展草稿、偏好抽取、意图判别、追问改写、图表判定。
+      这些调用要的是短而结构化的输出，推理模型在这里白烧 reasoning tokens、
+      还会挤占正文的 max_tokens；换一个便宜的对话模型通常更合适。
+    </p>
+
+    <p>
+      <strong>留空 = 关闭</strong>：六处全部逐字节回落到改造前的选模（节点档 → 复杂度分档），
+      已部署的系统不需要做任何事。刻意<strong>不</strong>收编会话摘要、规划与答案合成——
+      起草档的语义是「生产 KB 待审资产」，当杂物抽屉用会让这一档名不副实；
+      判定核心（decisions）的选模也不在其中，那里查找的是语义模型而不是 LLM。
+    </p>
 
     <h2 id="ops">质量与成本运营台</h2>
 
