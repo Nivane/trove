@@ -61,7 +61,7 @@ flowchart TB
     end
 
     LLM["Models · trove/llm<br/>LLM gateway"]
-    DS["Data sources<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB<br/>SQLite"]
+    DS["Data sources<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]
     STATE["State · trove/storage<br/>PostgreSQL / SQLite<br/>sessions · tasks · checkpoints<br/>query log · lineage"]
 
     UI --> WF
@@ -179,7 +179,7 @@ The demo datasource is built in, but conversations still need LLM credentials (p
 2. **Model** — run `/kb init`: it drafts the initial semantic model (datasets, fields, metrics) from your live schema. No model, no answers — Trove refuses politely until you do, which is the boundary working.
 3. **Ask** — then ask naturally. When Trove refuses, confirm the drafted model extension to extend coverage and re-answer in one step.
 
-Under server deployment the same flow runs in the admin console (datasource registration → KB init → draft review). Step-by-step guide for MySQL / Doris / PostgreSQL / ClickHouse / DuckDB, via console or local REPL: [datasource onboarding](https://nivane.github.io/trove/guide/datasource.html).
+Under server deployment the same flow runs in the admin console (datasource registration → KB init → draft review). Step-by-step guide for MySQL / Doris / PostgreSQL / ClickHouse / DuckDB, plus the cloud warehouses Snowflake / BigQuery, via console or local REPL: [datasource onboarding](https://nivane.github.io/trove/guide/datasource.html).
 
 ### Docker
 
@@ -212,7 +212,7 @@ Every row has a deeper version on the docs site, anchored to source:
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | Org-wide methodology: `required` injected / `available` on demand / `validator` assertions | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; significance, confidence and seasonal baselines come from a recomputable statistics kit; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) · [noise band](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
-| Six datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
+| Eight datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB / Snowflake / BigQuery, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
 | Interfaces and governance | Web UI, REST (`/v1`), MCP, CLI; admin review, audit, observability | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
 Drivers install on demand: `uv sync --extra postgres|mysql|doris|clickhouse|duckdb` (SQLite is built in); cloud warehouses use `--extra snowflake|bigquery`. The LLM side goes through a litellm gateway — OpenAI / DeepSeek / Anthropic / any compatible endpoint — with per-node tiers, so a strong model can adjudicate reflection while a cheap one plans and writes insights. See the [configuration reference](https://nivane.github.io/trove/reference/config.html).

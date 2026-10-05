@@ -61,7 +61,7 @@ flowchart TB
     end
 
     LLM["模型 · trove/llm<br/>LLM 网关"]
-    DS["数据源<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB<br/>SQLite"]
+    DS["数据源<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]
     STATE["状态 · trove/storage<br/>PostgreSQL / SQLite<br/>会话 · 任务 · 检查点<br/>查询日志 · 谱系"]
 
     UI --> WF
@@ -179,7 +179,7 @@ demo 数据源是内置的,但对话仍需要 LLM 凭证(项目根 `.env` 或环
 2. **建模** —— 运行 `/kb init`:它基于你的实时 schema 起草初始语义模型(datasets / fields / metrics)。没有模型就没有答案,它会礼貌地拒绝,直到你完成建模——这正是边界在工作。
 3. **提问** —— 然后自然提问。当它拒绝时,确认它起草的模型扩展,即可一步扩大覆盖并重答。
 
-服务端部署下,同一流程在管理端完成(数据源注册 → KB init → 草稿审批)。逐步指南(MySQL / Doris / PostgreSQL / ClickHouse / DuckDB,含管理台与本地 REPL 两条路径):[接入数据源](https://nivane.github.io/trove/guide/datasource.html)。
+服务端部署下,同一流程在管理端完成(数据源注册 → KB init → 草稿审批)。逐步指南(MySQL / Doris / PostgreSQL / ClickHouse / DuckDB,以及云仓 Snowflake / BigQuery,含管理台与本地 REPL 两条路径):[接入数据源](https://nivane.github.io/trove/guide/datasource.html)。
 
 ### Docker
 
@@ -212,7 +212,7 @@ docker compose down
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | 组织级方法论:`required` 注入 / `available` 按需 / `validator` 断言 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;显著性、置信与季节基线出自可复算的统计器械;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [噪声带](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
-| 六种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
+| 八种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB / Snowflake / BigQuery,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
 | 接口与治理 | Web UI、REST(`/v1`)、MCP、CLI;管理端审批、审计、可观测 | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
 数据源按需装驱动:`uv sync --extra postgres|mysql|doris|clickhouse|duckdb`(SQLite 内置);云仓另装 `--extra snowflake|bigquery`。LLM 走 litellm 网关,OpenAI / DeepSeek / Anthropic / 任意兼容端点皆可,每节点可分档——强模型做反思裁决,便宜模型做规划与洞察。见 [配置参考](https://nivane.github.io/trove/reference/config.html)。
