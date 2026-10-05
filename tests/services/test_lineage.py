@@ -129,6 +129,23 @@ class TestLineageService:
         assert await svc.table_upstream("financial", "loan") == []
         assert await svc.table_downstream("financial", "loan") == []
 
+    async def test_query_weights_counts_runs_excludes_definitions(self, tmp_path):
+        """历史蒸馏的排序权重:只计真实执行,定义条目(def:)不算「被问过」。"""
+        svc = LineageService(tmp_path)
+        sql = "SELECT amount FROM loan"
+        for _ in range(2):
+            await svc.record_query(sql, "financial", dialect="sqlite")
+        await svc.ingest_definition(
+            "CREATE VIEW v AS SELECT amount FROM loan", "financial",
+            dialect="sqlite",
+        )
+        weights = await svc.query_weights("financial")
+        assert weights[normalization_key(sql)] == 2
+        assert not any(k.startswith("def:") for k in weights)
+        assert await svc.query_weights("other") == {}
+        assert await svc.query_weights(
+            "financial", since="2999-01-01T00:00:00+00:00") == {}
+
 
 async def _sync_row(svc: LineageService) -> dict:
     """lineage_sync 里那条同步记录(直接读库,不走服务接口)。"""

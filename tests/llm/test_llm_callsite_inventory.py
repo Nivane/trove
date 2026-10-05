@@ -59,7 +59,8 @@ _METHODS = frozenset({"chat", "chat_full", "chat_stream", "embedding"})
 _KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 
 #: 全量调用点(2026-09-29 设计稿 §2 盘点 32 处;计入 scripts、补上它漏计的
-#: ``embedding`` 后共 34 处;B6 假设层起草 +1 → 35 处)。
+#: ``embedding`` 后共 34 处;B6 假设层起草 +1 → 35 处;A4 历史蒸馏 CLI +1
+#: → 36 处,形状照 distill_lessons:render + build_distill_prompt)。
 CALL_SITES: dict[str, str] = {
     # ── agent 会话层:提示词都来自 render ──
     "trove/agent/session.py::SessionManager.compact_session#1": "Av",
@@ -109,6 +110,8 @@ CALL_SITES: dict[str, str] = {
     "trove/workflow/nodes/semantics.py::make_semantics.semantics#1": "A",
     # ── 脚本:批量蒸馏,走 build_distill_prompt ──
     "scripts/distill_lessons.py::main#1": "Ab",
+    # 历史蒸馏的教训提炼(材料来自行为记录,提示词管线与上行同源)
+    "scripts/distill_history.py::main#1": "Ab",
 }
 
 

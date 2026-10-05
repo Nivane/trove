@@ -9,6 +9,7 @@ import pytest
 from trove.core.errors import AuthError
 from trove.services.auth.passwords import hash_password, verify_password
 from trove.services.auth.service import AuthService
+from trove.services.auth.store import AppDbStore
 
 
 @pytest.fixture
@@ -376,3 +377,33 @@ async def test_audit_append_and_list(auth):
     assert len(anonymous) == 1
     assert anonymous[0]["details"] == {"reason": "bad password"}
     assert all(e["user_id"] == u["id"] for e in logins if e["user_id"] is not None)
+
+
+async def test_aggregate_query_audit_dedupes_filters_and_keeps_privacy(tmp_path):
+    """历史蒸馏的审计聚合读:按 (question, sql) 去重计数,产物不带用户归属。"""
+    store = AppDbStore(tmp_path / "app.db")
+    ts = datetime.now(timezone.utc).isoformat()
+    details = {"question": "哪个地区贷款金额最高?", "sql": "SELECT 1",
+               "verdict": "OK", "datasource": "demo"}
+    for username in ("alice", "bob"):
+        await store.append_audit(ts=ts, user_id=None, username=username,
+                                 action="query.execute", details=details)
+    await store.append_audit(ts=ts, user_id=None, username="bob",
+                             action="query.execute",
+                             details={"question": "其他", "sql": "SELECT 2",
+                                      "datasource": "other"})
+    await store.append_audit(ts=ts, user_id=None, username="bob",
+                             action="auth.login", details=details)
+
+    rows = await store.aggregate_query_audit(datasource="demo")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["question"] == "哪个地区贷款金额最高?"
+    assert row["seen"] == 2 and row["last_seen"] == ts
+    # 隐私边界:它回答「问过什么」,不回答「谁问的」
+    assert "username" not in row and "user_id" not in row
+    # since 只用字符串比较(库里的时间只有一种格式)
+    assert await store.aggregate_query_audit(
+        datasource="demo", since="2999-01-01T00:00:00+00:00") == []
+    # 不限定数据源 → 两个数据源各一条;非 query.execute 的动作不算
+    assert len(await store.aggregate_query_audit()) == 2

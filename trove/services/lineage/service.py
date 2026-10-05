@@ -529,6 +529,40 @@ class LineageService:
         out.sort(key=lambda t: (-t["queries"], t["table"].lower()))
         return out
 
+    async def query_weights(
+        self, datasource: str, *, since: str | None = None,
+    ) -> dict[str, int]:
+        """``normalization_key(sql) → runs`` —— 历史蒸馏的排序权重(只读)。
+
+        与 ``asked_tables`` 同一纪律:只计**真实执行的查询**(``def:`` 前缀
+        的定义条目是管理端写的声明,不是被问过的问题,计进去会把「被问了
+        但没建模」这件事掺上管理员自己刚写的定义)。lineage 侧只有 SQL 与
+        频次、没有提问原文,所以它单独不可蒸馏——在蒸馏里只当权重:同一批
+        候选里「被执行得更多」的 SQL 排前面,截断时先保住它们。
+        ``since`` 过滤 ``last_seen``(ISO-8601 字符串比较,同一口径)。
+        """
+        await self.ensure_synced(datasource)
+        sql = (
+            "SELECT shard, runs FROM lineage_query_log "
+            "WHERE datasource = ? AND shard NOT LIKE 'def:%'"
+        )
+        params: list[Any] = [datasource]
+        if since:
+            sql += " AND last_seen >= ?"
+            params.append(since)
+        conn = await self._conn()
+        try:
+            async with await conn.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+        finally:
+            await conn.close()
+        out: dict[str, int] = {}
+        for shard, runs in rows:
+            key = str(shard or "")
+            if key:
+                out[key] = out.get(key, 0) + int(runs or 0)
+        return out
+
     async def table_columns(self, datasource: str, table: str) -> list[str]:
         """Column names observed for one table (union, first-seen order).
 

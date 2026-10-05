@@ -136,6 +136,17 @@ class EpisodeStore:
         await self._ensure_schema()
         return self._backend
 
+    async def dispose(self) -> None:
+        """真正的资源释放(短生命周期所有者的退出路径)。
+
+        ``close()`` 只是结束操作作用域,连接还在 —— aiosqlite 的 worker
+        线程是常驻非 daemon,不 dispose 会让进程在 ``asyncio.run`` 返回
+        后挂住不退出。长生命周期所有者(main.py 的 MemoryService)按应用
+        生命周期管理;短生命周期调用方(历史蒸馏的 collect_history)用完
+        即调。
+        """
+        await self._backend.dispose()
+
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
@@ -358,6 +369,50 @@ class EpisodeStore:
             ))
         out.sort(key=lambda e: e.score, reverse=True)
         return out[:limit]
+
+    async def iter_episodes(
+        self, datasource: str, *, since: str | None = None, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """跨用户读取一个数据源的 episode(历史蒸馏;**管理端语义**)。
+
+        与 ``search`` 的差别是刻意的:检索路径永远锁在 user 自己的行上
+        (把别人的口径当上下文是错的),而蒸馏是管理端触发的批量行为
+        ——「用户的历史」指该数据源上所有用户的行为记录,不分人。蒸馏
+        产物本身不带用户归属(隐私边界,见 ``kb/history_distill.py``)。
+
+        ``since`` 走 ISO-8601 字符串比较(与 lineage 的 ``asked_tables``
+        同一口径:库里的时间只有一种格式,字符串比较即精确)。按
+        ``updated_at`` 倒序取 ``limit`` 条。
+        """
+        conn = await self._conn()
+        try:
+            sql = (
+                "SELECT question, sql, dialect, verdict, correction_history, "
+                "matched_tables, updated_at "
+                "FROM episodes WHERE datasource = ?"
+            )
+            params: list[Any] = [datasource]
+            if since:
+                sql += " AND updated_at >= ?"
+                params.append(since)
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+            cursor = await conn.execute(sql, params)
+            rows = await cursor.fetchall()
+        finally:
+            await conn.close()
+        return [
+            {
+                "question": str(r[0] or ""),
+                "sql": str(r[1] or ""),
+                "dialect": str(r[2] or ""),
+                "verdict": str(r[3] or ""),
+                "correction_history": _json_list(r[4]),
+                "matched_tables": _json_list(r[5]),
+                "updated_at": str(r[6] or ""),
+            }
+            for r in rows
+        ]
 
     # ── Lifecycle ─────────────────────────────────────────
 
