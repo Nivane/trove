@@ -1672,6 +1672,9 @@ class SessionManager:
         await self._capture_candidates(final)
         # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
         await self._audit_query(session, final)
+        # 拒绝审计(独立 action):拒绝轮为什么被拒 —— 报表的可靠信号。
+        # 紧跟 query.execute:同一汇合点,四条运行路径都走 _record_exchange。
+        await self._audit_refusal(session, final)
         # 授权与脱敏审计:被拦了 / 改了哪些字段 / 谁看了原文(设计 §6.3)。
         # 与上一行同一个汇合点 —— 四条运行路径都走 _record_exchange。
         await self._audit_authz(session, final)
@@ -1799,6 +1802,49 @@ class SessionManager:
             )
         except Exception as e:  # 审计失败绝不影响查询链路
             logger.debug("query audit skipped (%s): %s", type(e).__name__, e)
+
+    async def _audit_refusal(self, session: Session, final: WorkflowState) -> None:
+        """拒绝审计 —— ``query.refused`` 写入 audit_log。
+
+        ``query.execute`` 对拒绝轮也会写一行,但它答不了「**为什么**被拒」:
+        拒绝轮的卫生清理把 sql/verdict 等清零,那一行看起来与一次空运行无
+        异。独立 action 带 reason(与 compile_miss 的 reason/component),
+        拒绝频率报表据此聚合「最常问但答不了的问题」;relationship 类
+        miss(基数未声明/扇出/多路径/不连通)在报表里单列 —— 它们是
+        「关系未声明」的信号,不是普通缺词表。
+
+        best-effort:写失败绝不阻断回答;无 auth 服务(CLI/嵌入)跳过;
+        非拒绝轮不写(``final.refusal`` 为空即返回)。
+        """
+        if self._auth is None:
+            return
+        refusal = final.refusal
+        if not refusal:
+            return
+        try:
+            details: dict[str, Any] = {
+                "session_id": final.session_id,
+                "run_id": final.run_id,
+                "question": (final.question or "")[:2000],
+                "datasource": final.datasource or "",
+                "reason": str(refusal.get("reason") or ""),
+            }
+            topic = refusal.get("topic")
+            if topic:
+                details["topic"] = str(topic)[:200]
+            miss = refusal.get("compile_miss")
+            if isinstance(miss, dict):
+                if miss.get("reason"):
+                    details["miss_reason"] = str(miss["reason"])[:120]
+                if miss.get("component"):
+                    details["miss_component"] = str(miss["component"])[:300]
+            await self._auth.record_audit(
+                "query.refused",
+                user=await self._audit_user(session, final),
+                details=details,
+            )
+        except Exception as e:  # 审计失败绝不影响查询链路
+            logger.debug("refusal audit skipped (%s): %s", type(e).__name__, e)
 
     async def _audit_authz(self, session: Session, final: WorkflowState) -> None:
         """授权 / 脱敏审计 —— ``authz.deny`` · ``authz.table_warn`` ·

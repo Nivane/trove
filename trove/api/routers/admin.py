@@ -11,6 +11,9 @@ import asyncio
 import dataclasses
 import logging
 import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -359,6 +362,171 @@ async def list_audit(
     )
     total = await _auth(request).count_audit(user_id=user_id, action=action)
     return {"audit": entries, "total": total}
+
+
+# ── 拒绝频率报表(query.refused 的只读投影) ────────────────
+
+#: 关系未声明类的 compile_miss(声明指引见 refuse.py 的 _MISS_COPY):基数
+#: 未声明 / 扇出 / 多路径 / 不连通。A2 决策(d):不做「关系声明草稿」(错基数
+#: = 静默算错,代价不对称),替代就是把这类拒绝**单列出来**交回管理员的
+#: 可见决策 —— 这张报表就是那个「可见」。
+_RELATION_MISS_REASONS = (
+    "unknown_cardinality", "fan_out", "ambiguous_join_path", "unreachable_table",
+)
+
+#: 聚合投影的读取上限:total 用 COUNT 报精确值,榜单按最新这么多行聚合;
+#: 超出时 capped=True(榜单计数是下界),由前端显示为「≥」。
+_REFUSAL_SCAN_MAX = 2000
+_REFUSAL_TOP_N = 20
+_REFUSAL_READ_TIMEOUT_S = 8.0
+
+
+def _refusal_coverage_notes() -> tuple[str, str]:
+    """覆盖面的如实自述(zh, en)—— 报表不带这行,读到的人会以为它是全量。
+
+    MCP 的 ask_data 走共享 SessionManager(与 Web/API 聊天同一管线,鉴权
+    开启时同写审计),所以**在覆盖面内**;不在的是三类:直接编译调用
+    (POST /v1/semantic/query 不过会话管线)、未启用鉴权的本地运行
+    (CLI/嵌入没有审计库)、评测运行(eval 产物刻意不进审计,反作弊红线)。
+    """
+    zh = (
+        "覆盖范围:经对话链路的拒绝轮(Web/API 聊天、MCP ask_data、定时任务)都进本表。"
+        "不含:直接编译调用(POST /v1/semantic/query 不过会话管线)、"
+        "未启用鉴权的本地运行(CLI/嵌入无审计库)、评测运行(刻意排除)。"
+    )
+    en = (
+        "Coverage: refusals from the chat pipeline (web/API chat, MCP "
+        "ask_data, scheduled jobs) are recorded here. Not covered: direct "
+        "compile calls (POST /v1/semantic/query bypasses the session "
+        "pipeline), local runs without auth (CLI/embedded have no audit "
+        "store), and evaluation runs (deliberately excluded)."
+    )
+    return zh, en
+
+
+def _refusal_report_projection(
+    entries: list[dict[str, Any]], *, total: int, capped: bool,
+) -> dict[str, Any]:
+    """query.refused 行 → 报表投影(纯函数,单测直接钉)。
+
+    - ``top_questions``:按问题(小写归一)分组、count 降序(同数按原文
+      升序稳定);空问题不进榜单(total 里算,但榜单回答「问了什么」);
+    - ``by_reason`` / ``by_miss``:分布计数(降序、同数按 key 升序);
+    - ``relationship_missing``:miss_reason 落在关系类的**条目子集**单独
+      聚合 —— count 与榜单都只数关系类拒绝,不把同一个问题的其它拒绝
+      混进来。
+    """
+    relation_set = set(_RELATION_MISS_REASONS)
+
+    def _group(subset: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for e in subset:
+            q = str(e.get("question") or "").strip()
+            if not q:
+                continue
+            g = groups.setdefault(q.lower(), {
+                "question": q, "count": 0, "reasons": set(),
+                "miss_reasons": set(), "datasources": set(), "last_seen": "",
+            })
+            g["count"] += 1
+            if e.get("reason"):
+                g["reasons"].add(str(e["reason"]))
+            if e.get("miss_reason"):
+                g["miss_reasons"].add(str(e["miss_reason"]))
+            if e.get("datasource"):
+                g["datasources"].add(str(e["datasource"]))
+            if str(e.get("last_seen") or "") > g["last_seen"]:
+                g["last_seen"] = str(e["last_seen"])
+        ordered = sorted(groups.values(), key=lambda g: (-g["count"], g["question"]))
+        return [{
+            "question": g["question"], "count": g["count"],
+            "reasons": sorted(g["reasons"]),
+            "miss_reasons": sorted(g["miss_reasons"]),
+            "datasources": sorted(g["datasources"]),
+            "last_seen": g["last_seen"],
+        } for g in ordered]
+
+    def _distribution(field: str) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for e in entries:
+            v = str(e.get(field) or "")
+            if v:
+                counts[v] = counts.get(v, 0) + 1
+        return [
+            {"reason": k, "count": v}
+            for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+
+    relation_entries = [
+        e for e in entries
+        if str(e.get("miss_reason") or "") in relation_set
+    ]
+    return {
+        "total": total,
+        "capped": capped,
+        "by_reason": _distribution("reason"),
+        "by_miss": _distribution("miss_reason"),
+        "top_questions": _group(entries)[:_REFUSAL_TOP_N],
+        "relationship_missing": {
+            "reasons": list(_RELATION_MISS_REASONS),
+            "count": len(relation_entries),
+            "top_questions": _group(relation_entries)[:_REFUSAL_TOP_N],
+        },
+    }
+
+
+@router.get("/admin/audit/refusal-report")
+async def refusal_report(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=90),
+    admin: dict = Depends(require_admin_or_analyst),
+) -> dict:
+    """拒绝频率报表:最常问但答不了的问题 + 因关系未声明被拒单列。
+
+    数据不可读时如实报 ``available: False``(绝不返回假零 —— 查不成的
+    绿是假绿);``coverage_note`` 写明哪些路径的拒绝进表、哪些不进。
+    问句原文来自审计库(query.refused 的记账),报表只做聚合。
+    """
+    zh, en = _refusal_coverage_notes()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    base: dict[str, Any] = {
+        "available": True, "window_days": days, "since": since,
+        "total": 0, "capped": False, "by_reason": [], "by_miss": [],
+        "top_questions": [],
+        "relationship_missing": {
+            "reasons": list(_RELATION_MISS_REASONS), "count": 0,
+            "top_questions": [],
+        },
+        "coverage_note": zh, "coverage_note_en": en,
+    }
+
+    def _degraded(note: str) -> dict[str, Any]:
+        return {
+            **base, "available": False, "total": None, "note": note,
+            "relationship_missing": {
+                **base["relationship_missing"], "count": None,
+            },
+        }
+
+    store = getattr(_auth(request), "store", None)
+    if store is None or not hasattr(store, "aggregate_refusal_audit"):
+        return _degraded("audit store unavailable")
+    try:
+        data = await asyncio.wait_for(
+            store.aggregate_refusal_audit(
+                since=since, scan_limit=_REFUSAL_SCAN_MAX,
+            ),
+            timeout=_REFUSAL_READ_TIMEOUT_S,
+        )
+    except Exception as e:
+        logger.warning("refusal report read failed: %s", e)
+        return _degraded(f"audit read failed: {type(e).__name__}")
+    base.update(_refusal_report_projection(
+        list(data.get("entries") or []),
+        total=int(data.get("total") or 0),
+        capped=bool(data.get("capped")),
+    ))
+    return base
 
 
 # ── Cross-user sessions (admin view) ─────────────────────
@@ -887,7 +1055,7 @@ async def kb_init_datasource_async(name: str, request: Request,
     from trove.services.kb.init_pipeline import init_kb
     from trove.services.kb.init_tasks import init_tasks
 
-    task = init_tasks.create(name, ds_id)
+    task = init_tasks.create(name, ds_id, kind="init")
     if task is None:
         raise HTTPException(
             status_code=409,
@@ -980,7 +1148,7 @@ async def kb_reload_datasource_async(name: str, request: Request,
         raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
     from trove.services.kb.init_tasks import init_tasks
 
-    task = init_tasks.create(name)
+    task = init_tasks.create(name, kind="reload")
     if task is None:
         raise HTTPException(
             status_code=409,
@@ -1013,6 +1181,162 @@ async def kb_reload_status_datasource(name: str, request: Request,
 
     task = init_tasks.by_datasource(name)
     if task is None:
+        return {
+            "status": "idle",
+            "task_id": None,
+            "datasource": name,
+            "stage": None,
+            "progress": None,
+            "detail": None,
+            "summary": None,
+            "error": None,
+        }
+    return {
+        "task_id": task["id"],
+        "datasource": name,
+        "status": task["status"],
+        "stage": task["stage"],
+        "progress": task["progress"],
+        "detail": task["detail"],
+        "summary": task["summary"],
+        "error": task["error"],
+    }
+
+
+# ── 历史蒸馏(管理端触发;与 /kb init 共用进程内任务范式) ──
+
+
+@router.post("/admin/datasources/{name}/kb/distill-history", status_code=202)
+async def kb_distill_history_async(name: str, request: Request,
+                                   body: dict | None = None,
+                                   admin: dict = Depends(require_admin)) -> dict:
+    """异步蒸馏行为记录 → 待审 KB 资产(示例 / 语义候选 / 教训,全部 pending)。
+
+    与 ``/kb/init``、``/kb/reload`` 共用 init_tasks 注册表(按 datasource
+    键控)——同源已有 running 任务时 409:蒸馏与初始化写同一棵 KB 目录,
+    共享互斥是特性不是限制。
+
+    空输入(没有可蒸馏的历史)是**任务失败**而不是成功 —— 蒸馏一圈零产出
+    还报绿,管理者会以为资产已在路上(照「查不成的绿是假绿」纪律)。
+    确定性部分(示例/语义候选)先写;教训提炼失败时确定性产物保留、任务
+    如实报错(与 CLI 同一语义:确定性部分已写入)。
+    """
+    if not _registry(request).is_registered(name):
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    _, ds_id = _ds_id_or_404(request, name)
+    from trove.services.kb.history_distill import MAX_DISTILL_PER_RUN
+    from trove.services.kb.init_tasks import init_tasks
+
+    body = body or {}
+    raw_limit = body.get("limit")
+    try:
+        limit = (int(raw_limit) if raw_limit is not None
+                 else MAX_DISTILL_PER_RUN)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    limit = min(limit, MAX_DISTILL_PER_RUN)
+    since = str(body.get("since") or "")
+    dry_run = bool(body.get("dry_run"))
+
+    task = init_tasks.create(name, ds_id, kind="distill")
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"KB task already running for datasource {name}",
+        )
+    task_id = task["id"]
+    kb = _kb(request)
+    llm_gateway = request.app.state.llm_gateway
+    config = request.app.state.config
+    audit_store = _auth(request).store
+    lock = KbInitLock(kb.kb_dir / ".locks")
+
+    async def _run() -> None:
+        try:
+            from trove.services.kb.history_distill import (
+                collect_history,
+                run_distill,
+                run_lesson_distill,
+            )
+            home = Path(str(config.home)).expanduser()
+            project_root = kb.kb_dir.parent.parent
+            with lock.acquire(ds_id):
+                init_tasks.update(task_id, stage="collect", progress=10,
+                                  detail=f"扫描行为记录(上限 {limit} 条)")
+                records = await collect_history(
+                    name, home_dir=home, project_root=project_root,
+                    auth_store=audit_store, since=since, limit=limit,
+                )
+                if not records:
+                    init_tasks.fail(
+                        task_id,
+                        f"没有可蒸馏的历史(数据源 {name} 的 episodes/审计/"
+                        "lineage 都为空),未写入任何资产。")
+                    return
+                init_tasks.update(task_id, stage="distill", progress=40,
+                                  detail=f"{len(records)} 条记录 → 示例/语义候选")
+                summary = await run_distill(
+                    kb, name, records, dry_run=dry_run, max_items=limit)
+                init_tasks.update(task_id, stage="lessons", progress=70,
+                                  detail="教训提炼(LLM)—— 失败/修正记录")
+                lesson_out = await run_lesson_distill(
+                    kb, name, records, llm=llm_gateway,
+                    model=config.model_for_draft("history_distill", "complex"),
+                    dry_run=dry_run, max_items=limit,
+                )
+                if lesson_out["error"]:
+                    init_tasks.fail(
+                        task_id,
+                        "教训提炼失败(示例/语义候选部分已写入):"
+                        f"{lesson_out['error']}")
+                    return
+                summary.update({
+                    "records": len(records),
+                    "lessons": lesson_out["lessons"] - lesson_out["duplicates"],
+                    "lessons_duplicate": lesson_out["duplicates"],
+                    "lessons_parse_failed": lesson_out["parse_failed"],
+                    "lessons_noise": lesson_out["noise"],
+                    "limit": limit,
+                    "dry_run": dry_run,
+                })
+            init_tasks.done(task_id, summary)
+            await _audit(request, "kb.distill_history", admin, 200, {
+                "name": name, "dry_run": dry_run, "limit": limit,
+                "records": summary.get("records"),
+                "examples": summary.get("examples"),
+                "candidates": summary.get("candidates"),
+                "lessons": summary.get("lessons"),
+            })
+        except KbInitBusy as e:
+            init_tasks.fail(task_id, f"KB task already running: {e}")
+        except DatasourceError as e:
+            init_tasks.fail(task_id, str(e))
+        except Exception as e:
+            logger.warning("Async history distill failed (%s): %s", name, e)
+            init_tasks.fail(task_id, f"history distill failed: {e}")
+        finally:
+            init_tasks.release_background(task_id)
+
+    bg = asyncio.create_task(_run())
+    init_tasks.bind_background(task_id, bg)
+    return {"task_id": task_id, "status": "running", "datasource": name}
+
+
+@router.get("/admin/datasources/{name}/kb/distill-history/status")
+async def kb_distill_history_status(name: str, request: Request,
+                                    admin: dict = Depends(require_admin)) -> dict:
+    """蒸馏任务状态(前端轮询)。无**蒸馏**任务 → idle。
+
+    与 init/reload 的 status 不同,这里按 ``kind`` 过滤:注册表按
+    datasource 键控,刚跑完的 init 任务不能出现在蒸馏的完成态里(否则
+    轮询会把别人的 summary 当自己的)。
+    """
+    from trove.services.kb.init_tasks import init_tasks
+
+    task = init_tasks.by_datasource(name)
+    if task is None or task.get("kind") != "distill":
         return {
             "status": "idle",
             "task_id": None,

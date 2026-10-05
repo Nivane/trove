@@ -31,6 +31,9 @@ ANALYST_READ_SURFACE = {
     ("GET", "/v1/admin/todos"),
     ("GET", "/v1/admin/coverage"),
     ("GET", "/v1/admin/audit"),
+    # 拒绝频率报表 = ``/v1/admin/audit`` 同表(同守卫)的只读投影:审计页
+    # 卡片端到端点得开;不新增数据面(读的还是 analyst 本就能读的审计行)。
+    ("GET", "/v1/admin/audit/refusal-report"),
     ("GET", "/v1/admin/sessions"),
     ("GET", "/v1/admin/sessions/{session_id}/checkpoints"),
     ("GET", "/v1/admin/sessions/{session_id}/checkpoints/{checkpoint_id}"),
