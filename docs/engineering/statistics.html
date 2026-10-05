@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 统计与噪声带：为什么判定用中位数与 MAD 而不是均值与标准差，为什么统计器械是纯 stdlib（可复算承诺不外包），为什么「算不出」返回 None 而不是 0，为什么刻意不输出 p 值，以及「位置分数（非概率）」限定语的由来。">
+<title>统计与噪声带 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>统计与噪声带
+      </div>
+      <h1>统计与噪声带</h1>
+      <p class="lede">
+        <a href="decision-engine.html">判定内核</a>的条件 DSL 回答「变化大不大」——
+        但「大」是<strong>相对于什么</strong>的？两个数据点的对比没有噪声概念：基期恰好偏低，
+        任何回升都像显著。这页讲噪声带背后的统计器械：为什么是稳健统计（中位数与 MAD）、
+        为什么它用纯 stdlib 写成、为什么「算不出」绝不返回 0、为什么刻意<strong>不输出 p 值</strong>，
+        以及「位置分数（非概率）」这句限定语的由来。它是纯函数，零 LLM、零 I/O——
+        结论永远能被重新算出来。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">两个数据点的对比没有噪声概念</h2>
+
+    <p>
+      一条「变化超过 10% 就告警」的规则，默认了一个未经检验的前提：这个指标的日常波动远小于 10%。
+      对一个平稳的指标，这个前提成立；对一个本就在 ±15% 之间摆动的指标，这条规则<strong>每天都会告警</strong>——
+      告警疲劳从此开始。反过来，若上调阈值到 30% 迁就波动，平稳的指标上又漏掉了真实的问题。
+    </p>
+
+    <p>
+      缺的不是阈值，是<strong>参照系</strong>：这个指标过去是什么样？噪声带就是这个参照系——
+      把历史同粒度的块（月、周、日）当成样本，用它们的分布回答「当期值算不算异常」。
+      它把「多大算大」从拍脑袋的数字，换成一条有样本量、有方法、可复算的陈述。
+    </p>
+
+    <h2 id="blocks">块：噪声带的样本单位</h2>
+
+    <p>
+      噪声带由规则的 <code>seasonal</code> 声明定义，它不是第二个窗口，而是<strong>块规格</strong>——
+      「这条规则的历史基线由哪些块构成」：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>含义</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>grain</code></td>
+            <td>块粒度：<code>day</code> / <code>week</code> / <code>month</code>；留空由窗口形状推导</td>
+            <td>粒度对齐是<strong>硬性</strong>的：声明与窗口形状不一致时拒绝确认——宁可不判，不判错</td>
+          </tr>
+          <tr>
+            <td><code>mode</code></td>
+            <td><code>trailing</code>（近期连续块）或 <code>same_phase</code>（去年同期，处理季节相位）</td>
+            <td>「上个月 vs 去年同月」的对照系不同：一个吸收近期漂移，一个消除季节性</td>
+          </tr>
+          <tr>
+            <td><code>lookback</code></td>
+            <td>历史块个数，默认 12</td>
+            <td>只计<strong>历史</strong>块——被测窗口不参与，混入会自我稀释（当期越异常，带被撑得越宽）</td>
+          </tr>
+          <tr>
+            <td><code>k</code></td>
+            <td>噪声带宽（稳健 z 单位），默认 3.5</td>
+            <td>Iglewicz-Hoaglin 推荐的稳健离群阈值——不是拍的新数字，是文献里的惯例</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    W["被测窗口<br/>（本月）"] --&gt; P["块规划 plan_blocks<br/>粒度对齐 · trailing / same_phase"]
+    P --&gt; S["块序列<br/>至多 1 条 SQL · 按维对齐"]
+    S --&gt; BD["噪声带 band<br/>median ± k · 1.4826 · MAD"]
+    S --&gt; EV["并列证据<br/>bootstrap 区间 · n_eff · low_n"]
+    W --&gt; G{"gate：当期值超出带？"}
+    BD --&gt; G
+    G --&gt;|"是"| OK["gated = true<br/>附位置分数（非概率）"]
+    G --&gt;|"否 / 判不了"| NO["gated = false<br/>reason 区分「在带内」与「判不了」"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 块序列是一条 SQL 的产物；噪声带与并列证据从同一批块算出；gate 的结论有三种：超带 / 在带内 / 判不了。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      判定侧的取数有三处刻意收紧
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/series_source.py#L135">series_source.py:135 <span class="ref-line">fetch_block_series</span></a>：
+      按维分组仍然只花<strong>一条</strong> SQL（逐维一条会随维值数量爆炸，而噪声带是「门」，预算纪律优先）；
+      粒度对齐是硬性的（引擎侧序列是增强，宽松最多是附录错；判定侧序列是门的判据）；
+      落不进块的桶计入 <code>unmatched</code> 记账——桶标签与块窗口对不上说明粒度或时区假设错了，外面要看得见。
+      还有一个安静但重要的选择：无数据的块<strong>占位保留</strong>（值为 <code>None</code> 而不是丢块）——
+      丢块会把 n 悄悄缩小，而 n 正是噪声带的全部前提。
+    </p>
+
+    <h2 id="robust">为什么是稳健统计</h2>
+
+    <p>
+      带的本体是一行公式：<strong>中位数 ± k × 1.4826 × MAD</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L199">stats.py:199 <span class="ref-line">band</span></a>。
+      换掉教科书的均值 ± k×标准差，是因为后者被<strong>离群值绑架</strong>：
+      一个月的事故把均值拽高、把标准差撑大，带随之变宽，真异常反而躲进「正常范围」。
+      中位数与 MAD（中位绝对偏差）对离群值不敏感——历史里有一个坏块，带的中心与宽度几乎不动。
+    </p>
+
+    <p>
+      <code>1.4826</code> 是把 MAD 换算到「正态分布下与标准差一致」的尺度（= 1/Φ⁻¹(0.75)），
+      所以稳健 z 的形态与经典 z 一样：<code>z = (x − center) / scale</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L110">stats.py:110 <span class="ref-line">robust_z</span></a>。
+      3.5 这个阈值有出处（Iglewicz-Hoaglin 对稳健 z 的推荐值），不是为 Trove 新拍的。
+    </p>
+
+    <p>
+      一个容易被忽略的边界：散布为 0（历史块全部同值）时，带算得出（center 有值）但
+      <strong>z 无定义</strong>——除以 0 尺度没有任何统计意义。此处返回 <code>None</code>（判不了），
+      绝不返回 ±inf 或一个假的 0。代码把这件事分工写死：<code>mad()</code> 对全同序列返回
+      <code>0.0</code>（「序列确实没有散布」是算得出的结论），而不可用发生在下一层的
+      <code>robust_z()</code> 与 <code>band()</code>——别在前一层把 0.0 偷换成 None。
+    </p>
+
+    <h2 id="honest">算不出返回 None，绝不返回 0</h2>
+
+    <p>
+      整个统计模块共享三条纪律（每条都有对应测试），其中第二条是气质上最「不像库」的：
+      <strong>算不出返回 <code>None</code>，绝不返回 0/±inf</strong>。
+      原因是消费者语义：<code>0.0</code> 是一个自信的「没触发」，<code>None</code> 是诚实的「判不了」——
+      与<a href="decision-engine.html">判定内核</a>的 Kleene 三值逻辑是同一条要求，
+      只是换到了数字层。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>算不出的情形</th><th>返回 / 记账</th><th>为什么不是 0</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>历史无数据</td><td>带不可用（<code>no_data</code>），<code>outside()</code> → None</td><td>0 会被读成「在带内且很确定」</td></tr>
+          <tr><td>序列无散布（全同值）</td><td>带不可用（<code>zero_scale</code>）</td><td>除零之后的任何数都是编的</td></tr>
+          <tr><td>块数 &lt; 8（<code>MIN_BLOCKS</code>）</td><td>带可能算得出，但 <strong>不予确认</strong>（<code>insufficient_n</code>）</td><td>样本太少的「显著性」是噪声放大器——宁可不确认</td></tr>
+          <tr><td>块数 &lt; 12（<code>LOW_N</code>）</td><td>结论可给，强制打「样本不足」标</td><td>标不可省：小样本结论要么带标，要么没有</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三个纪律里的另外两条同样是为了复算：种子一律由 <code>sha256</code> 派生（绝不用
+      <code>hash()</code>——<code>PYTHONHASHSEED</code> 随机化会让同一输入在不同进程给出不同采样）；
+      每个结论都带 <code>method</code>、种子材料和样本量。种子材料由调用方钉住语境
+      （如 <code>datasource|rule_id|dim|首块日期</code>），同一语境复算出逐位相同的区间。
+    </p>
+
+    <h2 id="no-p">p 值被刻意排除</h2>
+
+    <p>
+      n≈8–12 上算出来的 p 值是伪精度——比没有更糟，因为它看起来像科学。
+      所以判定层<strong>不输出任何 p 值</strong>，并列的证据换成了三样都能复算的东西：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>证据</th><th>是什么</th><th>回答什么问题</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>稳健 z</td>
+            <td><code>(x − median) / (1.4826·MAD)</code></td>
+            <td>当期值离历史中心有多少个「稳健散布」</td>
+          </tr>
+          <tr>
+            <td>bootstrap 分位区间</td>
+            <td>中位数的 90% 百分位区间，2000 次重采样，种子可复算
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L241">stats.py:241 <span class="ref-line">bootstrap_ci</span></a></td>
+            <td>「这个中位数本身有多稳」——区间窄，结论才值得引用</td>
+          </tr>
+          <tr>
+            <td>有效样本量 n_eff</td>
+            <td><code>n·(1−ρ₁)/(1+ρ₁)</code>，自相关修正
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L277">stats.py:277 <span class="ref-line">effective_n</span></a></td>
+            <td>块序列相邻月天然相似，裸 n 是伪精度——有效样本量把冗余扣掉</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      同款节制也在别处：两组的 Welch t 统计量只作为证据输出，<strong>不附带 p 值</strong>
+      （源码注释直说「n≈8–12 上的 p 是伪精度」）。
+    </p>
+
+    <h2 id="confidence">位置分数（非概率）</h2>
+
+    <p>
+      判定在语义模型里可以引用一个叫 <code>confidence</code> 的变量，它由稳健 z 换算：
+      <strong>(|z| − k) / k，截断到 [0, 1]</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L126">stats.py:126 <span class="ref-line">confidence_from_margin</span></a>。
+      0 = 恰好压在带缘，1 = 到了两倍阈值封顶。它度量的是<strong>离带缘多远</strong>，
+      不含任何分布假设，所以<strong>不是概率</strong>——字段名沿用业界直觉（confidence），
+      但每个出口都钉着一句限定语
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/significance.py#L51">significance.py:51 <span class="ref-line">CONFIDENCE_NOTE</span></a>：
+      「位置分数非概率：(|z|−k)/k 截断到 [0,1]……无分布假设，不输出 p 值。」
+    </p>
+
+    <p>
+      这个公式的<strong>本体</strong>放在 <code>analysis/stats.py</code> 而不是判定侧，是一次刻意的搬家：
+      效果验收（<a href="closed-loop.html">闭环与契约</a>）要用同一个公式判断「行动后的变化是否超出噪声带」——
+      把它放在共用位置，「判定说的超带」与「验收说的超带」由同一个数与同一条线定义，
+      <strong>谁也无法悄悄换尺子</strong>。限定语与出口措辞则留在各自的消费面。
+    </p>
+
+    <h2 id="gate">门怎么合上</h2>
+
+    <p>
+      <code>gate()</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/significance.py#L85">significance.py:85 <span class="ref-line">gate</span></a>
+      是判定侧的合流点，输出恒为 <code>{z, outside, confidence, gated, reason}</code>。
+      <code>gated=True</code> 要求四个条件同时成立：带可用（且有数据）∧ 块数 ≥ 8 ∧ 落在带外 ∧
+      位置分数 ≥ <code>min_confidence</code>。其余一律 <code>gated=False</code> 并带原因——
+      <strong>「判不了」与「判了在带内」用 reason 区分，不混为一谈</strong>：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>reason</th><th>含义</th><th>语义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>within_band</code></td><td>判了，在带内</td><td>诚实的「没异常」</td></tr>
+          <tr><td><code>insufficient_n</code></td><td>块数不足，不予确认</td><td rowspan="4">「判不了」——<code>require: outside_band</code> 的规则会把它们升级成 error run，绝不静默放行</td></tr>
+          <tr><td><code>no_data</code> / <code>zero_scale</code></td><td>带不可用</td></tr>
+          <tr><td><code>no_current_value</code> / <code>no_band</code></td><td>当期无值 / 证据里没有带</td></tr>
+          <tr><td><code>below_min_confidence</code></td><td>超带但未到位置分数下限</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      与判定内核对齐的还有一处成本纪律：显著性阶段<strong>只在声明了 <code>significance</code>
+      且有事要判时</strong>才跑——未触发的规则零成本；条件引用 <code>confidence</code> 的规则必须跑，
+      因为那是它的判据。触发但无法确认的组，在 <code>require</code> 之下把整条规则升级为
+      error run（「触发但不能确认的触发，不是确认的触发」）；未 <code>require</code> 时只记录——
+      近失（near-miss）留在行卡里如实展示：<code>triggered: false, gated: false</code>，
+      连命中的条件都保留，审计线必须看得见「差一点」。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+    <p>
+      规则里声明两块即可（schema v3 起）：
+    </p>
+
+<pre><code>seasonal:                 # 噪声带的块规格
+  grain: month            # 空 = 由窗口形状推导；声明则必须与窗口一致
+  lookback: 12            # 只计历史块——被测窗口不参与
+  mode: trailing          # trailing 近期连续块 | same_phase 去年同期
+  k: 3.5                  # 噪声带宽（稳健 z 单位）
+significance:             # 声明即要证据；require 非空即要拦
+  require: outside_band   # 触发必须再通过「超出噪声带」这道门
+  min_confidence: 0.0     # 位置分数下限（仅 require 时生效）</code></pre>
+
+    <p>
+      判定的证据里随之多出一节 <code>significance</code>：逐维的 <code>band</code>、
+      <code>bootstrap</code> 区间、<code>n_eff</code>、<code>low_n</code>、
+      <code>z</code> / <code>outside</code> / <code>confidence</code> / <code>gated</code> / <code>reason</code>，
+      以及那句限定语；查询账目进 <code>budget</code>。通知行由
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/significance.py#L144">significance.py:144 <span class="ref-line">band_line</span></a>
+      生成：只列已确认的组（至多 2 个，按 |z| 降序、dim 升序——确定性排序），
+      形如「噪声带：北区 |z|=4.20 &gt; k=3.50（位置 0.20）」——限定语在证据节里，通知保持一行可读。
+    </p>
+
+    <p>
+      完整字段与界面操作见<a href="../capabilities/decisions.html#significance">判定规则 · 显著性</a>；
+      分析侧（「为什么跌了」的答案里那条噪声带行）共享同一套器械。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>中位数 + MAD（而非均值 + 标准差）</td>
+            <td>统计效率——正态数据下 MAD 的方差大于标准差</td>
+            <td>离群值不绑架带：历史里有一个坏块，中心与宽度几乎不动。告警系统的样本永远不干净</td>
+          </tr>
+          <tr>
+            <td>纯 stdlib（零 numpy）</td>
+            <td>向量化的性能——2000 次 bootstrap 纯 Python 约 100–300ms</td>
+            <td>可复算承诺不外包：<code>random.Random(seed)</code> 的行为是语言规范的一部分（跨版本稳定），第三方采样实现在历史上变过。量级也够：n ≤ 366，全部发生在定时路径</td>
+          </tr>
+          <tr>
+            <td>不输出 p 值</td>
+            <td>「显著性检验」这套大家熟悉的说法</td>
+            <td>n≈8–12 上的 p 是伪精度，比没有更糟。要检验就比对 bootstrap 区间——看得见、可复算</td>
+          </tr>
+          <tr>
+            <td><code>MIN_BLOCKS = 8</code> 硬门</td>
+            <td>数据很少的规则也想得到「显著」结论</td>
+            <td>样本不足时显著性从门变成噪声放大器。宁可不确认——「判不了」是合法结局</td>
+          </tr>
+          <tr>
+            <td>字段名 <code>confidence</code> 但限定「非概率」</td>
+            <td>一个更贴切但没人认识的名字</td>
+            <td>命名贴合直觉、语义靠限定语钉死：每个出口（证据 note、文档、通知）都必须带上它，防止被读成置信度</td>
+          </tr>
+          <tr>
+            <td>公式本体放 analysis（共用）</td>
+            <td>模块界限更「干净」的摆放</td>
+            <td>判定与效果验收说同一句话——同一把尺子量两次，才不会一次一个结论</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>可复算。</strong>种子由 sha256 派生、方法显式署名、样本量随行——任何一个统计结论都能被重新算出来，且逐位相同。</li>
+      <li><strong>三态诚实。</strong>超带 / 在带内 / 判不了，三者由 <code>reason</code> 严格区分；「判不了」在 <code>require</code> 下响亮失败，绝不冒充「没事」。</li>
+      <li><strong>不放大噪声。</strong>块数硬门 + 稳健统计是一对：前者拒绝在样本不足时开口，后者拒绝让单个坏块改写结论。</li>
+      <li><strong>成本有界。</strong>无论多少个维度，块序列至多一条 SQL；它是「门」，不参与展示性计算。</li>
+      <li><strong>一把尺子。</strong>同一个公式（<code>confidence_from_margin</code> 与噪声带）同时服务判定与效果验收——升级、换实现、加维度都不会让两处悄悄分叉。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>条件语言、三值逻辑、失败必响、查询预算</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>超出噪声带之后：因果升级梯与 what-if 回放</td><td><a href="causal-whatif.html">因果与模拟</a></td></tr>
+          <tr><td>效果验收怎样复用同一套噪声带</td><td><a href="closed-loop.html">闭环与契约</a></td></tr>
+          <tr><td>显著性字段与管理端操作</td><td><a href="../capabilities/decisions.html#significance">判定规则 · 显著性</a></td></tr>
+          <tr><td>块序列的取数与粒度推导细节</td><td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/series.py#L50">series.py:50 <span class="ref-line">derive_grain</span></a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

@@ -134,6 +134,21 @@ flowchart TB
 | 行动后效果验收(闭环回测) | ❌ | ❌ | ❌ | ✅ 与判定共用同一套噪声带 |
 | 按数据源学习;自动内容需人审 | ❌ | 部分 | 部分 | ✅ KB + 记忆,`pending` 至确认 |
 
+## 工程取舍
+
+上表每一项背后是具体的算法、边界与 trade-off,各写过一篇深潜——骨架一致:解决什么问题 → 原理与算法 → 怎么用 → 放弃了什么 → 优势在哪:
+
+| 主题 | 一句话取舍 | 深潜 |
+|---|---|---|
+| 语义编译边界 | 能编译的编译、缺词表的编一半、真错的拒绝并顺势把模型长大 | [语义编译边界](https://nivane.github.io/trove/engineering/semantic-compiler.html) |
+| 分解数学与驱动器树 | 恒等式能证的才声称;乘除链宁可不拆,残差如实入证据 | [分解数学与驱动器树](https://nivane.github.io/trove/engineering/decomposition.html) |
+| 统计与噪声带 | 「变了多少才算变了」用稳健 z 与诚实三态回答,不做 p 值表演 | [统计与噪声带](https://nivane.github.io/trove/engineering/statistics.html) |
+| 判定内核 | 阈值声明在语义模型自己的词汇里,零 LLM 判定,证据可复算 | [判定内核](https://nivane.github.io/trove/engineering/decision-engine.html) |
+| 因果与模拟 | 分解是描述,因果主张要过实验设计的升级梯;算不出就直说 | [因果与模拟](https://nivane.github.io/trove/engineering/causal-whatif.html) |
+| 闭环与契约 | 判定 → 行动 → 验收走完整环;测量纪律写进 verifier 契约 | [闭环与契约](https://nivane.github.io/trove/engineering/closed-loop.html) |
+| 行动安全架构 | 只读姿态由签名与测试钉死;模板闭集渲染;失败永不静默 | [行动安全架构](https://nivane.github.io/trove/engineering/action-safety.html) |
+| 扩展与治理 | 扩展点单一路径;组织资产 pending → 确认 → 版本化 → 回滚 | [扩展与治理](https://nivane.github.io/trove/engineering/extension-governance.html) |
+
 ## 快速开始
 
 需要 Python ≥ 3.12 与 [uv](https://docs.astral.sh/uv/)。先挑一条路:

@@ -134,6 +134,21 @@ Everything a human cares about — which definitions count, which joins are lega
 | Measures the effect after acting (closes the loop) | ❌ | ❌ | ❌ | ✅ the same noise band the verdict used |
 | Learns per datasource; auto content gated by humans | ❌ | partial | partial | ✅ KB + memory, `pending` until confirmed |
 
+## Engineering Trade-offs
+
+Each row above rests on specific algorithms and boundaries that get their own deep dive — the same skeleton every time: the problem → principles and algorithms → how to use it → what it gives up → where it wins:
+
+| Topic | The trade-off in one line | Deep dive |
+|---|---|---|
+| Semantic compilation boundary | Compile what compiles, half-compile the missing vocabulary, refuse what's structurally wrong — and grow the model | [Semantic compilation boundary](https://nivane.github.io/trove/engineering/semantic-compiler.html) |
+| Decomposition math & driver tree | Claim an identity only when it holds; multiplication/division chains stay un-split, residuals kept in evidence | [Decomposition math and the driver tree](https://nivane.github.io/trove/engineering/decomposition.html) |
+| Statistics & noise band | "How much change is a change" answered with a robust z and an honest tri-state, never a p-value performance | [Statistics and the noise band](https://nivane.github.io/trove/engineering/statistics.html) |
+| Decision engine | Thresholds declared in the semantic model's own vocabulary, judged with zero LLM, replayable from evidence | [The decision engine](https://nivane.github.io/trove/engineering/decision-engine.html) |
+| Causality & what-if | Decomposition is description; causal claims climb an experimental-design ladder — or say they can't be made | [Causality and what-if](https://nivane.github.io/trove/engineering/causal-whatif.html) |
+| Closed loop & contracts | Verdict → action → measurement runs as a full loop; measurement discipline lives in the verifier contract | [The closed loop and its contracts](https://nivane.github.io/trove/engineering/closed-loop.html) |
+| Action safety | Read-only posture pinned by signatures and tests; closed-set templating; failures are never silent | [Action safety architecture](https://nivane.github.io/trove/engineering/action-safety.html) |
+| Extension & governance | One registration path for every extension; org assets go pending → confirm → versioned → rollback | [Extension and governance](https://nivane.github.io/trove/engineering/extension-governance.html) |
+
 ## Quick Start
 
 Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/). Pick a path first:

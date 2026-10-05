@@ -56,6 +56,19 @@
       ]
     },
     {
+      group: "设计深潜",
+      items: [
+        { href: "engineering/semantic-compiler.html", text: "语义编译边界" },
+        { href: "engineering/decomposition.html", text: "分解数学与驱动器树" },
+        { href: "engineering/statistics.html", text: "统计与噪声带" },
+        { href: "engineering/decision-engine.html", text: "判定内核" },
+        { href: "engineering/causal-whatif.html", text: "因果与模拟" },
+        { href: "engineering/closed-loop.html", text: "闭环与契约" },
+        { href: "engineering/action-safety.html", text: "行动安全架构" },
+        { href: "engineering/extension-governance.html", text: "扩展与治理" }
+      ]
+    },
+    {
       group: "数据能力",
       items: [
         { href: "capabilities/data.html", text: "数据能力总览" },

@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 判定内核：为什么规则条件是一门闭集表达式语言（安全由构造、拼错即拒），为什么用 Kleene 三值逻辑（「判不了」绝不翻成「没事」），一次判定从窗口解析到证据落库的完整管线，失败必响的 error 语义、不可编辑的判定记录与相邻 diff、以及顺序即优先级的查询预算。">
+<title>判定内核 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>判定内核
+      </div>
+      <h1>判定内核</h1>
+      <p class="lede">
+        判定规则是决策柱的地基：用<a href="semantic-compiler.html">语义模型</a>自己的词汇声明「什么算有问题」，
+        由确定性引擎定时求值，零 LLM。怎么配规则是<a href="../capabilities/decisions.html">判定规则</a>能力页的事；
+        这页讲的是内核里五个刻意的设计决定——为什么条件语言必须是<strong>闭集</strong>的、
+        为什么它的逻辑必须是<strong>三值</strong>的、「判不了」为什么必须<strong>响亮地失败</strong>、
+        为什么每条判定是一条<strong>不可编辑的证据记录</strong>，以及一次判定最多花多少条查询、花在哪。
+        每一个决定都对应源码里一个具体的失败模式：它们不是风格，是对策。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">要解决什么问题</h2>
+
+    <p>
+      一个「每天定时判指标有没有问题」的系统，听起来只差一条 <code>if</code>。
+      真正难的是下面四个失败模式——它们的共同点是<strong>从外面全都看不出来</strong>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>失败模式</th><th>从外面看是什么样</th><th>根因</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>规则文件是<strong>不可信输入</strong></td>
+            <td>什么都看不出来——直到出事</td>
+            <td>任何能写 KB 的人都能改 YAML。条件若靠 <code>eval()</code> 求值，那是注入面；若变量集是开放的，拼错的名字静默取到「未知」，规则<strong>永远不响</strong>——「从没响过」与「每天都没事」长得一模一样</td>
+          </tr>
+          <tr>
+            <td>两值逻辑在缺数据时撒谎</td>
+            <td>在无数据的组上误报</td>
+            <td>基线没取到时 <code>not (x &gt; y)</code> 会翻成真。误报比漏报更难发现——它看起来像一次正常触发</td>
+          </tr>
+          <tr>
+            <td>「判不了」被折成「没事」</td>
+            <td>运行历史一片绿色</td>
+            <td>窗口解析失败、指标没声明、没有时间字段、连不上库——这些若静默变成「本次无触发」，一条死掉的任务与健康任务在外部无法区分</td>
+          </tr>
+          <tr>
+            <td>判定依据不可复算</td>
+            <td>历史判定无法解释</td>
+            <td>阈值改过之后，「当时为什么触发」失去了上下文；更隐蔽的是，整份文件共用一把字节指纹时，编辑<strong>无关</strong>规则会让所有规则的历史分桶错位</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      内核的立场由此推出：判定是<strong>关于某一时刻的事实记录</strong>，不是可随手改的配置。
+      下面五个设计决定，分别把上面五个根因堵死。
+    </p>
+
+    <h2 id="language">条件语言：安全由构造</h2>
+
+    <p>
+      规则条件住在 <code>decisions.yml</code> 里，是<strong>不可信输入</strong>，所以它永远不会遇到
+      <code>eval()</code>。取而代之的是一个刻意做小的语言：手写词法分析器
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L346">expr.py:346 <span class="ref-line">_tokenize</span></a>
+      加递归下降解析器
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L369">expr.py:369 <span class="ref-line">_Parser</span></a>，
+      文法只有七条产生式（写在模块 docstring 里），求值阶段只能从调用方给的 scope 字典里读值——
+      <strong>能力上限 = 能读几个变量</strong>，没有别的。
+    </p>
+
+    <p>
+      更关键的是两套<strong>闭集</strong>：标识符闭集
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">expr.py:70 <span class="ref-line">VARIABLES</span></a>
+      和函数闭集
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L104">expr.py:104 <span class="ref-line">FUNCTIONS</span></a>。
+      写了一个闭集外的名字——哪怕只是拼错——是<strong>解析错误</strong>，写入时就被 lint 拒掉，
+      而不是一个静默的「未知值」让规则永远不响。未注册的 <code>trend()</code> 保持保留状态：
+      半成品函数比没有函数更危险。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>变量</th><th>含义</th><th>为什么需要它（或何时为 Unknown）</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>current</code></td><td>规则窗口内的指标值</td><td>判定的主语</td></tr>
+          <tr><td><code>baseline</code></td><td>基线窗口内的指标值</td><td>基线取不到时是 Unknown，不是 0</td></tr>
+          <tr><td><code>delta</code> / <code>delta_pct</code></td><td>差值 / 相对变化</td><td>基数为 0 时 <code>delta_pct</code> 为 Unknown（与编译器的 <code>NULLIF(…,0)</code> 对齐）</td></tr>
+          <tr><td><code>contribution</code></td><td>该组在 Σ|Δ| 中的带符号份额</td><td>只在按维分组的规则里存在——聚合规则引用它会在写入时被拒</td></tr>
+          <tr><td><code>row_count</code></td><td>当期查询返回的行数</td><td>「一行都没有」本身可以是一种判据</td></tr>
+          <tr><td><code>dim</code></td><td>被求值组的维度标签</td><td>同上，仅分组规则有值；也是字符串比较（<code>dim == "北区"</code>）的载体</td></tr>
+          <tr><td><code>confidence</code></td><td>超出噪声带的<strong>位置分数</strong>（非概率）</td><td>只在规则声明了 <code>significance</code> 之后有值——未声明时恒 Unknown，所以 lint 在写入时直接拒掉引用它的条件，见<a href="statistics.html">统计与噪声带</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      解析结果按条件文本缓存（AST 不可变，调度器每个 tick 都会重解析），但<strong>解析错误不缓存</strong>——
+      一条正在被修的规则要保持可修。解析入口收一个 <code>variables</code> 参数，
+      结果域的 validator 检查用的是另一套闭集
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L92">expr.py:92 <span class="ref-line">VALIDATOR_VARIABLES</span></a>
+      ——同一台解析器，两套词，缓存键里带着词表，两个域永远不会共享一份缓存。
+    </p>
+
+    <h2 id="three-valued">Kleene 三值：判不了是第三种答案</h2>
+
+    <p>
+      条件求值的结果不是 True / False，而是 True / False / <strong>Unknown</strong>。
+      这是对更早的告警 DSL（<code>jobs/alerts.py</code>）的刻意修正：那份契约「未知 → False，绝不抛异常」
+      对一条裸比较是对的，但 <code>not</code> 一进语言就错了——缺基线时
+      <code>not (x &gt; y)</code> 会被两值逻辑判成真，<strong>在无数据上误报</strong>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>表达式</th><th>True</th><th>False</th><th>Unknown</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>not A</code></td><td>False</td><td>True</td><td><strong>Unknown</strong></td></tr>
+          <tr><td><code>A and B</code></td><td>两边都 True</td><td>任一边 False</td><td>其余情况</td></tr>
+          <tr><td><code>A or B</code></td><td>任一边 True</td><td>两边都 False</td><td>其余情况</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      实现里有两个值得看的细节。其一，<code>Unknown</code> 是单例，它的
+      <code>__bool__</code> 会<strong>抛异常</strong>——任何一处不小心的 <code>if value:</code>
+      都是一个响亮的 bug，而不是把三值静默塌成二值。其二，跨类型比较（数字与字符串）返回
+      Unknown 而不是 False，理由与上面同源：False 会在 <code>not</code> 下翻成误报，而「类型对不上」
+      的诚实答案就是「判不了」。
+    </p>
+
+    <p>
+      对外的触发契约收敛为一个窄口：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L520">expr.py:520 <span class="ref-line">evaluate_condition</span></a>
+      只有在条件<strong>确定为真</strong>时才返回 True，Unknown 一律不触发——没有假阳性。
+      而 validator 档不走这个函数：它直接取三值，因为「判不了」与「违反」对结果断言是两件事。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么 lint 要拒掉「引用 confidence 但没声明 significance」</span>
+      <div>
+        <p>未声明 <code>significance</code> 的规则，<code>confidence</code> 恒为 Unknown——
+        一条引用它的条件<strong>永远不响</strong>。这种「静默 no-op」从外面看与「检查通过」一模一样，
+        所以它在写入时被直接拒绝（<code>_SIGNIFICANCE_ONLY</code> 守卫），而不是留给运行时。</p>
+      </div>
+    </div>
+
+    <h2 id="pipeline">一条判定的完整管线</h2>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    Y["decisions.yml · 规则<br/>（语义模型的词汇）"] --&gt; W["窗口解析<br/>自然语言窗口 → 当前期 + 基期"]
+    W --&gt; C["语义编译 build_and_compile<br/>权威 SQL · 零 LLM"]
+    C --&gt; X["只读执行<br/>connectors.execute · 单条超时"]
+    X --&gt; J["judge 纯函数<br/>逐组行卡 · 三值求值"]
+    J --&gt; G{"触发？"}
+    G --&gt;|"否"| OK["记录证据<br/>status = ok"]
+    G --&gt;|"是"| APP["附录逐层叠加（按声明）<br/>显著性门 → 因果梯 → 分析桥"]
+    APP --&gt; V["消息 + 证据 → 判定记录<br/>不可编辑 · 相邻 diff"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 一次判定的完整路径：判定本身永远是前五步；附录（显著性 / 因果 / 分析桥）只在触发后、且被声明时才叠加，失败只记账、不改判定。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      <strong>窗口解析</strong>复用提问链路的同一入口（<code>parse_time_range</code>）：「本月」在用户提问和规则触发时
+      必须是同一个跨度，两处各写一套解析，迟早不一致。基线按 <code>baseline.kind</code> 由同一份窗口推出
+      （上期 / 同比 / 字面值），推不出就<strong>硬错</strong>，绝不猜。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L366">service.py:366 <span class="ref-line">_resolve_window</span></a>
+    </p>
+
+    <p>
+      <strong>编译</strong>把 subject（metric / dimension / filter——与 <code>/v1/semantic/query</code> 同一种形状）
+      编到语义模型上：先编一遍拿锚定数据集，再按指标的 <code>agg_time_dimension</code> 解析时间字段，带上窗口条件编第二遍。
+      时间条件是半开区间（<code>&lt; 结束日 + 1 天</code>），与归因引擎共用同一个生成函数——闭区间会在 timestamp 列上
+      丢掉窗口最后一天，而触发后的分析附录必须与判定看到同一批天。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L401">service.py:401 <span class="ref-line">_compile</span></a>
+    </p>
+
+    <p>
+      <strong>执行</strong>走连接器的只读通道（<code>ConnectorRegistry.execute</code> 拒绝任何非 SELECT），
+      每条 SQL 有各自的超时预算——一次卡死不该把另一次的额度也吃掉。方言（dialect）解析不出来是硬错：
+      「猜一个方言」编译出的错 SQL，在没人读的定时任务里是最坏结果。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L1107">service.py:1107 <span class="ref-line">_run</span></a>
+    </p>
+
+    <p>
+      <strong>求值</strong>是一个模块级纯函数
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L161">service.py:161 <span class="ref-line">judge</span></a>：
+      逐组生成行卡（current / baseline / delta / delta_pct / contribution / triggered / matched），
+      条件在每组作用域里三值求值。<code>emit</code> 决定规则<strong>上报</strong>哪些触发的组
+      （any / all / top_k），但行卡保持原样——对 <code>all</code> 规则，你恰恰需要看到哪些组没触发，
+      改写它们会掩盖这个信息。这个纯函数边界还有一个直接回报：what-if 回放（<a href="causal-whatif.html">因果与模拟</a>）
+      就是在假想的数字上重跑同一条内核——「模拟与判定不漂移」由此不是承诺，是构造。
+    </p>
+
+    <p>判定的产物是一条带完整证据的记录：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>证据字段</th><th>装着什么</th><th>为什么要它</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>sql_current</code> / <code>sql_baseline</code></td><td>两期的权威 SQL</td><td>「这个数是怎么算出来的」的最终答案</td></tr>
+          <tr><td><code>rows</code> + <code>truncated</code></td><td>当期原始行样本（上限 200 行）+ 截断旗</td><td>没有原始行，「据以判定的数字」只是转述；截断必须可见</td></tr>
+          <tr><td><code>periods</code> / <code>times.anchor_date</code></td><td>两期区间、基准日期</td><td>窗口是判定的自变量之一，必须留痕——不同日期跑出不同结果是对的，前提是知道跑在哪天</td></tr>
+          <tr><td><code>rule_digest</code> / <code>rule_rev</code></td><td>文件字节指纹 / 单条规则内容版本</td><td>「当时生效的是哪版规则」——见下一节的两把尺</td></tr>
+          <tr><td><code>budget</code></td><td>本次判定的查询账目（限额 / 实花 / 分阶段）</td><td>成本可解释；让路有记录</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="loud">失败必响：error 是判定历史的一等公民</h2>
+
+    <p>
+      与告警系统有意不同的一条纪律：判定层<strong>所有</strong>「判不了」都以错误示人，
+      绝不静默变成「本次无触发」。原因写在模块 docstring 里——一条静默不触发的定时任务，
+      与一条健康的任务从外面看没有区别。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>判不了的情形</th><th>为什么不降级为「无触发」</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>窗口文本解析不出 / <code>prev_period</code> 基线却没有窗口</td><td>判定的自变量缺失——判的不是「没事」，是「没判」</td></tr>
+          <tr><td>数据源没有语义模型 / 指标未声明</td><td>编译不出权威 SQL；对裸表瞎猜正是这套架构要消灭的失败模式</td></tr>
+          <tr><td>时间字段解析不出</td><td>没有窗口条件的查询会把「历史全部数据」当成「本期」</td></tr>
+          <tr><td>方言无法确定 / 数据源不可达 / SQL 失败 / 超时</td><td>环境坏了要说环境坏了，而不是假装今天数据干净</td></tr>
+          <tr><td><code>scope: aggregate</code> 却写了 subject 维度（绕过 lint 手改文件）</td><td>查询会分组、聚合规则找单行——所有变量恒 Unknown，规则静默死掉；执行前的最后一道防线在此拦截</td></tr>
+          <tr><td>组织扩展总开关停用</td><td>停用中的任务必须报「已停用」——静默的绿色 run 与健康运行无法区分（开关每次评估现读，热生效）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      入口
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L1188">service.py:1188 <span class="ref-line">evaluate</span></a>
+      把上述每一类异常折成一条 <code>error</code> 判定：运行记录里 <code>status=error</code>，
+      证据里带着错误原因与当次规则指纹——「哪一版规则开始报错」是排障的第一个问题，所以失败也记 digest。
+      失败永远不是通知，也永远不是一行空记录。
+    </p>
+
+    <h2 id="audit">不可编辑的记录，相邻的 diff</h2>
+
+    <p>
+      判定记录
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L46">verdicts.py:46 <span class="ref-line">VerdictRecord</span></a>
+      <strong>没有编辑、没有回滚</strong>：判定是关于某一时刻的陈述（「2026-10-01，聚合口径说 X」），
+      编辑它就是编辑历史；存证据的全部意义在于，后来的分歧是对着<strong>记录</strong>争论，而不是对着一行可改的数据。
+      相邻 diff
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L180">verdicts.py:180 <span class="ref-line">diff_verdicts</span></a>
+      是两条记录之上的<strong>派生视图</strong>，从不落库；旧记录缺字段时，每一处比较都退化为「说不出」，
+      而不是发明一次变化（比如「幅度突变」是展示阈值 10 个百分点，源码里明说它不是统计主张）。
+    </p>
+
+    <p>
+      这里有两把尺，各管一层。整份 <code>decisions.yml</code> 的字节指纹（digest）对<strong>文件</strong>敏感；
+      单条规则的内容版本
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L868">rules.py:868 <span class="ref-line">rule_rev</span></a>
+      是这条规则规范序列化的前 16 位，对其<strong>他</strong>规则的编辑无关。
+      渲染「规则被改过」时以 rev 为准——这是修过的真实教训：编辑 B 规则会让 A 规则的相邻两条也亮起
+      「digest 变了」，两把尺混用时审计线会集体误报。两个字段都缺时不报变化：
+      「没记录版本」不是「版本变了」。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">截断必须可见</span>
+      <div>
+        <p>判定记录的证据行上限 50 行（运行记录 200 行），切掉的部分<strong>正是之后 diff 的输入</strong>。
+        所以裁切不静默：证据里带着 <code>truncated</code> 旗，diff 对缺失字段说「说不出」。
+        一份被悄悄裁剪的证据，比一份明确标注不完整的证据更危险。</p>
+      </div>
+    </div>
+
+    <h2 id="budget">查询预算：顺序即优先级</h2>
+
+    <p>
+      一次判定的查询有硬上限，而且账是公开的：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/budget.py#L34">budget.py:34 <span class="ref-line">DecisionBudget</span></a>
+      把预算分成 <code>judge(2) &gt; significance(2) &gt; causal(4) &gt; bridge(4)</code>，总额 12。
+      阶段按这个顺序执行、先到先得：判定本身永远排第一，预算不足时让路的永远是往后阶段，绝不反过来。
+      让路不是静默的——<code>yield_</code> 记账进 <code>evidence.budget</code>，
+      用源码里的话说：「过严的护栏会被绕过，那连观测都没有了」。
+    </p>
+
+    <p>
+      还有一个逐字节的兼容纪律：<strong>只有显式声明才花钱</strong>——没有声明显著性 / 因果 / 桥的规则，
+      连账本都不进证据，输出与引入预算之前逐字节相同。老规则的老行为，是升级不翻车的先决条件。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+    <p>
+      规则住在 <code>.trove/kb/&lt;datasource&gt;/decisions.yml</code>——KB 树本身就是 git 仓库，
+      所以每次改规则都是一次可评审的提交。一条完整的规则长这样：
+    </p>
+
+<pre><code>version: 4
+rules:
+  - id: loan-drop
+    name: 贷款余额异常下降
+    severity: warning
+    window: 本月                    # 与提问链路同一个时间解析器
+    baseline: {kind: prev_period}   # 由窗口推出上期
+    subject:                        # 与 /v1/semantic/query 同一种形状
+      metrics: [loan_balance]
+      filters: [{field: region, op: "=", value: North}]
+    conditions: ["delta_pct &lt; -0.1"]  # 闭集变量 + 三值逻辑
+    recommendation: 联系区域负责人核对口径
+    priority: 2</code></pre>
+
+    <p>
+      写入路径上有三重门：lint 的结构检查（单 metric、闭集取值、静默死形状）、
+      <strong>试编译</strong>（subject 真的编一次——lint 的硬门就是这个测试）、
+      以及文件版本上界守卫：比当前内核更新的 schema 版本<strong>拒绝读取</strong>，
+      因为管理端整份文件保存会把读不懂的字段悄悄删掉——拒绝读，好过静默读少了。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>入口</th><th>做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET /v1/admin/decisions</code></td><td>规则列表（每条附最新判定与相邻 diff 摘要、被哪些任务引用）</td></tr>
+          <tr><td><code>PUT /v1/admin/decisions</code></td><td>整份文件保存（过 lint + 试编译）</td></tr>
+          <tr><td><code>GET /v1/admin/decisions/{rule_id}/verdicts</code></td><td>判定历史（含相邻 diff）</td></tr>
+          <tr><td><code>POST /v1/admin/decisions/{rule_id}/simulate</code></td><td>what-if 回放——在假想数字上重跑同一条内核，见<a href="causal-whatif.html">因果与模拟</a></td></tr>
+          <tr><td><code>GET /v1/admin/decisions/quality</code></td><td>按规则版本回评的质量，见<a href="closed-loop.html">闭环与契约</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      定时触发走任务系统：Job 指向规则 id，runner 里的决策腿
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L174">runner.py:174 <span class="ref-line">_run_decision</span></a>
+      <strong>从不进入 NL 管线</strong>——判定的产出不依赖任何一次模型调用，这正是它能被质问的底气。
+      语义模型按任务的 <code>datasource</code> 现取现用：启动时绑定默认源的做法，会让一个任务静默地用错模型编译 SQL。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>闭集表达式语言</td>
+            <td>表达力——写不了跨行计算、任意聚合、趋势检测（<code>trend</code> 刻意保留不建）</td>
+            <td>拼错即拒、无注入面、lint 能静态判死形状。半建的能力比没有能力更危险：它会诱惑人去写一条永远不响的规则</td>
+          </tr>
+          <tr>
+            <td>三值逻辑 + Unknown 不触发</td>
+            <td>「缺数据也算数」做不到——要显式声明；条件作者要理解第三种值</td>
+            <td>没有假阳性。「判不了」的诚实出口不是静默，而是被 <code>require</code> 的显著性门升级成 error run（见<a href="statistics.html">统计页</a>）</td>
+          </tr>
+          <tr>
+            <td>判定记录不可编辑</td>
+            <td>写错规则后不能修正历史；纠错只能追加新的判定</td>
+            <td>审计线可信——对着记录争论，而不是对着可变数据</td>
+          </tr>
+          <tr>
+            <td>每条规则恰一个 metric</td>
+            <td>多指标联动要拆成多条规则</td>
+            <td>条件词汇是单数的（<code>current</code> / <code>delta</code>），第二个指标无处绑定；拒绝好过静默只判第一个</td>
+          </tr>
+          <tr>
+            <td>判定独立于 NL 管线</td>
+            <td>不能复用会话、记忆、Skills 等问数侧能力</td>
+            <td>verdict 不依赖模型 = 可复算。一次判定与一次提问是两种承诺，混线的代价是两边都不可信</td>
+          </tr>
+          <tr>
+            <td>预算硬上限（12 条/次）</td>
+            <td>极端复合的规则会撞到额度，靠后的附录被让路</td>
+            <td>让路永远记账、永远先砍附录。定时任务的成本有上界，是它能被放心开着的理由</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      已知边界，也如实列在这里：判定永远读<strong>当前</strong>的语义模型——模型被改，下一次判定就换了尺子；
+      历史记录靠 rev 保住可解释性，但不会用旧模型重算。证据行有上限（截断有旗）。
+      规则条件不做跨行的事——这是上面「闭集」的代价，也是下一步能力（如果做）要先回答的问题。
+    </p>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>可复算。</strong>输入（规则版本、窗口、语义模型）确定后，输出就是同一批行——证据里连 SQL 都在，争议可以回到数字本身。</li>
+      <li><strong>可审计。</strong>不可编辑的记录 + 相邻 diff + 按规则版本分桶的质量回评；「规则被改过」有精确的一把尺（rev），而不是含混的一把（digest）。</li>
+      <li><strong>不会静默死。</strong>写入时有 lint 拒掉静默形状，运行时有「失败必响」——所有「判不了」都是 error run。一条死掉的任务不会伪装成健康任务。</li>
+      <li><strong>安全面为零。</strong>无 <code>eval</code>、闭集语法、只读执行通道、零 LLM——判定层没有可以被注入的输入面，也没有可以被模型带偏的环节。</li>
+      <li><strong>成本有界且可解释。</strong>12 条查询的硬上限、顺序即优先级、让路有账——开着一队定时判定，不需要担心成本失控。</li>
+    </ul>
+
+    <p>
+      一句话总结内核的取向：判定层是<strong>能被质问的</strong>——每一次触发都能拉出它据以判断的 SQL 与行，
+      每一次「没触发」都有记录，每一次「判不了」都以错误示人。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>噪声带、稳健统计、显著性门如何判「超出历史波动」</td><td><a href="statistics.html">统计与噪声带</a></td></tr>
+          <tr><td>因果升级梯与 what-if 回放（同一内核的重放）</td><td><a href="causal-whatif.html">因果与模拟</a></td></tr>
+          <tr><td>质量回评、效果验收、输出契约</td><td><a href="closed-loop.html">闭环与契约</a></td></tr>
+          <tr><td>触发后分析桥的贡献分解与残差</td><td><a href="decomposition.html">分解数学与驱动器树</a></td></tr>
+          <tr><td>规则写法全量（字段表、管理端操作、扫描、what-if）</td><td><a href="../capabilities/decisions.html">判定规则</a></td></tr>
+          <tr><td>规则编译所依赖的语义模型</td><td><a href="semantic-compiler.html">语义编译边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>
