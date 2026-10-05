@@ -366,80 +366,10 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
     </p>
   </section>
 
-  <!-- ══ 路标 ══ -->
-  <section id="road">
-    <div class="sec-head">
-      <span class="sec-label">向前 · 07</span>
-      <h2>路线图与缺口</h2>
-      <p class="sec-intro">
-        八个正在推进的方向。写的是<b>方向与判据</b>——做到什么程度算做到了，而不是承诺日期；
-        每条今天缺哪一块也直接写在表里，不藏在「进行中」。
-      </p>
-    </div>
-
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th style="width:48px">#</th><th style="width:19%">方向</th><th>判据（做到什么程度算数）</th><th style="width:36%">今天缺哪一块</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="mono">01</td>
-            <td>语义漂移治理</td>
-            <td>漂移报告能精确到数据集 / 字段 / 指标条目，且不依赖人工巡检（门禁脚本已进 CI，渲染 L1–L2，区分「没漂移」与「没查成」）。</td>
-            <td>L3/L4 未落地——「指标」这一格今天还进不了报告：L3 要探查活库取值，探测未接；L4 按设计只承接外部声明、不自行检测。</td>
-          </tr>
-          <tr>
-            <td class="mono">02</td>
-            <td>执行画像</td>
-            <td>画像数据来自真实执行观测，且采集本身不给查询增加可感知开销。</td>
-            <td>观测面——扫描量这一格八个方言都还没读，<code>scanned_rows</code> 恒空；「来自真实执行观测」今天只对行数成立。</td>
-          </tr>
-          <tr>
-            <td class="mono">03</td>
-            <td>已验证查询资产</td>
-            <td>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人（治理维度随确认逐条写入，追溯已成立）。</td>
-            <td>台账——<code>AssetLedger</code> 已实现并有测试钉住，但没有任何生产构造点；<code>status</code> 还没参与检索加权。</td>
-          </tr>
-          <tr>
-            <td class="mono">04</td>
-            <td>可核验闭环</td>
-            <td>任意一条交付结论，都能沿着证据链走回原始数据。</td>
-            <td>上半段——执行证据（估算 / 实际 / 三态新鲜度）已落地；从结论回走到执行的这一段还没有，「任意一条」今天不成立。</td>
-          </tr>
-          <tr>
-            <td class="mono">05</td>
-            <td>语义分支评审</td>
-            <td>分支评审的结论对最终合入有约束力，而非仅供参考。</td>
-            <td>全部——所需形状（<code>GateDecision</code> / <code>SemanticChange</code>）已定义，但没有实现与调用点；八条里离得最远的一格。</td>
-          </tr>
-          <tr>
-            <td class="mono">06</td>
-            <td>身份鉴权与字段脱敏</td>
-            <td>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</td>
-            <td>执行侧已成立——三道执行门默认全拒（A3 已按 2026-10 切到 <code>enforce</code>）+ 脱敏 + 审计都在执行路径上。仍缺：这条方向的下一段，编译期收窄尚未开始。</td>
-          </tr>
-          <tr>
-            <td class="mono">07</td>
-            <td>成本归因与预算</td>
-            <td>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</td>
-            <td>两个盲区——LLM 调用点清单（AST 枚举）里仍有不记账的；且清单只看得见「谁在调模型」，看不见 prompt 的字符串构造（调用点没变、投递内容变了，它不红）。</td>
-          </tr>
-          <tr>
-            <td class="mono">08</td>
-            <td>不可信数据输入边界</td>
-            <td>新增数据源、新增提示词参数<strong>默认被扫</strong>，要放行必须显式登记；第三条路不存在。</td>
-            <td>隔离核 + 名字白名单（默认扫、放行须登记）+ 第三档信任级均已就位，有守卫与快照测试。盲区是清单只看得见「谁在调模型」、看不见字符串怎么拼——已写进测试文档串，由单一追加门补，不靠扩清单。</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
   <!-- ══ 定位 ══ -->
   <section id="pos">
     <div class="sec-head">
-      <span class="sec-label">定位 · 08</span>
+      <span class="sec-label">定位 · 07</span>
       <h2>这套设计押在哪</h2>
     </div>
     <div class="claim">
