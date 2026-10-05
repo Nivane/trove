@@ -51,6 +51,8 @@ def make_state(**kwargs) -> WorkflowState:
         ("从上个月到下个月", date(2025, 1, 15), (date(2024, 12, 1), date(2025, 2, 28))),
         # 2024年底到现在 (half-absolute with ref tail)
         ("2024年底到现在", date(2025, 1, 15), (date(2024, 12, 31), date(2025, 1, 15))),
+        # 1997年的贷款总额较1996年下降了多少 (bare absolute year, Rule 12)
+        ("1997年的贷款总额较1996年下降了多少", date(2025, 1, 1), (date(1997, 1, 1), date(1997, 12, 31))),
     ],
 )
 def test_parse_time_range_zh(question, ref, expected):
@@ -76,6 +78,9 @@ def test_parse_time_range_zh(question, ref, expected):
         ("this year", date(2025, 6, 15), (date(2025, 1, 1), date(2025, 12, 31))),
         ("from last month to next month", date(2025, 1, 15), (date(2024, 12, 1), date(2025, 2, 28))),
         ("from end of 2024 to now", date(2025, 1, 15), (date(2024, 12, 31), date(2025, 1, 15))),
+        # 裸年份 + 对比年:只取提问期(1997),比年(1996)留给基期派生
+        ("Why did the total loan amount decline in 1997 compared to 1996?",
+         date(2025, 1, 1), (date(1997, 1, 1), date(1997, 12, 31))),
     ],
 )
 def test_parse_time_range_en(question, ref, expected):
@@ -271,3 +276,46 @@ class TestParseDateNode:
         node = self._node()
         update = await node(make_state(question="orders in the last 7 days", lang="en"))
         assert update == {"time_context": "2026-08-09 ~ 2026-08-16"}
+
+
+# ── Absolute years (Rule 12: 1997年 / in 1997) ─────────────
+
+
+class TestParseTimeRangeAbsoluteYear:
+    def test_zh_bare_year(self):
+        assert parse_time_range("1997年的贷款总额", date(2025, 1, 1)) == (
+            date(1997, 1, 1), date(1997, 12, 31))
+
+    def test_relative_expressions_still_win(self):
+        """最低优先级:相对表达先命中,裸年份不抢。"""
+        assert parse_time_range("2024年底", date(2025, 1, 1)) == (
+            date(2024, 12, 31), date(2024, 12, 31))
+        assert parse_time_range("2024年以来", date(2025, 6, 1)) == (
+            date(2024, 1, 1), date(2025, 6, 1))
+        assert parse_time_range("since 2024", date(2025, 6, 1), lang="en") == (
+            date(2024, 1, 1), date(2025, 6, 1))
+
+    def test_month_qualified_year_and_decade_stay_unmatched(self):
+        """整年窗口对它们是错的 —— 宁可不解析,不猜错。"""
+        assert parse_time_range("1997年12月的贷款", date(2025, 1, 1)) is None
+        assert parse_time_range("1990年代的数据", date(2025, 1, 1)) is None
+
+    def test_en_requires_preposition(self):
+        """en 的四位数不像 zh 有「年」标记 —— 必须带 in/during/for/of/year,
+        否则流水号/编号一类数字会被误当时窗。"""
+        assert parse_time_range("loan id 1997 status", date(2025, 1, 1), lang="en") is None
+        assert parse_time_range("during 1997", date(2025, 1, 1), lang="en") == (
+            date(1997, 1, 1), date(1997, 12, 31))
+
+    def test_feeds_yoy_base_period(self):
+        """端到端锚点(2026-10-05 线上归因口径 bug 的回归):问题里的年份
+        → time_context → base_period(yoy) 派生出去年同期基期。"""
+        from trove.core.periods import base_period
+
+        rng = parse_time_range(
+            "Why did the total loan amount decline in 1997 compared to 1996?",
+            date(2025, 1, 1), lang="en",
+        )
+        assert rng == (date(1997, 1, 1), date(1997, 12, 31))
+        assert base_period(format_time_range(*rng), "yoy") == (
+            ("1997-01-01", "1997-12-31"), ("1996-01-01", "1996-12-31"))

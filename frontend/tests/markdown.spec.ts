@@ -79,6 +79,25 @@ describe('enhanceConclusionHtml（答案卡：结论当主角）', () => {
     expect(out).not.toContain('hero-num')
   })
 
+  it('结论以年份开头 → 主角落在金额而非年份（1997年的…下降 3,073万）', () => {
+    const html = renderMarkdown('### 结论\n\n1997年的贷款总额较1996年下降了 3,073万。')
+    const out = enhanceConclusionHtml(html)
+    expect(out).toContain('<span class="hero-num">3,073万</span>')
+    expect(out).not.toContain('<span class="hero-num">1997</span>')
+  })
+
+  it('答案是年份（唯一候选）→ 年份照样当主角', () => {
+    const html = renderMarkdown('### 结论\n\n1997年是最高的年份。')
+    const out = enhanceConclusionHtml(html)
+    expect(out).toContain('<span class="hero-num">1997</span>')
+  })
+
+  it('带千分位/单位的四位数不当年份排除（1,997 与 1997万 是数量）', () => {
+    const html = renderMarkdown('### 结论\n\n金额为 1,997。')
+    const out = enhanceConclusionHtml(html)
+    expect(out).toContain('<span class="hero-num">1,997</span>')
+  })
+
   it('结论后不是段落（直接表格/标题）→ 只压灰标题，不碰别的块', () => {
     const html = renderMarkdown('### 结论\n\n### 结果\n\n| a |\n|---|\n| 1 |')
     const out = enhanceConclusionHtml(html)

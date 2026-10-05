@@ -460,7 +460,7 @@ def _tree_note(node: dict[str, Any], lang: str) -> str:
         return L(lang, "恒等式成立", "identity holds")
     if reason == "gap":
         val = (res or {}).get("value")
-        return (f"{L(lang, '残差', 'residual')} {val:g}"
+        return (f"{L(lang, '残差', 'residual')} {_fmt_g(val)}"
                 if isinstance(val, (int, float)) else L(lang, "残差", "residual"))
     if reason == "component_unavailable":
         return L(lang, "组件未取到、不声称分解", "component unavailable")
@@ -494,7 +494,14 @@ def _numf(v: Any) -> float | None:
 
 
 def _fmt_g(v: float | None) -> str:
-    return f"{v:g}" if v is not None else "—"
+    """数值渲染:≥1e6 走千分位 —— ``:g`` 默认精度 6,这一档会翻成科学计数
+    法(6.90784e+07 是给机器看的),财务表格里与结论的「3,073万」打架。
+    小值仍走 ``:g``(0.7438 这类比率原样)。"""
+    if v is None:
+        return "—"
+    if abs(v) >= 1e6:
+        return f"{v:,.0f}"
+    return f"{v:g}"
 
 
 def _noise_band_line(series: dict[str, Any], lang: str) -> str:
@@ -591,15 +598,15 @@ def _build_attribution_section(state: WorkflowState) -> str:
         eff_lines = []
         if lang == "zh":
             eff_lines = [
-                f"- {L(lang, '本征效应', 'Within effect')}: {effects.get('within', 0.0):g}",
-                f"- {L(lang, '结构效应', 'Composition effect')}: {effects.get('composition', 0.0):g}",
-                f"- {L(lang, '交叉效应', 'Interaction effect')}: {effects.get('interaction', 0.0):g}",
+                f"- {L(lang, '本征效应', 'Within effect')}: {_fmt_g(effects.get('within', 0.0))}",
+                f"- {L(lang, '结构效应', 'Composition effect')}: {_fmt_g(effects.get('composition', 0.0))}",
+                f"- {L(lang, '交叉效应', 'Interaction effect')}: {_fmt_g(effects.get('interaction', 0.0))}",
             ]
         else:
             eff_lines = [
-                f"- Within effect: {effects.get('within', 0.0):g}",
-                f"- Composition effect: {effects.get('composition', 0.0):g}",
-                f"- Interaction effect: {effects.get('interaction', 0.0):g}",
+                f"- Within effect: {_fmt_g(effects.get('within', 0.0))}",
+                f"- Composition effect: {_fmt_g(effects.get('composition', 0.0))}",
+                f"- Interaction effect: {_fmt_g(effects.get('interaction', 0.0))}",
             ]
         parts.append("\n".join(eff_lines) + "\n")
 
@@ -629,12 +636,12 @@ def _build_attribution_section(state: WorkflowState) -> str:
             parts.append("| --- | --- | --- | --- | --- | --- | --- |")
             for it in table:
                 parts.append(
-                    f"| {it.get('dim', '')} | {it.get('base_rate', 0.0):g} | "
-                    f"{it.get('current_rate', 0.0):g} | "
+                    f"| {it.get('dim', '')} | {_fmt_g(it.get('base_rate'))} | "
+                    f"{_fmt_g(it.get('current_rate'))} | "
                     f"{it.get('base_weight', 0.0):.1%} | "
                     f"{it.get('current_weight', 0.0):.1%} | "
-                    f"{it.get('delta', 0.0):g} | "
-                    f"{it.get('contribution', 0.0):g} |"
+                    f"{_fmt_g(it.get('delta'))} | "
+                    f"{_fmt_g(it.get('contribution'))} |"
                 )
         else:
             parts.append(f"| {L(lang, '维度', 'Dimension')} | {baseline_label} | "
@@ -643,8 +650,8 @@ def _build_attribution_section(state: WorkflowState) -> str:
             parts.append("| --- | --- | --- | --- | --- |")
             for it in table:
                 parts.append(
-                    f"| {it.get('dim', '')} | {it.get('base', 0.0):g} | "
-                    f"{it.get('current', 0.0):g} | {it.get('delta', 0.0):g} | "
+                    f"| {it.get('dim', '')} | {_fmt_g(it.get('base'))} | "
+                    f"{_fmt_g(it.get('current'))} | {_fmt_g(it.get('delta'))} | "
                     f"{it.get('contribution', 0.0):+.1%} |"
                 )
         parts.append("\n")
@@ -669,7 +676,7 @@ def _build_attribution_section(state: WorkflowState) -> str:
         parts.append("| --- | --- | --- | --- | --- |")
 
         def _fmt_tree_val(v: Any) -> str:
-            return f"{v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else "—"
+            return _fmt_g(_numf(v))
 
         for depth, node in _tree_rows(tree):
             name = "　" * depth + str(node.get("name") or node.get("metric") or "")

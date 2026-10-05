@@ -17,7 +17,9 @@ export const useUiStore = defineStore('ui', {
   state: () => ({
     lang: (localStorage.getItem(LANG_KEY) as Lang) || 'zh',
     sidebarOpen: localStorage.getItem(SIDEBAR_KEY) !== '0',
-    analysisOpen: localStorage.getItem(ANALYSIS_KEY) !== '0',
+    // 默认收起(设计「主推」):验证条 + 印章先给一眼结论,细节要了才展开
+    // —— 印章可点开、顶栏有开关,发现性不靠默认敞开。
+    analysisOpen: localStorage.getItem(ANALYSIS_KEY) === '1',
     datasource: localStorage.getItem(DATASOURCE_KEY) || '',
     datasourceList: [] as DatasourceInfo[],
     datasourcesLoaded: false,

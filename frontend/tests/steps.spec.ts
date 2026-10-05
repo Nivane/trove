@@ -131,6 +131,10 @@ describe('step payload extraction (backend `step` events carry detail.{...})', (
     expect(stepLabel('execute_sql', 'zh')).toContain('执行')
     expect(stepLabel('reflect', 'en')).toContain('Reflect')
     expect(stepLabel('output', 'zh')).toContain('最终回答')
+    // 走数链全节点都得有中文名（裸英文名是漏映射）
+    expect(stepLabel('masking', 'zh')).toBe('脱敏')
+    expect(stepLabel('attribution', 'zh')).toBe('归因分析')
+    expect(stepLabel('attribution', 'en')).toBe('Attribution')
   })
 })
 
@@ -307,6 +311,8 @@ describe('工段分组（分析面板）', () => {
   it('组名中英双写；未映射节点归 other（不硬塞进四段）', () => {
     expect(groupOf('answer_chitchat')).toBe('other')
     expect(groupOf('hitl')).toBe('verify')
+    // 归因是交付段（时序在反思与洞察之间），不进「其他」
+    expect(groupOf('attribution')).toBe('deliver')
     expect(groupSteps([step('output')], 'en')[0].label).toBe('Deliver')
   })
 

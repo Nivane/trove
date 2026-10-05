@@ -973,11 +973,24 @@ class AnalysisEngine:
         datasource = request.datasource
         degraded: list[dict[str, Any]] = []
 
-        # 时间字段判定失败 → baseline 降级 share(无基期,占比归因)
+        # 时间字段判定失败 / 时间窗解析不出 → baseline 降级 share(无基期,
+        # 占比归因)。**降级必须说**:请求了 yoy/环比却拿不到两个可比窗口
+        # 时静默降成占比,查询会在无时间过滤的数据上算「1997 vs 1996」——
+        # 结论数字对不上口径,而 partial 是唯一能看见它的地方。
         time_field = resolve_time_field(sl, matched, metric_name)
         periods = None
         if time_field:
             periods = _derive_periods(request.time_context or "", baseline)
+        if periods is None and baseline != "share":
+            degraded.append({
+                "stage": "period",
+                "reason": (
+                    "no_time_field" if not time_field
+                    else "no_time_context"
+                    if not str(request.time_context or "").strip()
+                    else "unparsable_time_context"
+                ),
+            })
         if periods is None:
             baseline = "share"
         cur_period = periods[0] if periods else None

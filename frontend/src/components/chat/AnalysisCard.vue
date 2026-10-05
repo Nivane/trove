@@ -108,6 +108,40 @@ const bandReasonKeys: Record<string, I18nKey> = {
   zero_scale: 'anaBandReasonZeroScale',
 }
 
+/* ── 证据抽屉的降级行:stage 闭集 + 已知原因代码译人话(与噪声带同一
+ * 纪律:认不出的原样带出)。带载荷的原因(components_truncated:2 /
+ * unresolvable:SUM(...))按冒号前缀译,载荷原样保留。 */
+const degradedStageKeys: Record<string, I18nKey> = {
+  period: 'anaDegradedPeriod',
+  series: 'anaDegradedSeries',
+  driver_tree: 'anaDegradedTree',
+  overall: 'anaDegradedOverall',
+  analysis: 'anaDegradedAnalysis',
+}
+
+const degradedReasonKeys: Record<string, I18nKey> = {
+  no_time_field: 'anaDegradedNoTimeField',
+  no_time_context: 'anaDegradedNoTimeContext',
+  unparsable_time_context: 'anaDegradedUnparsableTime',
+  grain_unaligned: 'anaDegradedGrainUnaligned',
+  no_blocks: 'anaDegradedNoBlocks',
+  compile_miss: 'anaDegradedCompileMiss',
+  empty_series: 'anaDegradedEmptySeries',
+  query_budget_exceeded: 'anaDegradedBudget',
+  components_truncated: 'anaDegradedComponentsTruncated',
+  unresolvable: 'anaDegradedUnresolvable',
+  field_shadowed: 'anaDegradedShadowed',
+  not_aggregate: 'anaDegradedNotAggregate',
+}
+
+function degradedLabel(kind: 'stage' | 'reason', raw: unknown): string {
+  const s = String(raw ?? '')
+  const [code, ...rest] = s.split(':')
+  const key = (kind === 'stage' ? degradedStageKeys : degradedReasonKeys)[code]
+  const word = key ? t(key, ui.lang) : code
+  return rest.length ? `${word}:${rest.join(':')}` : word
+}
+
 const band = computed(() => {
   const s = a.value?.series
   if (!s || typeof s !== 'object') return null
@@ -426,8 +460,8 @@ function resize() {
       <div v-if="showEvidence" class="ana-evidence-body">
         <div v-if="degraded.length" class="ana-degraded">
           <div v-for="(d, i) in degraded" :key="i" class="ana-degraded-row">
-            <span class="ana-chip warn">{{ d.stage }}</span>
-            <span>{{ d.reason }}</span>
+            <span class="ana-chip warn">{{ degradedLabel('stage', d.stage) }}</span>
+            <span>{{ degradedLabel('reason', d.reason) }}</span>
           </div>
         </div>
         <div v-for="q in queries" :key="q.id ?? 0" class="ana-query">
