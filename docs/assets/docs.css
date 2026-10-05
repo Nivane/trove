@@ -49,10 +49,9 @@
     --shadow-md: 0 4px 8px -2px rgba(0,0,0,.5);
   }
 }
-/* .dark-scope：把暗色令牌就地套在任意容器上（首页海报 hero 用它把自己
-   那一块翻成暗色，页面其余部分继续跟随站点主题）。与 [data-theme="dark"]
-   共用同一组值——改一处必须同步另一处。 */
-:root[data-theme="dark"], .dark-scope {
+/* 暗色令牌。首页(index.html)在 <html> 上写死 data-theme="dark"——整页定格
+   暗色（海报式落地页）；其余页不写，跟随系统偏好（即上面的 @media 块）。 */
+:root[data-theme="dark"] {
   --canvas: #09090b;
   --raised: #131316;
   --muted: #1c1c21;
@@ -103,8 +102,13 @@ a:focus-visible, button:focus-visible {
    （见下方「文档站（多页）」一节）；本节的落地页组件在 .doc-col 一节末尾
    做了少量抵消，维持落地页自己的间距。 */
 
-/* ── Hero ──────────────────────────────────────────────── */
-.hero { padding-block: 64px 0; }
+/* ── Hero（仅首页；整页定格暗色——网格/光晕与版式见下方「海报 hero」一节） ── */
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding-block: 56px 12px;
+  text-align: center;
+}
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -205,44 +209,37 @@ h1 {
   color: var(--text-primary);
 }
 
-/* ── 首页海报 hero（方向 D：暗色海报 + 流动管线） ────────
-   首屏做成一块暗色海报：定位文字、事实数字与「一句提问穿过节点管线」
-   的流动图同屏，其余部分照旧跟随站点主题。暗色不新起一套令牌——
-   .dark-scope 就地翻转（与 :root[data-theme="dark"] 同源），海报内部
-   所有 var() 自动取暗色档，无需逐项硬编码颜色。 */
-.hero-poster {
-  position: relative;
-  overflow: hidden;
-  padding: 58px 32px 24px;
-  border: 1px solid rgba(255,255,255,.10);
-  border-radius: 18px;
-  background: #09090b;
-  color: var(--text-primary);
-  text-align: center;
-  box-shadow: 0 40px 90px -52px rgba(24,24,27,.8);
-}
-/* 网格 + 顶部光晕：海报的两层底纹，都压在内容之下（子元素统一 z-index:1） */
-.hero-poster::before {
+/* ── 首页海报 hero（方向 D：定格暗色 + 流动管线） ────────
+   首页整页钉在暗色档（index.html 的 <html data-theme="dark">），所以 hero
+   不再是一张嵌在亮页里的卡：网格、光晕与居中的定位文字直接长在页面底色上，
+   末尾一条连接线指向下方的答案截图。暗色不新起一套令牌——本页所有 var()
+   自动取暗色档，无需逐项硬编码颜色。 */
+.hero::before {
   content: "";
   position: absolute; inset: 0;
   background-image:
     linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px);
   background-size: 44px 44px;
-  -webkit-mask-image: radial-gradient(72% 58% at 50% 5%, #000 26%, transparent 75%);
-  mask-image: radial-gradient(72% 58% at 50% 5%, #000 26%, transparent 75%);
+  /* 网格从顶边渐入、四周径向淡出——页面色上直接铺网格，硬切边会像贴纸 */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 120px),
+                      radial-gradient(72% 58% at 50% 5%, #000 26%, transparent 75%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(180deg, transparent 0, #000 120px),
+              radial-gradient(72% 58% at 50% 5%, #000 26%, transparent 75%);
+  mask-composite: intersect;
   pointer-events: none;
 }
-.hero-poster::after {
+.hero::after {
   content: "";
   position: absolute; left: 50%; top: -220px; width: 900px; height: 540px;
   transform: translateX(-50%);
   background: radial-gradient(50% 55% at 50% 45%, rgba(99,102,241,.22), transparent 70%);
   pointer-events: none;
 }
-.hero-poster > * { position: relative; z-index: 1; }
+.hero > * { position: relative; z-index: 1; }
 
-.hero-poster .eyebrow {
+.hero .eyebrow {
   color: #a1a1aa;
   border: 1px solid rgba(255,255,255,.13);
   background: rgba(255,255,255,.035);
@@ -251,28 +248,28 @@ h1 {
   margin-bottom: 26px;
   word-break: keep-all; /* 同上：断行只落在「 · 」分隔处 */
 }
-.hero-poster .eyebrow .dot { box-shadow: 0 0 10px rgba(74,222,128,.8); }
-.hero-poster h1 { margin-bottom: 18px; }
+.hero .eyebrow .dot { box-shadow: 0 0 10px rgba(74,222,128,.8); }
+.hero h1 { margin-bottom: 18px; }
 /* 站点规则给 .chain 留了 -8px 上边距（紧贴旧文字版 hero 的大标题），
    海报里 62px 标题下再压 -8 会贴脸——拉回正常行距。keep-all：CJK 默认
    可在任意两字间断行，窄屏会把「决策」拆到两行；只在「 · 」处断。
    （窄屏字号/字距的收紧见文件尾的 620px 媒体查询） */
-.hero-poster .chain { margin-top: 6px; color: var(--accent-bright); word-break: keep-all; }
-.hero-poster .lede { margin: 0 auto 30px; max-width: 40em; font-size: 17.5px; }
-.hero-poster .en { margin-inline: auto; text-align: left; }
-.hero-poster .cta-row { justify-content: center; }
-.hero-poster .cta {
+.hero .chain { margin-top: 6px; color: var(--accent-bright); word-break: keep-all; }
+.hero .lede { margin: 0 auto 30px; max-width: 40em; font-size: 17.5px; }
+.hero .en { margin-inline: auto; text-align: left; }
+.hero .cta-row { justify-content: center; }
+.hero .cta {
   background: #4f46e5; border-color: #4f46e5;
   box-shadow: 0 10px 30px -12px rgba(79,70,229,.8);
 }
-.hero-poster .cta:hover, .hero-poster .cta:focus-visible {
+.hero .cta:hover, .hero .cta:focus-visible {
   background: #6366f1; border-color: #6366f1;
 }
-.hero-poster .cta.ghost {
+.hero .cta.ghost {
   background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.14);
   color: #e4e4e7; box-shadow: none;
 }
-.hero-poster .cta.ghost:hover, .hero-poster .cta.ghost:focus-visible {
+.hero .cta.ghost:hover, .hero .cta.ghost:focus-visible {
   background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.14);
 }
 
@@ -343,9 +340,9 @@ h1 {
 }
 
 @media (max-width: 620px) {
-  .hero-poster { padding: 40px 20px 20px; border-radius: 14px; }
-  .hero-poster .eyebrow { font-size: 11px; letter-spacing: .03em; padding: 6px 12px; }
-  .hero-poster .chain { font-size: 12.5px; letter-spacing: .06em; }
+  .hero { padding-block: 36px 8px; }
+  .hero .eyebrow { font-size: 11px; letter-spacing: .03em; padding: 6px 12px; }
+  .hero .chain { font-size: 12.5px; letter-spacing: .06em; }
   .hp-panel { margin-top: 28px; padding: 14px 14px 12px; }
 }
 

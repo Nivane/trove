@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -23,81 +23,79 @@
   <main class="doc-col">
 
     <!-- ══ 首屏 ══
-         暗色海报（方向 D）：定位、事实与「一句提问穿过节点管线」的流动图同屏。
-         暗色由 .dark-scope 令牌就地翻转（docs.css 与 [data-theme="dark"] 同源），
-         页面其余部分照旧跟随站点主题。 -->
+         定格暗色的首页（方向 D）：定位、事实与「一句提问穿过节点管线」的流动图同屏。
+         暗色写在 <html data-theme="dark"> 上——整页（nav/正文/页脚）钉在暗色档，
+         站点其余 45 页不写该属性，继续跟随系统主题。 -->
     <header class="hero">
-      <div class="hero-poster dark-scope">
-        <span class="eyebrow"><span class="dot"></span>开源 · Apache-2.0 · 可自托管 · 只读接入你的数据</span>
-        <h1>Trove 数据决策智能体</h1>
-        <p class="chain">问数 · 分析 · 决策 · 行动，一条对话链路</p>
-        <p class="lede">
-          把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>；
-          判定规则在同一份语义模型上定时求值——季节噪声带判显著性，触发即带着证据送达；
-          行动发生在你的流程里（系统对业务数据保持只读），送出之后按同一套噪声带做效果验收。
-          Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
-          只把真正需要模型的那一段交给 LLM。
-        </p>
+      <span class="eyebrow"><span class="dot"></span>开源 · Apache-2.0 · 可自托管 · 只读接入你的数据</span>
+      <h1>Trove 数据决策智能体</h1>
+      <p class="chain">问数 · 分析 · 决策 · 行动，一条对话链路</p>
+      <p class="lede">
+        把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>；
+        判定规则在同一份语义模型上定时求值——季节噪声带判显著性，触发即带着证据送达；
+        行动发生在你的流程里（系统对业务数据保持只读），送出之后按同一套噪声带做效果验收。
+        Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
+        只把真正需要模型的那一段交给 LLM。
+      </p>
 
-        <div class="en">
-          <span class="en-label">English summary</span>
-          Trove is a <b>data decision agent</b>: questions, analysis, decisions and action in one conversation.
-          It turns a natural-language question into explainable SQL, a chart and a written conclusion, and
-          evaluates zero-LLM judgment rules on the same semantic model — each trigger arriving with the SQL
-          and rows it was judged on, while the action itself stays in your own processes (Trove keeps
-          read-only access to your data) and is measured back against the same noise band afterwards.
-          It is <b>semantic-first</b>: an OSSIE semantic model defines what is
-          answerable, and a deterministic compiler resolves joins, enums, time buckets and derived metrics —
-          the LLM only handles what genuinely needs a model. This page is the entry point to the docs:
-          quickstart, illustrated user / admin guides, and per-capability source anchors.
-        </div>
+      <div class="en">
+        <span class="en-label">English summary</span>
+        Trove is a <b>data decision agent</b>: questions, analysis, decisions and action in one conversation.
+        It turns a natural-language question into explainable SQL, a chart and a written conclusion, and
+        evaluates zero-LLM judgment rules on the same semantic model — each trigger arriving with the SQL
+        and rows it was judged on, while the action itself stays in your own processes (Trove keeps
+        read-only access to your data) and is measured back against the same noise band afterwards.
+        It is <b>semantic-first</b>: an OSSIE semantic model defines what is
+        answerable, and a deterministic compiler resolves joins, enums, time buckets and derived metrics —
+        the LLM only handles what genuinely needs a model. This page is the entry point to the docs:
+        quickstart, illustrated user / admin guides, and per-capability source anchors.
+      </div>
 
-        <div class="cta-row">
-          <a class="cta" href="guide/quickstart.html">快速上手 →</a>
-          <a class="cta ghost" href="guide/concepts.html">先看产品概念</a>
-          <a class="cta ghost" href="user/ui-tour.html">用户 / 管理台指南（图文）</a>
-        </div>
+      <div class="cta-row">
+        <a class="cta" href="guide/quickstart.html">快速上手 →</a>
+        <a class="cta ghost" href="guide/concepts.html">先看产品概念</a>
+        <a class="cta ghost" href="user/ui-tour.html">用户 / 管理台指南（图文）</a>
+      </div>
 
-        <!-- 流动管线：提问在这条链上走 28 个节点（数字契约见 docs.css 的 .hp-facts 注释） -->
-        <div class="hp-panel">
-          <div class="hp-head">
-            <span class="hp-title">查询管线 · graphs.py</span>
-            <span class="hp-legend">
-              <i><span class="hp-dot ok"></span>HIT 编译直出</i>
-              <i><span class="hp-dot warn"></span>软 MISS 骨架补齐</i>
-              <i><span class="hp-dot danger"></span>硬 MISS 拒绝 + 扩展</i>
-            </span>
-          </div>
-          <div class="hp-scroll">
-            <svg class="hp-svg" viewBox="0 0 708 92" role="img" aria-label="查询管线：从提问到交付的节点链路">
-              <g>
-                <rect class="nd" x="7"   y="24" width="70" height="46" rx="9"/><text x="42"  y="51.5">意图路由</text>
-                <rect class="nd" x="85"  y="24" width="70" height="46" rx="9"/><text x="120" y="51.5">语义绑定</text>
-                <rect class="nd is-gate" x="163" y="24" width="70" height="46" rx="9"/><text x="198" y="51.5">语义门禁</text>
-                <rect class="nd" x="241" y="24" width="70" height="46" rx="9"/><text x="276" y="51.5">计划与编译</text>
-                <rect class="nd" x="319" y="24" width="70" height="46" rx="9"/><text x="354" y="51.5">生成与共识</text>
-                <rect class="nd" x="397" y="24" width="70" height="46" rx="9"/><text x="432" y="51.5">执行前三门</text>
-                <rect class="nd" x="475" y="24" width="70" height="46" rx="9"/><text x="510" y="51.5">校验与脱敏</text>
-                <rect class="nd" x="553" y="24" width="70" height="46" rx="9"/><text x="588" y="51.5">反思</text>
-                <rect class="nd is-out" x="631" y="24" width="70" height="46" rx="9"/><text x="666" y="51.5">交付</text>
-              </g>
-              <line class="edge" x1="77"  y1="47" x2="85"  y2="47"/>
-              <line class="edge" x1="155" y1="47" x2="163" y2="47"/>
-              <line class="edge" x1="233" y1="47" x2="241" y2="47"/>
-              <line class="edge" x1="311" y1="47" x2="319" y2="47"/>
-              <line class="edge" x1="389" y1="47" x2="397" y2="47"/>
-              <line class="edge" x1="467" y1="47" x2="475" y2="47"/>
-              <line class="edge" x1="545" y1="47" x2="553" y2="47"/>
-              <line class="edge" x1="623" y1="47" x2="631" y2="47"/>
-            </svg>
-          </div>
-          <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">7400+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
+      <!-- 流动管线：提问在这条链上走 28 个节点（数字契约见 docs.css 的 .hp-facts 注释） -->
+      <div class="hp-panel">
+        <div class="hp-head">
+          <span class="hp-title">查询管线 · graphs.py</span>
+          <span class="hp-legend">
+            <i><span class="hp-dot ok"></span>HIT 编译直出</i>
+            <i><span class="hp-dot warn"></span>软 MISS 骨架补齐</i>
+            <i><span class="hp-dot danger"></span>硬 MISS 拒绝 + 扩展</i>
+          </span>
         </div>
+        <div class="hp-scroll">
+          <svg class="hp-svg" viewBox="0 0 708 92" role="img" aria-label="查询管线：从提问到交付的节点链路">
+            <g>
+              <rect class="nd" x="7"   y="24" width="70" height="46" rx="9"/><text x="42"  y="51.5">意图路由</text>
+              <rect class="nd" x="85"  y="24" width="70" height="46" rx="9"/><text x="120" y="51.5">语义绑定</text>
+              <rect class="nd is-gate" x="163" y="24" width="70" height="46" rx="9"/><text x="198" y="51.5">语义门禁</text>
+              <rect class="nd" x="241" y="24" width="70" height="46" rx="9"/><text x="276" y="51.5">计划与编译</text>
+              <rect class="nd" x="319" y="24" width="70" height="46" rx="9"/><text x="354" y="51.5">生成与共识</text>
+              <rect class="nd" x="397" y="24" width="70" height="46" rx="9"/><text x="432" y="51.5">执行前三门</text>
+              <rect class="nd" x="475" y="24" width="70" height="46" rx="9"/><text x="510" y="51.5">校验与脱敏</text>
+              <rect class="nd" x="553" y="24" width="70" height="46" rx="9"/><text x="588" y="51.5">反思</text>
+              <rect class="nd is-out" x="631" y="24" width="70" height="46" rx="9"/><text x="666" y="51.5">交付</text>
+            </g>
+            <line class="edge" x1="77"  y1="47" x2="85"  y2="47"/>
+            <line class="edge" x1="155" y1="47" x2="163" y2="47"/>
+            <line class="edge" x1="233" y1="47" x2="241" y2="47"/>
+            <line class="edge" x1="311" y1="47" x2="319" y2="47"/>
+            <line class="edge" x1="389" y1="47" x2="397" y2="47"/>
+            <line class="edge" x1="467" y1="47" x2="475" y2="47"/>
+            <line class="edge" x1="545" y1="47" x2="553" y2="47"/>
+            <line class="edge" x1="623" y1="47" x2="631" y2="47"/>
+          </svg>
+        </div>
+        <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">7400+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
+      </div>
 
-        <div class="hp-connector" aria-hidden="true">
-          <span class="vline"></span>
-          <span class="clabel">同一次提问的答案 ↓</span>
-        </div>
+      <div class="hp-connector" aria-hidden="true">
+        <span class="vline"></span>
+        <span class="clabel">同一次提问的答案 ↓</span>
       </div>
     </header>
 
