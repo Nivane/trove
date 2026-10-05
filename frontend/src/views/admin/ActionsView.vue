@@ -186,12 +186,51 @@
         <span class="dim actions-frozen-hint">{{ t('actionsFrozenHint', ui.lang) }}</span>
       </div>
 
-      <el-table v-loading="loading" :data="proposals" class="admin-table">
+      <!-- 批量(A6):只放行批准/驳回,只有 pending 行可选 —— 可勾选性即
+           可批性,勾不上的行本来就批不了(点了也只会逐条报错)。 -->
+      <div v-if="selected.length" class="actions-bulk-bar" role="status">
+        <span class="bulk-count">{{ t('actionsBatchSelected', ui.lang, selected.length) }}</span>
+        <el-button size="small" type="primary" :disabled="batchBusy" @click="askBatch('approve')">
+          {{ t('actionsBatchApprove', ui.lang) }}
+        </el-button>
+        <el-button size="small" type="danger" plain :disabled="batchBusy" @click="askBatch('reject')">
+          {{ t('actionsBatchReject', ui.lang) }}
+        </el-button>
+        <span class="actions-bulk-spacer" />
+        <el-button size="small" text :disabled="batchBusy" @click="clearSelection">
+          {{ t('actionsBatchClear', ui.lang) }}
+        </el-button>
+      </div>
+
+      <!-- 部分失败:逐条原因 + 单条重试;失败行保持选中,重试即从原位再走一次。 -->
+      <div v-if="batchFailures.length" class="actions-partial" role="alert">
+        <div class="actions-partial-title">
+          <TriangleAlert :size="14" aria-hidden="true" />
+          {{ t('actionsBatchPartial', ui.lang) }}
+        </div>
+        <div v-for="f in batchFailures" :key="f.id" class="actions-partial-row">
+          <span class="actions-partial-name cell-mono">{{ proposalLabelOf(f.id) }}</span>
+          <span class="actions-partial-error">{{ f.error }}</span>
+          <el-button size="small" :loading="batchBusy" @click="retryBatchItem(f.id)">
+            {{ t('actionsBatchRetry', ui.lang) }}
+          </el-button>
+        </div>
+      </div>
+
+      <el-table
+        ref="proposalsTable"
+        v-loading="loading"
+        :data="proposals"
+        class="admin-table"
+        row-key="id"
+        @selection-change="onSelectionChange"
+      >
         <template #empty>
           <TableEmpty>
             {{ values.status === 'open' ? t('actionsProposalsEmpty', ui.lang) : t('actionsProposalsNoMatch', ui.lang) }}
           </TableEmpty>
         </template>
+        <el-table-column type="selection" width="46" :selectable="canBatchSelect" />
         <el-table-column :label="t('actionsStatus', ui.lang)" width="120">
           <template #default="{ row }">
             <span class="pill" :class="proposalStatusClass(row.status)">
@@ -396,14 +435,14 @@
       </template>
     </el-dialog>
 
-    <!-- ── 审批对话框(所有动词共用)─────────────────────── -->
+    <!-- ── 审批对话框(所有动词共用;batch 模式=A6 批量)──────── -->
     <el-dialog
       v-model="dialogOpen"
       :title="dialogTitle"
-      width="520px"
+      :width="dialogMode === 'batch' ? '760px' : '520px'"
       class="actions-dialog"
     >
-      <div v-if="dialogTarget" class="actions-dialog-target">
+      <div v-if="dialogMode === 'single' && dialogTarget" class="actions-dialog-target">
         <span class="cell-mono">{{ dialogTarget.rule_id }}</span>
         <span class="dim"> · {{ dialogTarget.id }}</span>
         <span class="pill" :class="proposalStatusClass(dialogTarget.status)">
@@ -411,6 +450,39 @@
         </span>
       </div>
       <p class="view-desc">{{ dialogHint }}</p>
+
+      <!-- 批量 = 逐条预览:批的是**看过的载荷**,不是一排 id。 -->
+      <div v-if="dialogMode === 'batch'" class="actions-batch-preview">
+        <div v-for="p in batchTargets" :key="p.id" class="actions-batch-row">
+          <div class="actions-batch-head">
+            <span class="cell-mono">{{ p.rule_id }}</span>
+            <span class="dim"> · {{ p.id }}</span>
+            <span class="pill" :class="riskClass(p.risk)">
+              {{ t('actionsRisk', ui.lang) }} · {{ riskLabel(p.risk) }}
+            </span>
+            <span class="pill pill-neutral cell-mono">{{ p.template }}</span>
+          </div>
+          <div v-if="p.rationale" class="actions-rationale">{{ p.rationale }}</div>
+          <div class="actions-batch-line">
+            <span class="dim">{{ t('actionsPayload', ui.lang) }}</span>
+            <span class="cell-mono actions-batch-value">{{ payloadSummary(p) }}</span>
+          </div>
+          <div class="actions-batch-line">
+            <span class="dim">{{ t('actionsEvidence', ui.lang) }}</span>
+            <span class="cell-mono actions-batch-value">{{ evidenceSummary(p) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 高风险行:勾过才算数(逐条看过是批量的前提,不是装饰)。 -->
+      <div v-if="dialogMode === 'batch' && highRiskCount > 0" class="actions-batch-risk">
+        <div class="actions-batch-risk-line">
+          <TriangleAlert :size="14" aria-hidden="true" />
+          {{ t('actionsBatchHighRisk', ui.lang, highRiskCount) }}
+        </div>
+        <el-checkbox v-model="batchAck">{{ t('actionsBatchHighRiskAck', ui.lang) }}</el-checkbox>
+      </div>
+
       <el-input
         v-model="comment"
         type="textarea"
@@ -422,7 +494,7 @@
         <el-button @click="dialogOpen = false">{{ t('cancel', ui.lang) }}</el-button>
         <el-button
           :type="dialogVerb === 'reject' || dialogVerb === 'cancel' ? 'danger' : 'primary'"
-          :loading="busy"
+          :loading="busy || batchBusy"
           :disabled="!canSubmit"
           @click="submitDecision"
         >
@@ -593,8 +665,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { Plus, RefreshCw } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { Plus, RefreshCw, TriangleAlert } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { useListQuery } from '../../composables/useListQuery'
@@ -605,6 +677,7 @@ import {
   ACTION_PROPOSAL_STATUSES,
   ACTION_PROPOSALS_ALL,
   ACTION_TABS,
+  batchDecideActionProposals,
   createActionTemplate,
   confirmActionTemplate,
   decideActionProposal,
@@ -620,6 +693,8 @@ import {
   rejectActionTemplate,
   riskClass,
   templateStatusClass,
+  type ActionBatchDecision,
+  type ActionBatchResult,
   type ActionDecision,
   type ActionOutcome,
   type ActionProposal,
@@ -887,37 +962,203 @@ async function submitCreate() {
   }
 }
 
-/* ── 提案:审批对话框 ─────────────────────────────────── */
+/* ── 提案:批量选择(A6)──────────────────────────────── */
+
+/**
+ * 选中集合以**行 id** 为准(不是 el-table 内部状态)—— 列表每次重载后
+ * 由 ``syncTableSelection`` 把勾选状态按 id 重新落到新行对象上;重载丢掉
+ * 的 id 一并清掉(不可见的选中比不选更坏:批量栏在数它,表格里却看不到)。
+ */
+const selected = ref<string[]>([])
+const proposalsTable = ref<{
+  clearSelection: () => void
+  toggleRowSelection: (row: ActionProposal, selected?: boolean) => void
+} | null>(null)
+const batchBusy = ref(false)
+const batchResults = ref<ActionBatchResult | null>(null)
+/** 上一次批量用的动词与备注 —— 失败行的单条重试沿用同一对。 */
+const batchVerb = ref<ActionBatchDecision>('approve')
+const batchComment = ref('')
+
+const batchFailures = computed(() =>
+  (batchResults.value?.results ?? []).filter((r) => !r.ok),
+)
+
+/** 可勾选 = 可批:批量只放行 approve/reject,而非 pending 两件都批不了。 */
+function canBatchSelect(row: ActionProposal): boolean {
+  return row.status === 'pending'
+}
+
+function onSelectionChange(rows: ActionProposal[]) {
+  selected.value = rows.map((r) => r.id)
+}
+
+function clearSelection() {
+  selected.value = []
+  proposalsTable.value?.clearSelection()
+}
+
+/** 列表重载后:把 ``selected`` 里还活着的 id 重新勾上,顺手剪掉不可见的。 */
+async function syncTableSelection() {
+  await nextTick()
+  const keep = new Set(selected.value)
+  const live = proposals.value.filter(
+    (p) => keep.has(p.id) && canBatchSelect(p),
+  )
+  proposalsTable.value?.clearSelection()
+  selected.value = live.map((p) => p.id)
+  for (const p of live) proposalsTable.value?.toggleRowSelection(p, true)
+}
+
+watch(proposals, () => void syncTableSelection())
+
+function proposalLabelOf(id: string): string {
+  const hit = proposals.value.find((p) => p.id === id)
+  return hit ? `${hit.rule_id} · ${hit.id}` : id
+}
+
+/** payload 摘要:标量按原样、嵌套折叠成形状 —— 预览要看的是"批的是什么"。 */
+function payloadSummary(p: ActionProposal): string {
+  const entries = Object.entries(p.payload ?? {}).filter(([k]) => k !== '_trove')
+  if (!entries.length) return '—'
+  const parts = entries.slice(0, 4).map(([k, v]) => {
+    const text =
+      v === null || v === undefined
+        ? 'null'
+        : typeof v === 'object'
+          ? Array.isArray(v)
+            ? `[${v.length}]`
+            : '{…}'
+          : String(v)
+    return `${k}=${text.length > 48 ? `${text.slice(0, 48)}…` : text}`
+  })
+  const more = entries.length > 4 ? ` (+${entries.length - 4})` : ''
+  return parts.join(' · ') + more
+}
+
+/** 证据摘要:先摆判定锚点类键,其余只报个数(它们本来就是指针)。 */
+function evidenceSummary(p: ActionProposal): string {
+  const refs = p.evidence_refs ?? {}
+  const keys = ['rule_rev', 'group', 'run_id', 'job_id']
+  const parts = keys
+    .filter((k) => refs[k] !== undefined && refs[k] !== null && refs[k] !== '')
+    .map((k) => `${k}: ${String(refs[k])}`)
+  const extra = Object.keys(refs).filter((k) => !keys.includes(k)).length
+  if (extra) parts.push(`+${extra}`)
+  return parts.join(' · ') || '—'
+}
+
+/* ── 提案:审批对话框(单条 / 批量共用)────────────────── */
 
 const dialogOpen = ref(false)
+/** 单条模式带 dialogTarget;批量模式带 batchTargets(选中的 pending 行)。 */
+const dialogMode = ref<'single' | 'batch'>('single')
 const dialogVerb = ref<ActionDecision>('approve')
 const dialogTarget = ref<ActionProposal | null>(null)
 const comment = ref('')
 const dialogError = ref('')
 const busy = ref(false)
+const batchAck = ref(false)
 
-const commentRequired = computed(() => dialogVerb.value === 'reject')
-const canSubmit = computed(() => !commentRequired.value || comment.value.trim().length > 0)
-
-const dialogTitle = computed(() =>
-  dialogTarget.value
-    ? `${verbLabel(dialogVerb.value)} · ${dialogTarget.value.rule_id}`
-    : verbLabel(dialogVerb.value),
+const batchTargets = computed(() =>
+  // 「可勾选 = 可批」在决定**送什么**的地方再收一道:选中集合理论上只来自
+  // 可勾选行,但这是发请求前最后一次能拦住的点。
+  proposals.value.filter((p) => selected.value.includes(p.id) && canBatchSelect(p)),
 )
 
-const dialogHint = computed(() => t(VERB_HINT_KEY[dialogVerb.value], ui.lang))
+const highRiskCount = computed(
+  () => batchTargets.value.filter((p) => p.risk === 'high').length,
+)
 
-function ask(verb: ActionDecision, p: ActionProposal) {
+const commentRequired = computed(() => dialogVerb.value === 'reject')
+const canSubmit = computed(() => {
+  if (commentRequired.value && !comment.value.trim()) return false
+  // 高风险必须逐条看过并显式勾选 —— 批量不能变成"不看你批的是什么"。
+  if (dialogMode.value === 'batch' && highRiskCount.value > 0 && !batchAck.value) {
+    return false
+  }
+  return true
+})
+
+const dialogTitle = computed(() => {
+  if (dialogMode.value === 'batch') {
+    return `${verbLabel(dialogVerb.value)} × ${batchTargets.value.length}`
+  }
+  return dialogTarget.value
+    ? `${verbLabel(dialogVerb.value)} · ${dialogTarget.value.rule_id}`
+    : verbLabel(dialogVerb.value)
+})
+
+const dialogHint = computed(() =>
+  dialogMode.value === 'batch'
+    ? t('actionsBatchHint', ui.lang)
+    : t(VERB_HINT_KEY[dialogVerb.value], ui.lang),
+)
+
+function openDialog(verb: ActionDecision) {
   dialogVerb.value = verb
-  dialogTarget.value = p
   comment.value = ''
   dialogError.value = ''
+  batchAck.value = false
   dialogOpen.value = true
 }
 
+function ask(verb: ActionDecision, p: ActionProposal) {
+  dialogMode.value = 'single'
+  dialogTarget.value = p
+  openDialog(verb)
+}
+
+function askBatch(verb: ActionBatchDecision) {
+  if (!selected.value.length) return
+  dialogMode.value = 'batch'
+  dialogTarget.value = null
+  openDialog(verb)
+}
+
+/** 批量提交与单条重试共用的执行腿;整批 400 上抛(由调用方呈现)。 */
+async function runBatch(verb: ActionBatchDecision, ids: string[], note: string) {
+  batchBusy.value = true
+  batchVerb.value = verb
+  batchComment.value = note
+  try {
+    const body = await batchDecideActionProposals(ids, verb, note)
+    if (body.failed === 0) {
+      notifySuccess(t('actionsDecided', ui.lang, verbLabel(verb)))
+    }
+    // 逐条结果合并:重试只替换它自己那一行,别把上一轮的失败记录擦掉。
+    const previous = batchResults.value?.results ?? []
+    const fresh = new Map(body.results.map((r) => [r.id, r]))
+    const merged = [
+      ...previous.filter((r) => !fresh.has(r.id)),
+      ...body.results,
+    ]
+    const applied = merged.filter((r) => r.ok).length
+    const failed = merged.filter((r) => !r.ok).length
+    batchResults.value = failed ? { results: merged, applied, failed } : null
+    await load()
+    // 失败行保持选中 —— 重试就是"从这里再走一次"。**必须在 load() 之后**:
+    // 重载换掉整批行对象,EP 的清理会回调 selection-change(空),先设置的选中
+    // 会被那一下抹掉。
+    const failedIds = merged.filter((r) => !r.ok).map((r) => r.id)
+    selected.value = failedIds
+    await syncTableSelection()
+    if (detailOpen.value && detail.value && ids.includes(detail.value.proposal.id)) {
+      await loadDetail(detail.value.proposal.id)
+    }
+  } finally {
+    batchBusy.value = false
+  }
+}
+
 async function submitDecision() {
+  if (!canSubmit.value) return
+  if (dialogMode.value === 'batch') {
+    await submitBatch()
+    return
+  }
   const target = dialogTarget.value
-  if (!target || !canSubmit.value) return
+  if (!target) return
   busy.value = true
   dialogError.value = ''
   try {
@@ -933,6 +1174,28 @@ async function submitDecision() {
     dialogError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
+  }
+}
+
+async function submitBatch() {
+  const ids = batchTargets.value.map((p) => p.id)
+  if (!ids.length) return
+  dialogError.value = ''
+  try {
+    await runBatch(dialogVerb.value as ActionBatchDecision, ids, comment.value.trim())
+    // 有失败条目时也关:它们已经重新选中,逐条原因就在页面的失败面板上
+    // (带着单条重试)—— 对话框继续开着反而挡住那才是下一步的表格。
+    dialogOpen.value = false
+  } catch (e) {
+    dialogError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function retryBatchItem(id: string) {
+  try {
+    await runBatch(batchVerb.value, [id], batchComment.value)
+  } catch (e) {
+    toastError(e)
   }
 }
 
@@ -1169,5 +1432,105 @@ onMounted(load)
   gap: 6px;
   flex-wrap: wrap;
   padding-top: var(--sp-2);
+}
+
+/* ── 批量(A6)────────────────────────────────────────────── */
+.actions-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 var(--sp-4) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+.actions-bulk-bar .bulk-count {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--accent-active);
+}
+.actions-bulk-spacer {
+  flex: 1;
+}
+.actions-partial {
+  margin: 0 var(--sp-4) var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--danger);
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+}
+.actions-partial-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.actions-partial-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-2xs);
+}
+.actions-partial-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.actions-partial-error {
+  flex: 1;
+  min-width: 0;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+.actions-batch-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 340px;
+  overflow-y: auto;
+  margin-bottom: var(--sp-2);
+}
+.actions-batch-row {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+}
+.actions-batch-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+}
+.actions-batch-line {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: 2px;
+  font-size: var(--fs-2xs);
+}
+.actions-batch-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.actions-batch-risk {
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+}
+.actions-batch-risk-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
 }
 </style>

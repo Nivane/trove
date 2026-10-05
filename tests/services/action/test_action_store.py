@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from trove.services.action.models import ActionProposal, Approval, Delivery
+from trove.services.action.propose import ProposalError
 from trove.services.action.store import ActionStore
 
 
@@ -111,6 +112,43 @@ async def test_update_proposal_touches_lifecycle_columns_only(store):
         await store.update_proposal("p-1", payload={"tampered": True})
     assert "immutable" in str(e.value)
     assert (await store.get_proposal("p-1")).payload == _proposal().payload
+
+
+async def test_update_proposal_expect_status_is_a_conditional_write(store):
+    """``expect_status`` 是条件更新(读-改-写竞态的关门闸):状态对得上才写,
+    对不上抛 ``ProposalError`` 且**生命周期的列一个字节没动** —— 两个并发
+    决定只有一个能落。"""
+    await store.create_proposal(_proposal())
+
+    await store.update_proposal(
+        "p-1", expect_status="pending", status="approved",
+        decided_at="2026-10-03T10:00:00")
+    assert (await store.get_proposal("p-1")).status == "approved"
+
+    # 读到的 pending 已被并发方改走 → 拒绝,且不覆盖赢家写下的任何一列
+    with pytest.raises(ProposalError) as e:
+        await store.update_proposal(
+            "p-1", expect_status="pending", status="rejected",
+            decided_at="2026-10-03T11:00:00")
+    assert "no longer 'pending'" in str(e.value)
+    p = await store.get_proposal("p-1")
+    assert p.status == "approved" and p.decided_at == "2026-10-03T10:00:00"
+
+    # 行不存在与状态不符走同一条错误路径(rowcount=0 不区分 —— 消息里带上
+    # 期望状态,调用方据此知道该重读什么)
+    with pytest.raises(ProposalError) as e:
+        await store.update_proposal(
+            "p-ghost", expect_status="pending", status="approved")
+    assert "'pending'" in str(e.value)
+
+
+async def test_update_proposal_without_expect_status_stays_unconditional(store):
+    """兼容安全带:不传 ``expect_status`` 的老调用点行为逐字节不变 ——
+    裸 UPDATE 仍然照写(旧调用方依赖的就是它),条件闸只对显式声明的调用
+    生效。"""
+    await store.create_proposal(_proposal(status="approved"))
+    await store.update_proposal("p-1", status="cancelled")
+    assert (await store.get_proposal("p-1")).status == "cancelled"
 
 
 async def test_expire_due_only_touches_overdue_pending(store):

@@ -37,6 +37,7 @@ from trove.services.action.models import (
     Delivery,
     Outcome,
 )
+from trove.services.action.propose import ProposalError
 
 logger = get_logger(__name__)
 
@@ -407,8 +408,20 @@ class ActionStore:
         finally:
             await conn.close()
 
-    async def update_proposal(self, proposal_id: str, **fields: Any) -> None:
-        """Update the mutable lifecycle columns (see :data:`_UPDATABLE`)."""
+    async def update_proposal(
+        self, proposal_id: str, *, expect_status: str = "", **fields: Any,
+    ) -> None:
+        """Update the mutable lifecycle columns (see :data:`_UPDATABLE`).
+
+        ``expect_status`` 是**条件更新**(读-改-写竞态的关上闸):非空时
+        SQL 追加 ``AND status = ?``,rowcount 为 0(行不在这个状态,或根本
+        不存在)就抛 ``ProposalError`` 而不是静默覆盖。两个管理员同时批同
+        一条提案时,后到的那个必须**失败**——裸 UPDATE 会让它悄悄地第二次
+        写 ``approved``,两条 approvals 记录都成立,状态机看起来却只有一次
+        决定;`expect_status` 把这种"谁赢了"的判定交给数据库的原子性。
+
+        不传 ``expect_status`` 的老调用点(SQL 与参数逐字节)不变。
+        """
         unknown = sorted(set(fields) - set(_UPDATABLE))
         if unknown:
             raise ValueError(
@@ -420,13 +433,23 @@ class ActionStore:
         # 所以「拼进 SQL 的东西必须来自代码里的常量」是这里唯一的纪律。
         sets = ", ".join(f"{k} = ?" for k in fields)
         params = list(fields.values()) + [str(proposal_id)]
+        where = " WHERE id = ?"
+        if expect_status:
+            where += " AND status = ?"
+            params.append(str(expect_status))
         conn = await self._conn()
         try:
-            await conn.execute(
-                f"UPDATE proposals SET {sets} WHERE id = ?", tuple(params))
+            cursor = await conn.execute(
+                f"UPDATE proposals SET {sets}{where}", tuple(params))
+            count = int(getattr(cursor, "rowcount", 0) or 0)
             await conn.commit()
         finally:
             await conn.close()
+        if expect_status and count == 0:
+            raise ProposalError(
+                f"proposal {proposal_id} is no longer {expect_status!r} — "
+                "a concurrent decision or the expiry sweep moved it first; "
+                "the update was refused")
 
     async def expire_due(self, now_iso: str) -> int:
         """Pending proposals past ``expires_at`` → ``expired``. Returns the count.

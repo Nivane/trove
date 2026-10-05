@@ -24,8 +24,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import require_admin
-from trove.api.schemas import ActionDecision, ActionTemplateCreate
+from trove.api.schemas import ActionBatchRequest, ActionDecision, ActionTemplateCreate
 from trove.services.action.propose import ProposalError
+from trove.services.action.service import BATCH_DECISIONS
 from trove.services.action.template_render import TEMPLATE_VARIABLES
 
 router = APIRouter()
@@ -35,6 +36,13 @@ router = APIRouter()
 #: route table cannot grow a verb the service does not implement.
 #: ``dry_run`` 是预演:只走前置判定与回执行,不发 POST、不动提案状态。
 _DECISIONS = ("approve", "reject", "cancel", "dispatch", "retry", "dry_run", "ack")
+
+#: 批量端点一次最多接受的 id 数。与提案列表单页上限(200)同值 —— 管理台
+#: 只能选中已加载的一页,更大的数字只可能来自脚本。超限**整体 400、不截断**
+#: (截断会让调用方以为全都处理了 —— 少批的和没批的一样安静)。
+#: 允许动词直接用 service 的 ``BATCH_DECISIONS``(单一事实源,400 文案与
+#: service 校验不可能漂移;为什么只有这两个见那里的注释)。
+_BATCH_MAX_IDS = 200
 
 
 def _actions(request: Request):
@@ -207,6 +215,60 @@ async def get_action_outcomes(
         "proposal_id": proposal_id,
         "outcomes": [dataclasses.asdict(o) for o in outcomes],
         "measured": bool(outcomes),
+    }
+
+
+@router.post("/admin/actions/proposals/batch")
+async def batch_decide_action_proposals(
+    body: ActionBatchRequest,
+    request: Request,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """批量审批:逐条独立(一条失败不影响其余),逐条审计。
+
+    替代前端串行 for 循环 —— 串行时前一条失败会让后面的提案状态停在
+    「不知道跑没跑」;这里每条的成败都在 ``results`` 里显式给出。逐条审计
+    的明细带 ``batch: True``,与单条端点(同名 action)的痕迹区分开。
+
+    两处整批前置校验(400,绝不逐条半执行):动词非法 —— dispatch 是唯一有
+    外部副作用的动词(批量外送 = 一键群发),cancel/retry 是纠错,都不该
+    成批;id 数超限 —— 不截断(截断后前 N 条已改状态、调用方却以为全处理
+    了,比整批拒绝难查得多)。
+    """
+    if body.decision not in BATCH_DECISIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"decision {body.decision!r} cannot be applied in a batch: "
+                   f"must be one of {', '.join(BATCH_DECISIONS)}")
+    if len(body.ids) > _BATCH_MAX_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many ids: {len(body.ids)} > {_BATCH_MAX_IDS} "
+                   "(nothing was applied)")
+    service = _actions(request)
+    actor = str(user.get("username") or user.get("id") or "")
+    comment = str(body.comment or "")
+    outcome = await service.decide_batch(
+        body.ids, body.decision, actor, comment)
+    for item in outcome["results"]:
+        details: dict[str, Any] = {
+            "proposal_id": item["id"], "batch": True, "comment": comment[:200],
+        }
+        if item["ok"]:
+            details["status"] = item.get("status") or ""
+            await _audit(request, f"action.proposal.{body.decision}", user,
+                         status=200, details=details)
+        else:
+            # 失败也审计:批量结果集里失败是**数据**不是异常 —— 不落审计的
+            # 话,这批的失败在审计面上只剩"谁调过批量端点"一条,逐条原因
+            # 蒸发(单条端点的失败在抛 400 前不落审计,这里刻意补齐)。
+            details["error"] = item["error"]
+            await _audit(request, f"action.proposal.{body.decision}", user,
+                         status=400, details=details)
+    return {
+        "results": outcome["results"],
+        "applied": outcome["applied"],
+        "failed": outcome["failed"],
     }
 
 
