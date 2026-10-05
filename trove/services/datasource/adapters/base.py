@@ -21,7 +21,7 @@ from trove.core.types import (
 )
 
 #: 适配器自身终止调用的界(秒)。它是「等驱动确认把取消发出去」的耐心,不是
-#: 业务参数 —— 所以六个方言共用一个数,不放进配置。超界即放弃等待并如实
+#: 业务参数 —— 所以各方言共用一个数,不放进配置。超界即放弃等待并如实
 #: 返回 False(§10:不发第二次 kill,上层 ``QueryTerminator`` 另有硬超时兜底)。
 INTERRUPT_TIMEOUT_S = 2.0
 
@@ -218,7 +218,7 @@ class DatabaseAdapter(ABC):
     async def table_profiles(self) -> dict[str, TableProfile]:
         """批量表级画像,键为表名(设计 §9.2)。
 
-        默认实现只复用 ``get_schema()`` 已经有的事实 —— 六个适配器全都填了
+        默认实现只复用 ``get_schema()`` 已经有的事实 —— 七个适配器全都填了
         ``row_count_estimate``,所以成本轨的第 2 档今天就能覆盖**全部方言**,
         不需要为它新写任何方言 SQL。
 

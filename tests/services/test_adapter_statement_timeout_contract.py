@@ -31,15 +31,17 @@ from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
 from trove.services.datasource.adapters.doris import DorisAdapter
 from trove.services.datasource.adapters.mysql import MySQLAdapter
 from trove.services.datasource.adapters.postgres import PostgresAdapter
+from trove.services.datasource.adapters.snowflake import SnowflakeAdapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.registry import _ADAPTER_REGISTRY
 
-#: 今天的预期矩阵。True 的三个各有**验证过**的机制(见各自声明处的注释);
+#: 今天的预期矩阵。True 的四个各有**验证过**的机制(见各自声明处的注释);
 #: False 的三个是**刻意的**,变化必须由这条测试逼一次回答。
 _DECLARED = {
     "mysql": True,       # SET SESSION max_execution_time / max_statement_time(MariaDB)
     "postgres": True,    # 连接参数 options=-c statement_timeout=<ms>
     "clickhouse": True,  # 请求级 settings.max_execution_time(秒)
+    "snowflake": True,   # 登录参数 session_parameters.STATEMENT_TIMEOUT_IN_SECONDS(秒)
     "sqlite": False,     # 进程内引擎,无可保护的服务端对象
     "duckdb": False,     # 同上,且没有等价的会话级设置
     "doris": False,      # 会话超时语句语义未在本仓验证(收窄 MySQL 的 True)
@@ -291,6 +293,61 @@ class TestClickHouse:
     def test_explicit_off_adds_no_settings_key(self):
         adapter = ClickHouseAdapter(name="c", config={"statement_timeout_ms": 0})
         assert "settings" not in adapter._connect_kwargs()
+
+
+class TestSnowflake:
+    def test_settings_ride_the_shared_connect_kwargs(self):
+        """闸折在 ``_connect_kwargs`` 里,与登录同一个请求 —— 不存在「连上了
+        但闸还没装」的窗口,重连也自动重装(不需要 MySQL 那种 ping 重装)。"""
+        adapter = SnowflakeAdapter(name="s", config={"account": "acct"})
+        kwargs = adapter._connect_kwargs()
+        assert kwargs["session_parameters"] == {"STATEMENT_TIMEOUT_IN_SECONDS": 60}
+        assert kwargs["account"] == "acct"  # 原有参数没被 setting 挤掉
+
+    def test_sub_second_budget_never_folds_to_zero(self):
+        """``ms < 1000`` 折成 0 不是「关」—— 雪花文档里 0 = **按最大值(7 天)**
+        执行,折零等于把一道闸变成一句空话。"""
+        adapter = SnowflakeAdapter(name="s", config={
+            "account": "acct", "statement_timeout_ms": 400,
+        })
+        assert adapter._connect_kwargs()["session_parameters"] == {
+            "STATEMENT_TIMEOUT_IN_SECONDS": 1,
+        }
+
+    def test_explicit_off_adds_no_settings_key(self):
+        adapter = SnowflakeAdapter(name="s", config={
+            "account": "acct", "statement_timeout_ms": 0,
+        })
+        assert "session_parameters" not in adapter._connect_kwargs()
+
+    async def test_connect_sends_the_settings_with_the_login_request(
+        self, monkeypatch,
+    ):
+        """建连路径:session_parameters 必须真的进 ``snowflake.connect`` ——
+        单测钩子形状只证明"算得出",这条证明"发得出去"。"""
+        seen: dict = {}
+
+        class _FakeConn:
+            def is_closed(self):
+                return False
+
+        class _FakeDriver:
+            @staticmethod
+            def connect(**kwargs):
+                seen.update(kwargs)
+                return _FakeConn()
+
+        monkeypatch.setattr(
+            "trove.services.datasource.adapters.snowflake._get_driver",
+            lambda: _FakeDriver,
+        )
+        adapter = SnowflakeAdapter(name="s", config={
+            "account": "acct", "database": "DB", "schema": "PUBLIC",
+        })
+        await adapter.connect()
+        assert seen["session_parameters"] == {"STATEMENT_TIMEOUT_IN_SECONDS": 60}
+        assert seen["account"] == "acct"
+        assert seen["schema"] == "PUBLIC"
 
 
 class TestTheBaseContract:

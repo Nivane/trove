@@ -496,6 +496,11 @@ const TYPES: Record<string, TypeMeta> = {
     label: 'DuckDB',
     example: 'duckdb:///path/to/data.duckdb',
   },
+  snowflake: {
+    value: 'snowflake',
+    label: 'Snowflake',
+    example: 'snowflake://user:pass@account/FIN/PUBLIC?warehouse=COMPUTE_WH',
+  },
 }
 
 const typeOptions = Object.values(TYPES) as TypeMeta[]

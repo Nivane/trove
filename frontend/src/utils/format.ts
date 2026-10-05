@@ -21,6 +21,7 @@ export function dsTypeLabel(type: string): string {
     postgres: 'PostgreSQL',
     clickhouse: 'ClickHouse',
     duckdb: 'DuckDB',
+    snowflake: 'Snowflake',
   }
   return labels[type] ?? type
 }
