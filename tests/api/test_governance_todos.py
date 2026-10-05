@@ -173,7 +173,9 @@ class TestTodosShape:
         }
         assert sem["diff"]["error"] is None
         assert sem["diff"]["after"]["expression"] == "MAX(students.grade)"
-        assert sem["actionable"]["edit_url"] == "/admin/semantic?pending=1"
+        # 条目级深链:ds 显式带上、页签用 SemanticView 的 useListQuery 契约键
+        # tab=(旧式 ?pending=1 没人读,A1 修正)
+        assert sem["actionable"]["edit_url"] == "/admin/semantic?ds=test_db&tab=pending"
 
         # skill_draft:ds 为 null(全局资产,不属于任何数据源)
         skill = by["skill_draft"]
@@ -496,7 +498,7 @@ class TestAutoCandidateInbox:
         # 自动候选与人工/refuse 草稿。
         assert item["summary"] == "auto:no_metric_match:最高成绩是多少?"
         assert item["source"] == "metric"
-        assert item["actionable"]["edit_url"] == "/admin/semantic?pending=1"
+        assert item["actionable"]["edit_url"] == "/admin/semantic?ds=test_db&tab=pending"
 
 
 # ── 行动柱两类(action_template / action_proposal, P3) ───

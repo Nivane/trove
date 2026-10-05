@@ -40,6 +40,16 @@
         <Pencil :size="13" />
         {{ t('rephrase', ui.lang) }}
       </button>
+      <!-- 后端驱动的深链出口(有管理端落点的类别才有;admin_only 过角色闸) -->
+      <RouterLink
+        v-for="a in visibleExits"
+        :key="a.id ?? a.href"
+        class="error-btn"
+        :to="a.href!"
+      >
+        <ArrowRight :size="13" />
+        {{ a.label }}
+      </RouterLink>
       <button v-if="auth.isAdmin" class="error-btn" @click="emit('admin')">
         <Settings :size="13" />
         {{ t('gotoAdmin', ui.lang) }}
@@ -49,13 +59,15 @@
 </template>
 
 <script setup lang="ts">
-import { AlertCircle, Pencil, RefreshCw, Settings } from 'lucide-vue-next'
+import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
+import { AlertCircle, ArrowRight, Pencil, RefreshCw, Settings } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/ui'
 import { useAuthStore } from '../../stores/auth'
 import { t } from '../../i18n'
 import type { ErrorCardModel } from '../../utils/errors'
 
-defineProps<{ card: ErrorCardModel }>()
+const props = defineProps<{ card: ErrorCardModel }>()
 const emit = defineEmits<{
   retry: []
   rephrase: []
@@ -64,4 +76,9 @@ const emit = defineEmits<{
 
 const ui = useUiStore()
 const auth = useAuthStore()
+
+// 渲染 + 角色闸而已,分类与文案全部来自后端(utils/errors.ts 纪律)。
+const visibleExits = computed(() =>
+  props.card.actions.filter((a) => !a.admin_only || auth.isAdmin),
+)
 </script>

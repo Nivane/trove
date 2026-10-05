@@ -6,12 +6,14 @@
 schema_linking 连续失败且无档可升,优雅降级」,既不知道出了什么事,也不
 知道自己该做什么。
 
-``present_error`` 补上这一层,产出固定四件套:
+``present_error`` 补上这一层,产出固定四件套 + 出口:
 
   kind        机器可读的归一类目(前端据此选图标/配色,不解析文案)
   title       一句话说清「没能完成」
   explanation 用人话说清发生了什么(不含节点名/规则号)
   suggestion  下一步动作(重试 / 换个问法 / 找管理员)
+  actions     一键出口列表(管理端深链;仅确有落点的类别才给,见
+              ``_ACTION_HREFS``)—— 与拒绝侧 ``next_actions`` 同形状同纪律
 
 原始文本一字不改地留在 ``detail.raw`` — 管理层与日志仍可归因,不丢信息。
 呈现层的判定**不另立一套**:分类复用 ``classify_error``,只在它覆盖不到的
@@ -23,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from trove.core.i18n import L
 from trove.services.errors.classify import classify_error
 
 # ── 降级信号(确定性,零 LLM)──────────────────────────────
@@ -209,6 +212,30 @@ _DOMAIN_KIND = {
 # 权限/认证类则不该诱导用户反复点重试。
 _NON_RETRYABLE_KINDS = {"permission"}
 
+# ── 失败出口(actions)────────────────────────────────────
+# 与拒绝侧 ``next_actions`` 同一形状、同一纪律:后端给全(含用户语言的
+# label),前端只渲染不分类。只给**真实存在管理端落点**的类别编动作 ——
+# 给不存在的页面编一个链接,比没有链接更坏(点了才知道是死的)。
+# 权限类刻意不给:那类失败的正确答案是「找管理员」,管理端没有自助页面。
+_ACTION_HREFS: dict[str, tuple[str, str, str]] = {
+    "datasource": ("/admin/datasources", "检查数据源连接", "Check datasource connections"),
+    "model": ("/admin/model-config", "检查模型配置", "Check the model configuration"),
+}
+
+
+def _actions_for(kind: str, lang: str) -> list[dict[str, Any]]:
+    spec = _ACTION_HREFS.get(kind)
+    if spec is None:
+        return []
+    href, zh, en = spec
+    return [{
+        "id": kind,
+        "kind": kind,
+        "label": L(lang, zh, en),
+        "href": href,
+        "admin_only": True,
+    }]
+
 
 def present_error(
     text: str, lang: str = "zh", *, node: str = "", **extra: Any
@@ -240,6 +267,8 @@ def present_error(
         "explanation": copy["explanation"],
         "suggestion": copy["suggestion"],
         "retryable": kind not in _NON_RETRYABLE_KINDS,
+        # 一键出口(见 _ACTION_HREFS);空列表 = 这类失败没有管理端落点。
+        "actions": _actions_for(kind, lang),
         "detail": {
             "raw": raw,
             "node": node or _infer_node(raw),

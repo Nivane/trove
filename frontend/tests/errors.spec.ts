@@ -87,4 +87,34 @@ describe('error card model', () => {
     expect(card.title).toBe('The answer did not complete')
     expect(card.suggestion.length).toBeGreaterThan(0)
   })
+
+  it('carries the backend-provided exits and filters incomplete ones', () => {
+    const card = errorCard(
+      {
+        error_info: {
+          ...INFO,
+          actions: [
+            {
+              id: 'datasource',
+              label: '检查数据源连接',
+              href: '/admin/datasources',
+              admin_only: true,
+            },
+            // 形状不全的条目渲染不出按钮 —— 滤掉,不猜落点
+            { label: '没有 href' },
+            { href: '/admin/x' },
+          ],
+        },
+      },
+      'zh',
+    )!
+    expect(card.actions).toHaveLength(1)
+    expect(card.actions[0].href).toBe('/admin/datasources')
+    expect(card.actions[0].label).toBe('检查数据源连接')
+  })
+
+  it('defaults to no exits when the backend ships none', () => {
+    expect(errorCard({ error_info: INFO }, 'zh')!.actions).toEqual([])
+    expect(errorCard({ error: 'boom' }, 'zh')!.actions).toEqual([])
+  })
 })

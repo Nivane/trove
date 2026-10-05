@@ -1024,6 +1024,200 @@ def _assert_delivery_zeroed(out: dict) -> None:
         assert kept not in out, f"{kept} 不应被拒绝轮覆盖"
 
 
+class TestNextActions:
+    """A1 拒绝出口:每条拒绝随 ``refusal["next_actions"]`` 带一键下一步。
+
+    契约与判定纪律(见 refuse.py 的 next_actions 段):
+    - 五形态:no_model→建档 / 草稿已落→确认 / 冲突→蓝本新建 / 无草稿→工作台 /
+      A/B 自动确认→无动作(没有需要人做的一步);
+    - 主题域拒绝**不带动作**(补救=换域重问,在页动作不是管理端深链);
+    - 统一形状 ``{id, kind, label, href, admin_only, payload?}``,后端给全
+      (含提问语言的 label),前端只渲染不分类;``conflict`` 保持 bool 不变。
+    """
+
+    UNCOVERED = {
+        "reason": "uncovered", "question": "平均贷款金额是多少?",
+        "plan": {"aggregation": "AVG(loan.amount)",
+                 "answer_columns": ["AVG(loan.amount)"]},
+    }
+
+    async def test_no_model_carries_datasource_and_init_action(self, kb):
+        node = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)
+        out = await node(make_state(no_model=True, datasource="demo"))
+        refusal = out["refusal"]
+        # 深链原料:旧契约只有 reason/question/message,前端拼不出「去哪个源建档」
+        assert refusal["datasource"] == "demo"
+        assert len(refusal["next_actions"]) == 1
+        action = refusal["next_actions"][0]
+        assert action["id"] == action["kind"] == "datasource_init"
+        assert action["href"] == "/admin/kb?ds=demo"
+        assert action["admin_only"] is True
+        assert action["label"] == "去初始化语义模型"
+        assert "payload" not in action
+
+    async def test_no_model_lang_switch_and_ds_quoting(self, kb):
+        node = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)
+        en = await node(make_state(no_model=True, datasource="demo", lang="en"))
+        assert en["refusal"]["next_actions"][0]["label"] == \
+            "Initialize the semantic model"
+        # 数据源名进 query 参数要转义;没有源就没有 ds 参数(仍给入口)
+        spaced = await node(make_state(no_model=True, datasource="my db"))
+        assert spaced["refusal"]["next_actions"][0]["href"] == "/admin/kb?ds=my%20db"
+        empty = await node(make_state(no_model=True, datasource=""))
+        assert empty["refusal"]["next_actions"][0]["href"] == "/admin/kb"
+
+    async def test_pending_draft_action_points_at_inbox_tab(self, kb):
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(datasource="demo", refusal=dict(self.UNCOVERED)))
+        refusal = out["refusal"]
+        assert refusal["conflict"] is False  # 旧契约保持 bool
+        action = refusal["next_actions"][0]
+        assert action["kind"] == "confirm_draft"
+        # 页签键是 SemanticView useListQuery 的 tab=(旧式 ?pending=1 没人读)
+        assert action["href"] == "/admin/semantic?ds=demo&tab=pending"
+        assert action["payload"] == {
+            "draft_kind": "metric",
+            "draft_name": "avg_loan_amount",
+            "draft_id": refusal["draft_entry"]["id"],
+        }
+
+    async def test_conflict_action_offers_blueprint_copy(self, kb):
+        conflict_yaml = METRIC_DRAFT_YAML.replace(
+            "avg_loan_amount", "number of loan records")
+        node = make_refuse(
+            ScriptedLLM([conflict_yaml]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "q",
+                     "plan": {"aggregation": "COUNT(loan.loan_id)",
+                              "answer_columns": ["COUNT(loan.loan_id)"]}},
+        ))
+        refusal = out["refusal"]
+        assert refusal["conflict"] is True  # 旧契约保持 bool
+        action = refusal["next_actions"][0]
+        assert action["kind"] == "new_from_draft"
+        # 蓝本新建走新建表单(不是 pending 页签 —— 这份草稿没落库)
+        assert action["href"] == "/admin/semantic?ds=demo"
+        assert action["payload"]["draft_name"] == "number of loan records"
+        assert action["payload"]["expression"] == "AVG(loan.amount)"
+        assert action["payload"]["datasets"] == ["loan"]
+
+    async def test_undraftable_refusal_opens_workbench(self, kb):
+        node = make_refuse(
+            ScriptedLLM(["not yaml at all"]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+        ))
+        assert out["refusal"]["draft"] is None
+        action = out["refusal"]["next_actions"][0]
+        assert action["kind"] == "open_semantic"
+        assert action["href"] == "/admin/semantic?ds=demo"
+        assert "payload" not in action
+
+    async def test_draft_without_landing_opens_workbench_without_ds(self, kb):
+        """无数据源上下文 → 草稿没落库(entry=None)且无冲突 → 工作台无 ds 参数。"""
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(datasource="", refusal=dict(self.UNCOVERED)))
+        assert out["refusal"]["draft_entry"] is None
+        assert out["refusal"]["next_actions"][0]["href"] == "/admin/semantic"
+
+    async def test_auto_confirm_has_no_manual_action(self, kb, sqlite_registry):
+        """A/B 自动确认 = 无待人工动作 → 拒绝清空、不给 next_actions。"""
+        seed = TestAutoConfirmPhysicalColumn()
+        seed._seed_students_semantics(kb)
+        node = make_refuse(
+            ScriptedLLM([TestAutoConfirmPhysicalColumn.FIELD_DRAFT]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(seed._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "counties of students?",
+                     "plan": {"tables": ["students"],
+                              "answer_columns": ["students.county"]}},
+        ))
+        assert out["auto_confirmed"] is True
+        assert out.get("refusal") is None
+
+    async def test_topic_refusal_carries_no_actions(self, kb):
+        """主题域拒绝确定性短路:不带 next_actions,也不花一次 LLM 起草。"""
+        llm = ScriptedLLM([])
+        node = make_refuse(llm, AgentConfig(target="mock/model"), kb=kb)
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "topic_not_found", "question": "q",
+                     "topic": "营销", "available_topics": ["财务"]},
+        ))
+        assert "next_actions" not in out["refusal"]
+        # datasource 键与 no_model 一路(深链原料),主题域路径同样带上
+        assert out["refusal"]["datasource"] == "demo"
+        assert llm.calls == 0
+
+    async def test_action_shape_is_uniform(self, kb):
+        """五形态产出的动作逐条同形状:后端给全,前端只渲染不分类。"""
+        collected: list[dict] = []
+
+        no_model = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)
+        collected += (await no_model(
+            make_state(no_model=True, datasource="demo")))["refusal"]["next_actions"]
+
+        dashed = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        collected += (await dashed(make_state(
+            datasource="demo", refusal=dict(self.UNCOVERED))))["refusal"]["next_actions"]
+
+        conflict_yaml = METRIC_DRAFT_YAML.replace(
+            "avg_loan_amount", "number of loan records")
+        conflicted = make_refuse(
+            ScriptedLLM([conflict_yaml]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        collected += (await conflicted(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "q",
+                     "plan": {"aggregation": "COUNT(loan.loan_id)",
+                              "answer_columns": ["COUNT(loan.loan_id)"]}},
+        )))["refusal"]["next_actions"]
+
+        undraftable = make_refuse(
+            ScriptedLLM(["not yaml at all"]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        collected += (await undraftable(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+        )))["refusal"]["next_actions"]
+
+        assert len(collected) == 4
+        for action in collected:
+            assert set(action) <= {"id", "kind", "label", "href", "admin_only", "payload"}
+            assert action["id"] == action["kind"]
+            assert action["label"]
+            assert action["href"].startswith("/admin/")
+            assert action["admin_only"] is True
+
+
 class TestRefusalStateHygiene:
     async def test_no_model_clears_delivery_fields(self, kb):
         node = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)

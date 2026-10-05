@@ -1912,6 +1912,43 @@ button:disabled {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* ── Next actions (refusal exits) ───────────────────
+   A refusal is not a dead end: the backend ships label + admin deep link
+   per exit, this row renders them (NextActions.vue — render only, never
+   classify). Anchor buttons on purpose: middle-click / copy link work. */
+.next-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  max-width: 46rem;
+  margin-top: var(--sp-2);
+}
+.next-actions-label {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.next-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 3px var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.next-action-btn:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 /* ── Streaming ──────────────────────────────────────── */
 .streaming-badge {
   display: inline-flex;

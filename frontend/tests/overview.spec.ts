@@ -106,7 +106,7 @@ function healthy(): OverviewPayload {
           count_exact: true,
           available: true,
           samples: ['loan'],
-          href: '/admin/semantic?pending=1',
+          href: '/admin/semantic?tab=pending',
           note: '',
         },
         {

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -196,6 +197,12 @@ def _semantic_summary(e: dict) -> str:
 def _semantic_draft_item(e: dict) -> dict:
     name = str(e.get("name") or e.get("id") or "")
     diff = e.get("diff") or None
+    ds = str(e.get("ds") or "")
+    # 条目级深链带 ds=(条目自己知道属于哪个源;聚合 href 不知道,只能到
+    # 页签)。URL 键是 SemanticView 的 useListQuery 契约:tab= / ds=。
+    edit_url = "/admin/semantic?" + (
+        f"ds={quote(ds)}&tab=pending" if ds else "tab=pending"
+    )
     return _todo(
         "semantic_draft", item_id=str(e.get("id") or name), ds=e.get("ds"), title=name,
         summary=_semantic_summary(e), href=overview._TODO_HREFS["semantic_draft"],
@@ -204,7 +211,7 @@ def _semantic_draft_item(e: dict) -> dict:
         # diff 是服务端算的 (manage.py:_draft_diff,带 carryover 语义),原样透传
         # —— 契约要的 before/after/fields 都在;error 是「干跑失败」的唯一表达,
         # 裁掉它前端就分不清「没变化」与「算不出来」。
-        diff=diff, edit_url="/admin/semantic?pending=1",
+        diff=diff, edit_url=edit_url,
     )
 
 

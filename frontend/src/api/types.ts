@@ -22,6 +22,21 @@ export interface ChartSpec {
   measures?: string[]
 }
 
+/** 一键下一步(拒绝出口 next_actions / 错误出口 actions 共用形状)。
+ *
+ *  后端给全:`label` 已按提问语言本地化,`href` 是管理端深链,`admin_only`
+ *  是显式的角色闸 —— 前端只渲染、只按登录角色过闸,绝不自己分类或编链接
+ *  (分类判断留在判定侧,与 utils/errors.ts 同一纪律)。`payload` 是可选
+ *  预填物(如冲突草稿的蓝本字段),前端不认识就不动它。 */
+export interface NextActionInfo {
+  id?: string
+  kind?: string
+  label?: string
+  href?: string
+  admin_only?: boolean
+  payload?: Record<string, unknown>
+}
+
 export interface ErrorInfo {
   /** 失败归类:gave_up / too_complex / permission / datasource / model /
    *  query / mismatch / unclear / unknown —— 决定卡片文案与是否可重试。 */
@@ -30,6 +45,8 @@ export interface ErrorInfo {
   explanation?: string
   suggestion?: string
   retryable?: boolean
+  /** 一键出口(有管理端落点的类别才非空;空数组 = 没有真实落点)。 */
+  actions?: NextActionInfo[]
   detail?: {
     /** 原始错误文本(内部措辞),仅管理员折叠区展示。 */
     raw?: string
@@ -38,6 +55,22 @@ export interface ErrorInfo {
     domain?: string
     [k: string]: unknown
   }
+}
+
+/** 拒绝轮的结构化产出(后端自由字典):已知键在此列明,未知键原样透传,
+ *  前端不猜语义。`null`/缺席 = 不是拒绝轮(三态,不冒充空对象)。 */
+export interface RefusalInfo {
+  reason?: string
+  question?: string
+  /** 深链原料:拒绝发生在哪个数据源上(no_model 等出口要它)。 */
+  datasource?: string
+  message?: string
+  /** 真冲突 = true;保持 bool(附注信息走兄弟键,不改变这个键的类型)。 */
+  conflict?: boolean
+  draft?: Record<string, unknown> | null
+  draft_entry?: Record<string, unknown> | null
+  next_actions?: NextActionInfo[]
+  [k: string]: unknown
 }
 
 import type { MaskingReport } from '../utils/masking'
@@ -60,6 +93,9 @@ export interface DoneSummary {
   /** 错误呈现层产物:用户可见的标题/解释/建议 + 机器细节。前端渲染错误卡片,
    *  不解析错误 markdown、不重猜类别。 */
   error_info?: ErrorInfo
+  /** 拒绝轮的结构化产出(reason/draft/next_actions…)。与 error_info 同层同因:
+   *  步骤卡会被有界裁剪,历史轮的动作块靠 summary 存活。null/缺席 = 不是拒绝轮。 */
+  refusal?: RefusalInfo | null
   final_response?: string
   columns?: string[]
   /** 完整查询结果(受后端 result_max_rows 约束;下载用,不放回答案表格)。 */

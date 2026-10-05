@@ -11,6 +11,10 @@ Triggered when the semantic model cannot answer the question:
   for admin confirmation. This turn terminates — nothing is executed.
   After the draft is confirmed, re-asking the same question compiles.
 
+Every refusal also carries ``refusal["next_actions"]`` — a deterministic
+list of one-click exits (admin-console deep links) so a dead end is never
+a dead end (see the ``next_actions`` section below).
+
 Node shape: ``make_refuse(llm, config, kb=None, semantic_layer=None) ->
 async def refuse(state) -> dict``. Returns a partial state update.
 """
@@ -21,6 +25,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import quote
 
 from sqlglot import ErrorLevel, exp, parse_one
 
@@ -573,6 +578,108 @@ async def _mechanical_metric_ok(
     return ds_name
 
 
+# ── 拒绝出口(next_actions)────────────────────────────────
+# 拒绝不该是死胡同:每条拒绝都随 refusal 附一份**一键下一步**,形状统一为
+#   [{"id", "kind", "label", "href", "admin_only", "payload"?}]
+# 后端给全(含提问语言的 label),前端只渲染、不分类 —— 与错误呈现层同纪律
+# (frontend/utils/errors.ts:「前端绝不自己分类,后端给、前端只渲染」)。
+# 缺键/空列表 = 这条拒绝没有出口(前端按缺席处理,不替它编一个)。
+#
+# ``admin_only`` 为什么显式给:拒绝文案非管理员也看得到(「请管理员…」),
+# 而动作落点全在管理端 —— 由前端拿登录角色过闸,分类判断留在判定侧。
+# 不做「用户侧一键触发 /kb init」:建模是管理端行为(冷启动建模是前置条件),
+# 非管理员的正确出口是这句话本身,不是一个点了会 403 的按钮。
+
+def _admin_action(
+    lang: str, kind: str, href: str, zh: str, en: str,
+    *, payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    action: dict[str, Any] = {
+        "id": kind,
+        "kind": kind,
+        "label": L(lang, zh, en),
+        "href": href,
+        "admin_only": True,
+    }
+    if payload:
+        action["payload"] = payload
+    return action
+
+
+def _semantic_url(datasource: str, *, tab: str = "") -> str:
+    """语义工作台深链:SemanticView 的 URL 状态键是 ``ds`` / ``tab``
+    (useListQuery),不是旧式的 ``?pending=1``(那个键没人读)。"""
+    parts = []
+    if datasource:
+        parts.append(f"ds={quote(datasource)}")
+    if tab:
+        parts.append(f"tab={tab}")
+    return "/admin/semantic" + (f"?{'&'.join(parts)}" if parts else "")
+
+
+def _blueprint_payload(draft: dict[str, Any]) -> dict[str, Any]:
+    """冲突草稿的蓝本内容:前端「以此为蓝本新建」预填用(值原样透传,
+    都是已经展示在拒绝文案里的字段,没有新的暴露面)。"""
+    out: dict[str, Any] = {
+        "draft_kind": str(draft.get("kind") or ""),
+        "draft_name": str(draft.get("name") or ""),
+        "expression": str(draft.get("expression") or ""),
+    }
+    if draft.get("datasets"):
+        out["datasets"] = list(draft["datasets"])
+    return out
+
+
+def _no_model_actions(lang: str, datasource: str) -> list[dict[str, Any]]:
+    """无语义模型 → 「去建档」。落点 = 该数据源的 KB 页:init 的 202+轮询
+    流程在那里(不自动触发——一条链接不该悄悄烧掉一次 LLM 建档)。"""
+    ds = str(datasource or "")
+    href = f"/admin/kb?ds={quote(ds)}" if ds else "/admin/kb"
+    return [_admin_action(
+        lang, "datasource_init", href,
+        "去初始化语义模型", "Initialize the semantic model",
+    )]
+
+
+def _draft_actions(
+    lang: str, datasource: str, *,
+    draft: dict[str, Any] | None, conflict: bool, entry: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """编译 MISS 拒绝的四态出口(与 refusal 的 draft/conflict/entry 对齐):
+
+      draft=None        → 起草就没成,工作台是唯一去处
+      conflict=True     → 草稿没写库,给「蓝本新建」(内容随 payload 预填)
+      entry=None        → 草稿只展示了、没落库(无 kb/数据源上下文)→ 同上
+      entry≠None        → 草稿已落 pending 收件箱 → 确认(确认后重答)
+
+    A/B 档自动确认成功走的是**早退分支**(refusal=None,路由回重答),
+    不在这里——没有需要人做的一步,就不该给动作。
+    """
+    ds = str(datasource or "")
+    if draft is None or (entry is None and not conflict):
+        return [_admin_action(
+            lang, "open_semantic", _semantic_url(ds),
+            "去语义工作台补充声明", "Add the declaration in the semantic workbench",
+        )]
+    if conflict:
+        return [_admin_action(
+            lang, "new_from_draft", _semantic_url(ds),
+            "以这份草稿为蓝本新建", "Create from this draft",
+            payload=_blueprint_payload(draft),
+        )]
+    payload: dict[str, Any] = {
+        "draft_kind": str(draft.get("kind") or ""),
+        "draft_name": str(draft.get("name") or ""),
+    }
+    if entry.get("id"):
+        payload["draft_id"] = str(entry["id"])
+    return [_admin_action(
+        lang, "confirm_draft", _semantic_url(ds, tab="pending"),
+        "去确认这份草稿(确认后自动重答)", "Confirm the draft (the question re-answers)",
+        payload=payload,
+    )]
+
+
 def make_refuse(
     llm: LLMGateway,
     config: AgentConfig,
@@ -600,12 +707,17 @@ def make_refuse(
 
         if state.no_model:
             message = _no_model_message(state.lang)
+            datasource = state.datasource or ""
             return {
                 "clarification_question": message,
                 "refusal": {
                     "reason": "no_model",
                     "question": state.question,
+                    # datasource 是出口深链的原料(前端拼不出「去哪个源建档」);
+                    # 键先于 next_actions 存在——旧消费者读 reason/message 不受影响。
+                    "datasource": datasource,
                     "message": message,
+                    "next_actions": _no_model_actions(state.lang, datasource),
                 },
                 **_HYGIENE,
             }
@@ -622,12 +734,16 @@ def make_refuse(
         topic_reason = _topic_refusal_reason(refusal, reason)
         if topic_reason:
             message = _topic_message(state.lang, topic_reason, refusal)
+            # 主题域拒绝**不带 next_actions**:补救动作是「换域重问」——
+            # 就在提问界面的主题选择器里(在页动作,不是管理端深链);
+            # 域声明本身没有管理端页面(在 semantics.yml 里)。
             return {
                 "auto_confirmed": False,
                 "clarification_question": message,
                 "refusal": {
                     "reason": reason,
                     "question": str(refusal.get("question") or state.question),
+                    "datasource": state.datasource or "",
                     "message": message,
                     "topic": str(refusal.get("topic") or ""),
                     "available_topics": list(refusal.get("available_topics") or []),
@@ -770,10 +886,15 @@ def make_refuse(
         refusal_out: dict[str, Any] = {
             "reason": reason,
             "question": question,
+            "datasource": state.datasource or "",
             "draft": draft,
             "conflict": bool(conflict),
             "draft_entry": entry,
             "message": message,
+            "next_actions": _draft_actions(
+                state.lang, state.datasource or "",
+                draft=draft, conflict=bool(conflict), entry=entry,
+            ),
         }
         # 结构化分因随终态拒绝一起交付:拒绝是这条链的**终态产物**(wire 上
         # 走 mcp/session 的 refusal 字段),它得能自己说清缺的是哪种声明 ——

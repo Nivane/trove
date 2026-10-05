@@ -79,14 +79,16 @@ _RUNS_FAILED_SQL = (
     "ORDER BY MAX(started_at) DESC"
 )
 
-#: 待办 10 类来源与其深链(设计稿 §5 的 items;顺序即展示顺序,shape 固定)。
+#: 待办 11 类来源与其深链(设计稿 §5 的 items;顺序即展示顺序,shape 固定)。
 #: ``memory_preference`` 的落点页已存在(治理中心收件箱,P5)——不再是 null;
 #: ``drift`` 的处置家在治理中心 Tab3(漂移与版本),不再是数据源页;
 #: P3 的两类行动待办落在行动页(模板与提案同页两 Tab)。
 _TODO_HREFS: dict[str, str | None] = {
     "kb_lesson": "/admin/kb?tab=lessons",
     "kb_example": "/admin/kb?tab=examples",
-    "semantic_draft": "/admin/semantic?pending=1",
+    # 语义工作台的 URL 状态键是 tab=(useListQuery);旧式 ?pending=1 没有
+    # 任何页面读它,是一个「点了没反应」的深链。
+    "semantic_draft": "/admin/semantic?tab=pending",
     "skill_draft": "/admin/skills",
     "memory_preference": "/admin/governance?tab=inbox&kind=memory_preference",
     "drift": "/admin/governance?tab=drift",
@@ -94,11 +96,16 @@ _TODO_HREFS: dict[str, str | None] = {
     "action_proposal": "/admin/actions?tab=proposals&status=open",
     "job_failed": "/admin/jobs?status=error",
     "user_nogrant": "/admin/users?status=nogrant",
+    # 运营待办(非审批):数据源已注册但语义模型没建 —— 该源上什么都答不了,
+    # 是接入流程里唯一「不做就永远空转」的一步。新增类追加在末尾,既有
+    # 展示顺序不动。
+    "datasource_uninitialized": "/admin/datasources",
 }
 #: 逐数据源扇出的三类(KB lesson / example / 语义草稿)。
 _PER_SOURCE_TODO_KINDS = ("kb_lesson", "kb_example", "semantic_draft")
-#: 八类**审批**待办(治理中心收件箱;= overview 十类 − 两类运维待办
-#: job_failed / user_nogrant)。条目级端点 /v1/admin/todos 只认这八类。
+#: 八类**审批**待办(治理中心收件箱;= overview 十一类 − 三类运维待办
+#: job_failed / user_nogrant / datasource_uninitialized,运维待办不是「批」
+#: 的对象)。条目级端点 /v1/admin/todos 只认这八类。
 APPROVAL_TODO_KINDS = (
     "kb_lesson", "kb_example", "semantic_draft",
     "skill_draft", "memory_preference", "drift",
@@ -1063,6 +1070,18 @@ async def admin_overview(
             names, kb_facts, drift,
             getattr(request.app.state, "readonly_probes", None) or {},
         )
+        # 「未建档」待办:从 kb_facts.initialized 读时派生(零新状态、零迁移)。
+        # 枚举腿或 KB 腿任一降级 → 不放这条腿 → 条目自动降级(count=None),
+        # 绝不把「读不到」洗成「0 个未建档」——「查不成的绿是假绿」。
+        initialized = kb_facts.get("initialized")
+        if initialized is not None:
+            uninit = [n for n, _ in names if not initialized.get(n)]
+            shared["datasource_uninitialized"] = {
+                "configured": True,
+                "count": len(uninit),
+                "samples": uninit,
+                "exact": True,
+            }
 
     collected = await collect_todo_sources(request, names, drift, degraded)
     todos = _todos_block(collected, shared, failed_legs)

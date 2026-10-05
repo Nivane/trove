@@ -94,11 +94,59 @@ class TestClassifiedFailures:
         assert not _INTERNAL.search(_user_visible(info))
 
 
+class TestActionExits:
+    """一键出口(``actions``):与拒绝侧 ``next_actions`` 同形状同纪律。
+
+    后端给全(含提问语言的 label),前端只渲染不分类;没有真实管理端落点的
+    类别给空列表 —— 编一个不存在的链接,比没有链接更坏。
+    """
+
+    def test_datasource_failure_points_at_connections(self):
+        info = present_error("[ERR:DS_TRANSIENT] connection refused", lang="zh")
+        assert len(info["actions"]) == 1
+        action = info["actions"][0]
+        assert action["id"] == action["kind"] == "datasource"
+        assert action["href"] == "/admin/datasources"
+        assert action["label"] == "检查数据源连接"
+        assert action["admin_only"] is True
+
+    def test_model_failure_points_at_model_config(self):
+        info = present_error("[ERR:LLM_TRANSIENT] upstream timeout", lang="en")
+        assert [a["href"] for a in info["actions"]] == ["/admin/model-config"]
+        assert info["actions"][0]["label"] == "Check the model configuration"
+
+    def test_categories_without_admin_landing_have_no_actions(self):
+        # 权限失败的正确出口是「找管理员」(没有自助页);sql/放弃/未知类同理。
+        for text in (
+            "[ERR:DS_AUTH] permission denied",
+            "[ERR:SQL_SYNTAX] bad sql",
+            "连续 3 轮修复无进展(invalid)，停止迭代，优雅降级",
+            "boom",
+        ):
+            assert present_error(text, lang="zh")["actions"] == [], text
+
+    def test_action_labels_are_free_of_pipeline_vocabulary(self):
+        for text in ("[ERR:DS_TRANSIENT] x", "[ERR:LLM_TRANSIENT] x"):
+            for lang in ("zh", "en"):
+                for action in present_error(text, lang=lang)["actions"]:
+                    assert action["label"], action
+                    assert not _INTERNAL.search(action["label"]), action
+
+    def test_action_shape_matches_refusal_contract(self):
+        for action in present_error("[ERR:DS_TRANSIENT] x", lang="zh")["actions"]:
+            assert set(action) <= {
+                "id", "kind", "label", "href", "admin_only", "payload",
+            }
+            assert action["id"] == action["kind"]
+            assert action["href"].startswith("/admin/")
+
+
 class TestShape:
     def test_contract_keys(self):
         info = present_error("boom", lang="zh")
         assert set(info) >= {
-            "kind", "title", "explanation", "suggestion", "retryable", "detail",
+            "kind", "title", "explanation", "suggestion", "retryable", "actions",
+            "detail",
         }
         assert set(info["detail"]) >= {"raw", "node", "error_class"}
 
