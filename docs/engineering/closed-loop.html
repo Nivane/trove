@@ -167,7 +167,7 @@ flowchart LR
 
     <p>
       到期测量由 <code>measure_due</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L486">service.py:486 <span class="ref-line">measure_due</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L565">service.py:565 <span class="ref-line">measure_due</span></a>
       驱动。默认档全关（<code>outcome_after_days &lt;= 0</code> 立即返回 0、不查库——未配置的部署逐字节不变）；
       刻度是<strong>天</strong>（测量是 N 天语义），所以挂在小时级的 sweep 腿上，不是 30 秒的 job tick。四道门：
     </p>
@@ -188,7 +188,7 @@ flowchart LR
 
     <p>
       结果落在 <code>outcomes</code> 表
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/store.py#L150">store.py:150 <span class="ref-line">_OUTCOMES_SQL</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/store.py#L151">store.py:151 <span class="ref-line">_OUTCOMES_SQL</span></a>
       （store 迁移 v2 加的；<code>outside_band</code> 列用 0/1/NULL 三态存储——
       <code>0</code> 绝不是「没测到」，读侧对此有严格落位约定）。
     </p>
@@ -244,7 +244,7 @@ flowchart LR
       给单源分桶明细，<code>GET /v1/admin/quality/overview</code>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/quality.py#L435">quality.py:435 <span class="ref-line">admin_quality_overview</span></a>
       给逐源 fleet 报告，提案级效果在 <code>GET /v1/admin/actions/proposals/{id}/outcomes</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L190">actions.py:190 <span class="ref-line">get_action_outcomes</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L198">actions.py:198 <span class="ref-line">get_action_outcomes</span></a>。
     </p>
 
     <h2 id="scan">主动扫描：把发现变回规则</h2>
@@ -379,7 +379,7 @@ scan:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

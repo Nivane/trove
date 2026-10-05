@@ -70,7 +70,7 @@
 
     <p>
       <code>ActionService</code> 的构造签名
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L149">service.py:149 <span class="ref-line">ActionService.__init__</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L156">service.py:156 <span class="ref-line">ActionService.__init__</span></a>
       就是这条不变量本身：<code>(store, templates, dispatcher, enabled, approval_ttl_hours,
       max_payload_bytes, max_attempts, lang, verifier)</code>——没有 connectors，没有 session，
       没有任何能执行 SQL 的东西。<code>verifier</code> 是<strong>唯一经评审的例外</strong>：
@@ -161,7 +161,7 @@ flowchart LR
     <p>
       v1 单人审批（<code>APPROVALS_REQUIRED_V1 = 1</code>，模板声明别的值直接拒绝——闭集不做半成品）。
       审批动作前可以先<strong>预演</strong>：<code>dry_run</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L569">service.py:569 <span class="ref-line">dry_run</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L648">service.py:648 <span class="ref-line">dry_run</span></a>
       真跑全部前置（通道解析、payload 形状、护栏判定），<strong>不发 POST、不改提案、只落轨迹</strong>。
       预演和真发的唯一区别是那次 POST 本身——两者共用同一个解析入口
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L186">dispatcher.py:186 <span class="ref-line">preflight</span></a>，
@@ -278,9 +278,9 @@ action:
     <p>
       规则里通过 <code>action: {template: notify-ops, autonomy: propose}</code> 引用模板
       （<a href="decision-engine.html#usage">判定内核 · 用法</a>）；管理端 API 在
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L213">actions.py:213 <span class="ref-line">/{proposal_id}/{decision}</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L275">actions.py:275 <span class="ref-line">/{proposal_id}/{decision}</span></a>
       下收齐 approve / reject / dispatch / retry / cancel / ack，模板门在
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L67">actions.py:67 <span class="ref-line">/admin/actions/templates</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L75">actions.py:75 <span class="ref-line">/admin/actions/templates</span></a>。
       界面操作见<a href="../capabilities/actions.html">行动提案</a>。
     </p>
 
@@ -360,7 +360,7 @@ action:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -280,7 +280,7 @@ flowchart LR
 
     <ul>
       <li><strong>零 LLM</strong>——捕获跑在每次查询的收尾路径上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1930">session.py:1930 <span class="ref-line">_capture_candidates</span></a>），
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1976">session.py:1976 <span class="ref-line">_capture_candidates</span></a>），
       所有翻译只是对 <code>compile_misses</code> 的确定性改写。</li>
       <li><strong>只落 pending</strong>——只写 <code>semantic_drafts.yml</code>，不碰
       <code>semantics.yml</code>：自动内容绝不绕过管理员确认（与记忆子系统的
@@ -420,7 +420,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
