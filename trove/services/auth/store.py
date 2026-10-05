@@ -751,3 +751,62 @@ class AppDbStore:
             return int(row[0]) if row else 0
         finally:
             await conn.close()
+
+    async def aggregate_query_audit(
+        self, *, datasource: str = "", since: str = "", limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """``query.execute`` 审计行的聚合读(历史蒸馏用;跨用户,by design)。
+
+        ``list_audit`` 只有按 user/action 的分页,答不了「某数据源最近的
+        查询行为」;datasource 过滤与 ``(question, sql)`` 聚合在 Python 侧
+        做(SQLite/PG 的 JSON 函数不同源,不为此引方言分支)。同一
+        (question, sql) 只留最新一行、``seen`` 计窗口内出现次数。
+
+        返回项**不带 username/user_id**:蒸馏产物不落用户归属 —— 它回答
+        「问过什么」,不回答「谁问的」(隐私边界,管理端已有按人的审计页)。
+        """
+        clauses, values = ["action = ?"], ["query.execute"]
+        if since:
+            clauses.append("ts >= ?")
+            values.append(since)
+        values.append(limit)
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT ts, details_json FROM audit_log "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                values,
+            )
+            rows = await _fetch_all(cursor)
+        finally:
+            await conn.close()
+        seen: dict[tuple[str, str], dict[str, Any]] = {}
+        for ts, details_json in rows:
+            try:
+                details = json.loads(details_json) if details_json else {}
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(details, dict):
+                continue
+            if datasource and str(details.get("datasource") or "") != datasource:
+                continue
+            question = str(details.get("question") or "").strip()
+            sql = str(details.get("sql") or "").strip()
+            if not question and not sql:
+                continue
+            key = (question.lower(), sql)
+            hit = seen.get(key)
+            if hit is None:
+                seen[key] = {
+                    "question": question,
+                    "sql": sql,
+                    "verdict": str(details.get("verdict") or ""),
+                    "error": str(details.get("error") or ""),
+                    "datasource": str(details.get("datasource") or ""),
+                    "last_seen": str(ts or ""),
+                    "seen": 1,
+                }
+            else:
+                hit["seen"] += 1
+        return list(seen.values())

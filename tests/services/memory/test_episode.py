@@ -50,6 +50,51 @@ async def test_search_scoped_by_user(store):
     assert await store.search(bob, "sales by month", limit=5) == []
 
 
+# ── 管理端读取(历史蒸馏:跨用户迭代) ────────────────────
+
+
+async def test_iter_episodes_crosses_users_scoped_by_datasource(store):
+    """与 search 的差别是刻意的:蒸馏是管理端批量行为,不分人。"""
+    alice = MemoryScope(datasource="demo", user_id="alice")
+    bob = MemoryScope(datasource="demo", user_id="bob")
+    await store.record(alice, question="q1", sql="SELECT 1", verdict="OK",
+                       correction_history=["把 region 改成 district"])
+    await store.record(bob, question="q2", sql="SELECT 2",
+                       verdict="RETRY: no rows")
+    await store.record(MemoryScope(datasource="other", user_id="alice"),
+                       question="q3", sql="SELECT 3")
+
+    rows = await store.iter_episodes("demo")
+    assert {r["question"] for r in rows} == {"q1", "q2"}
+    assert all(set(r) == {"question", "sql", "dialect", "verdict",
+                          "correction_history", "matched_tables", "updated_at"}
+               for r in rows)
+    q1 = next(r for r in rows if r["question"] == "q1")
+    assert q1["verdict"] == "OK"
+    assert q1["correction_history"] == ["把 region 改成 district"]
+
+
+async def test_iter_episodes_since_and_limit(store):
+    scope = MemoryScope(datasource="demo", user_id="alice")
+    for i in range(3):
+        await store.record(scope, question=f"q{i}", sql=f"SELECT {i}")
+    assert len(await store.iter_episodes("demo", limit=2)) == 2
+    assert await store.iter_episodes(
+        "demo", since="2999-01-01T00:00:00+00:00") == []
+
+
+async def test_dispose_releases_backend_connection(store):
+    """close() 只结束操作作用域;dispose() 才是真释放。
+
+    短生命周期所有者(历史蒸馏的 collect_history)依赖这条:不 dispose,
+    aiosqlite 常驻 worker 线程会让跑完的进程挂住不退出。
+    """
+    scope = MemoryScope(datasource="demo", user_id="alice")
+    await store.record(scope, question="q", sql="SELECT 1")
+    await store.dispose()
+    assert store._backend._conn is None
+
+
 async def test_purge(store):
     scope = MemoryScope(datasource="demo", user_id="alice")
     await store.record(scope, question="old", sql="SELECT 1")
