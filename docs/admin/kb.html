@@ -64,6 +64,32 @@
       「覆盖重建」则明确写「未合并的手工编辑会丢失」。执行前读一眼后果清单，不会踩到隐藏代价。
     </p>
 
+    <h2 id="distill">从历史蒸馏：把已有行为变成待审资产</h2>
+
+    <p>
+      「接入即建模」的冷启动不该是空白——这个部署在被建模之前，就已经回答过一批问题、
+      积累过一批修正。<code>⋯</code> 菜单里的<strong>从历史蒸馏</strong>把三类行为记录
+      变成待审资产：成功问答 → 示例草稿、成功 SQL 的聚合与列引用 → 语义候选、
+      失败与修正 → 教训材料。全部落在<strong>同一道确认门</strong>后面：
+      蒸馏产出永远是 pending，确认之前不进检索、不进排序。
+    </p>
+
+    <ul>
+      <li><strong>读哪些记录</strong>——会话 episode 优先、查询审计兜底（审计产物不带用户归属：蒸馏回答「问过什么」，不回答「谁问的」）；lineage 的命中频次只当排序权重。</li>
+      <li><strong>确定性核心</strong>——判定与抽取不调 LLM（构造上就调不了）；只有教训提炼一步用模型——走<a href="access.html#model">起草模型档</a>。</li>
+      <li><strong>上限与去重</strong>——单次至多 50 条，(问题, SQL) 去重；重跑幂等：第二遍 0 条、YAML 逐字节不变。</li>
+      <li><strong>来源白名单</strong>——只读记忆库、审计库与 lineage 目录；<code>eval/</code> 直接拒收——评测集不许从数据入口流进知识库（KB 反作弊在数据入口的闸）。</li>
+    </ul>
+
+    <p>
+      管理端跑蒸馏是一个长任务（202 受理 + 进度），与同源的初始化任务互斥；
+      <strong>空输入显式报「没有可蒸馏的历史」</strong>而不是假装成功。
+      命令行的对应入口是 <code>scripts/distill_history.py</code>
+      （<code>--datasource</code> / <code>--limit</code> / <code>--since</code> /
+      <code>--dry-run</code> / <code>--no-llm</code>），<code>--dry-run</code> 零写入，
+      适合先看一眼会产出什么再落。
+    </p>
+
     <h2 id="pending">待审批：人在这里把关</h2>
 
     <p>

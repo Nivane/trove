@@ -307,6 +307,29 @@ flowchart LR
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L210">rules.py:210 <span class="ref-line">driver_dimension</span></a>
     </p>
 
+    <h3>批量审批：只批不外送</h3>
+
+    <p>
+      积压多了可以在提案列表里勾选、批量批准 / 驳回——但批量动词是闭集：
+      只有 <code>approve</code> 与 <code>reject</code>。<code>dispatch</code> 是唯一有
+      <strong>外部副作用</strong>的动词，批量外送等于一键群发，被路由层整批 400 拒绝；
+      <code>cancel</code> / <code>retry</code> 是纠错动作，也不成批。
+    </p>
+
+    <p>
+      批量不是「循环调单条」：每条的结果显式落在返回的 <code>results</code> 里
+      （一条失败不影响其余，失败行带原因、可单独重试）；条数超限（200，与列表页上限同源）
+      是<strong>整批拒绝</strong>而不是截断——截断后前 N 条已改状态、调用方却以为全处理了，
+      比整批拒绝难查得多。并发也收了口：两个管理员同时批准同一条，只有一条落，
+      输家<strong>响亮失败</strong>而不是静默覆盖，也不会留下幽灵决定行。
+      逐条审计的明细带 <code>batch: True</code>，与单条动作的痕迹区分开。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L117">service.py:117 <span class="ref-line">BATCH_DECISIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L221">actions.py:221 <span class="ref-line">batch</span></a>
+    </p>
+
     <h2 id="failure">失败是响亮的</h2>
 
     <p>
@@ -491,6 +514,12 @@ flowchart LR
     </figure>
 
     <p>
+      提案表支持批量处置：勾选（只有 <code>pending</code> 的行可勾）→ 批量批准 / 驳回对话框，
+      对话框逐条给出载荷、证据与原问题预览；<strong>高风险提案必须逐条勾选确认</strong>才能提交。
+      提交后若有失败，面板逐条给原因、失败行可单独重试——批量不把任何一条的失败藏起来。
+    </p>
+
+    <p>
       提案的来路在「判定规则」页里：一条规则声明了 <code>action</code> 之后，
       它的每次触发都可以在这里看到「提案了没有、批没批、发没发出去」。
     </p>
@@ -509,6 +538,7 @@ flowchart LR
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals</td><td>提案列表（按状态 / 数据源过滤）+ 各状态计数</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals/{id}</td><td>单条提案 + 完整审计轨迹（批准、投递）</td></tr>
           <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/proposals/{id}/{decision}</td><td>状态迁移，闭集动词：<code>approve / reject / cancel / dispatch / retry / dry_run / ack</code></td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/proposals/batch</td><td>批量批准 / 驳回（<code>{ids, decision, comment?}</code>）：逐条结果不连坐、超限整批拒绝、逐条审计（<code>details.batch=True</code>）</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals/{id}/outcomes</td><td>提案的效果验收记录（测量窗、三态结论、方法、降级原因）</td></tr>
         </tbody>
       </table>

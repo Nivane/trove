@@ -81,7 +81,9 @@ flowchart TD
     <pre><code>uv sync --extra mysql --extra doris      # MySQL + Doris
 uv sync --extra postgres                 # PostgreSQL（业务库 + 向量）
 uv sync --extra clickhouse               # ClickHouse
-uv sync --extra duckdb                   # DuckDB</code></pre>
+uv sync --extra duckdb                   # DuckDB
+uv sync --extra snowflake                # Snowflake
+uv sync --extra bigquery                 # BigQuery</code></pre>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L55">pyproject.toml:55 <span class="ref-line">doris</span></a>
@@ -105,6 +107,8 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
           <tr><td class="mono">doris</td><td class="mono">9030</td><td class="mono">doris://user:pw@host:9030/db</td></tr>
           <tr><td class="mono">postgres<br>postgresql</td><td class="mono">5432</td><td class="mono">postgres://user:pw@host:5432/db</td></tr>
           <tr><td class="mono">clickhouse</td><td class="mono">8123</td><td class="mono">clickhouse://user:pw@host:8123/db</td></tr>
+          <tr><td class="mono">snowflake</td><td>—</td><td class="mono">snowflake://user:pw@account/DB/SCHEMA?warehouse=wh</td></tr>
+          <tr><td class="mono">bigquery</td><td>—</td><td class="mono">bigquery://project/dataset?location=US</td></tr>
           <tr><td class="mono">sqlite</td><td>—</td><td class="mono">sqlite:///path/to.db</td></tr>
           <tr><td class="mono">duckdb</td><td>—</td><td class="mono">duckdb:///path/to.duckdb</td></tr>
         </tbody>
@@ -119,7 +123,10 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
       <span class="callout-tag">数据源的名字从哪来</span>
       <div>
         <p>网络 URL 的数据源名 = <strong>库名</strong>；文件型（SQLite / DuckDB）用 scheme 作名字，
-        所以它们都叫 <code>sqlite</code> / <code>duckdb</code>。这个名字决定了 KB 目录
+        所以它们都叫 <code>sqlite</code> / <code>duckdb</code>。云仓的名字是<strong>身份的两段</strong>：
+        Snowflake 取 <code>&lt;库&gt;.&lt;模式&gt;</code>，BigQuery 取 <code>&lt;项目&gt;.&lt;数据集&gt;</code>——
+        同一个库里两个模式（数据集）是两个可查单元，只拿库名当名字会让第二次注册撞上「已存在」。
+        这个名字决定了 KB 目录
         （<code>.trove/kb/&lt;name&gt;/</code>），<strong>改 URL 的库名等于换一个 KB</strong>，注意不要无意中改掉。</p>
       </div>
     </div>
@@ -137,7 +144,7 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L606">admin.py:606 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L661">admin.py:661 <span class="ref-line">prepare</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L829">admin.py:829 <span class="ref-line">prepare</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L643">admin.py:643 <span class="ref-line">409</span></a>
     </p>
 
@@ -185,6 +192,41 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
     <p>
       连接时会探测并上报能力（是否支持事务、CTE、窗口函数），方言声明为 <code>doris</code>。
       这些能力位会影响生成策略——比如不支持 CTE 时不该生成 CTE。
+    </p>
+
+    <h2 id="cloud">云仓（Snowflake / BigQuery）的差异</h2>
+
+    <p>
+      两个云仓适配器和上面五个的流程完全一样：装 extra → 注册 → <code>kb init</code> → 授权。
+      差异不在流程，在连接与执行细节上：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>差异</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>驱动形状</td><td>两家的官方驱动都<strong>只有同步版</strong>——适配器把每个调用整体包进 <code>asyncio.to_thread</code>，事件循环不被阻塞（其余适配器走原生异步驱动）</td></tr>
+          <tr><td>连接串形状</td><td>Snowflake：账号 + <code>/&lt;库&gt;/&lt;模式&gt;</code>，<code>?warehouse=…&amp;role=…&amp;private_key_file=…</code>；BigQuery：项目 + <code>/&lt;数据集&gt;</code>，<code>?location=…&amp;service_account_file=…</code></td></tr>
+          <tr><td>凭据</td><td>Snowflake 用 user/password 或私钥文件；BigQuery 只认 service account 文件或 ADC——连接串里带 <code>user:password</code> 会被<strong>拒绝</strong>而不是静默忽略：一组无效凭据必须响亮地失败</td></tr>
+          <tr><td>超时</td><td>Snowflake 把整秒超时折进登录参数（<code>STATEMENT_TIMEOUT_IN_SECONDS</code>，DB 侧强制，重连同样带着）；BigQuery 没有会话级时长机制，能力位如实声明不支持——超时由客户端侧管理 + 主动终止承担</td></tr>
+          <tr><td>元数据内省</td><td>BigQuery 走 metadata API（<code>list_tables</code> + 逐表 <code>get_table</code>，免费、不起查询 job），<strong>不查</strong> <code>INFORMATION_SCHEMA</code>（计费表，查它就是起一次扫描）</td></tr>
+          <tr><td>EXPLAIN</td><td>Snowflake 支持；BigQuery 声明不支持（GoogleSQL 没有 <code>EXPLAIN</code> 语句）——请求 explain 会被能力位拒绝，而不是发出一条必然报错的 SQL</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两者都支持主动终止（<code>supports_interrupt</code>）：云仓的查询跑在服务端，
+      客户端只是无状态 REST 包装，停下来只能靠服务端手段——Snowflake 按我们注入的
+      requestId 反查后 abort，BigQuery 直接用 job 句柄 <code>job.cancel()</code>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/snowflake.py#L148">snowflake.py:148 <span class="ref-line">SnowflakeAdapter</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/bigquery.py#L117">bigquery.py:117 <span class="ref-line">BigQueryAdapter</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/urls.py#L133">urls.py:133 <span class="ref-line">_cloud_datasource_name</span></a>
     </p>
 
     <h2 id="accuracy">第三步：决定准确率的三件事</h2>
@@ -304,6 +346,7 @@ ALTER USER trove_ro SETTINGS readonly = 1;</code></pre>
           <tr><td>MySQL / Doris</td><td><code>SHOW GRANTS</code>，看权限清单里有没有写权限（表名撞上关键字不算）</td></tr>
           <tr><td>PostgreSQL</td><td>是否超级用户、是否是表的属主（属主天然可写）、<code>table_privileges</code> 里的写权限</td></tr>
           <tr><td>ClickHouse</td><td><code>system.grants</code>，展开角色继承后再看有没有写权限</td></tr>
+          <tr><td>Snowflake / BigQuery</td><td>暂未实现权限表探测——结论是「无从判断」。探测缺失不会被渲染成「已确认只读」：那等于替一道并不存在的边界背书</td></tr>
           <tr><td>SQLite / DuckDB</td><td>查不了——没有角色概念，边界是文件权限，结论是「无从判断」</td></tr>
         </tbody>
       </table>

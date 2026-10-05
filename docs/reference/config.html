@@ -110,6 +110,7 @@ flowchart LR
         <tbody>
           <tr><td class="mono">target</td><td>—</td><td>主力模型</td></tr>
           <tr><td class="mono">model_fast</td><td>—</td><td>轻量任务用的快速模型</td></tr>
+          <tr><td class="mono">model_draft</td><td>空 = 关闭</td><td>起草 / 判定类结构化短输出的便宜档（KB 建档注释、扩展草稿、偏好抽取等六处；空 = 逐字节回落）</td></tr>
           <tr><td class="mono">language</td><td class="mono">zh</td><td>回答语言</td></tr>
           <tr><td class="mono">hitl</td><td class="mono">false</td><td>执行前人工确认</td></tr>
           <tr><td class="mono">date_parser</td><td class="mono">true</td><td>相对时间解析</td></tr>
@@ -138,6 +139,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L386">config.py:386 <span class="ref-line">AgentConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L406">config.py:406 <span class="ref-line">model_draft</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L423">config.py:423 <span class="ref-line">confidence_score</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L56">config.py:56 <span class="ref-line">TracingConfig</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L84">conf/agent.yml:84 <span class="ref-line">reflect_skip</span></a>
