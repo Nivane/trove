@@ -399,3 +399,28 @@ class TestEvidenceJsonSafe:
         rows = [[Decimal("1.5"), date(2024, 1, 31), None, True, "East"]]
         assert _record_rows(rows, 10) == [[1.5, "2024-01-31", None, True, "East"]]
         assert _record_rows([[1], [2], [3]], 2) == [[1], [2]]  # 截断仍在
+
+
+class TestPeriodDegradation:
+    """要了 yoy/环比却拿不到两个可比窗口 → 不静默降级(2026-10-05 线上
+    回归:静默降 share 后查询无时间过滤,「1997 vs 1996」拿全量数据算,
+    结论数字对不上口径且无处可见)。"""
+
+    async def test_missing_time_context_degrades_loudly(self):
+        out = await _engine(FakeRunner()).run(_req(time_context="", baseline="yoy"))
+        assert out is not None
+        assert {"stage": "period", "reason": "no_time_context"} in out.degraded
+        assert out.baseline == "share"   # 降级仍发生,但记账了
+        assert out.partial is True
+
+    async def test_unparsable_time_context_reason(self):
+        out = await _engine(FakeRunner()).run(
+            _req(time_context="某年某月", baseline="yoy"))
+        assert out is not None
+        assert {"stage": "period", "reason": "unparsable_time_context"} in out.degraded
+
+    async def test_share_baseline_is_not_a_degradation(self):
+        """share 本来就没有基期 —— 不记账(降级与设计语义分得开)。"""
+        out = await _engine(FakeRunner()).run(_req(time_context="", baseline="share"))
+        assert out is not None
+        assert not any(d.get("stage") == "period" for d in out.degraded)

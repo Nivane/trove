@@ -11,6 +11,8 @@ Datus date_parser design:
   - offsets ("前7天" / "N days ago") anchor to a single point / yesterday
   - since ("X以来" / "since X") returns a half-open range to the reference date
   - quarters ("本季度" / "last quarter") return the full calendar quarter
+  - absolute years ("1997年" / "in 1997") return that full calendar year
+    (month/day-qualified years and "90年代" deliberately stay unmatched)
 
 Unmatched questions pass through silently (node returns {}), so the
 pipeline behaves exactly as before for anything the rules don't cover.
@@ -438,6 +440,37 @@ def _rule_since_en(text: str, ref: date) -> tuple[date, date] | None:
     return start[0], ref
 
 
+# ── Rule 12: absolute year ("1997年" / "in 1997") ──────────
+#
+# 最低优先级(列表末尾):所有相对表达先命中。裸年份是"往期对比"类问题
+# 的时间锚点(「1997 比 1996 降了多少」),不解析它,下游拿不到基期窗口
+# 就只能降级。月/日限定(「1997年12月」)与年代(「90年代」)刻意不匹配
+# —— 整年窗口对它们是错的,留给调用方原样透传(宁可不解析,不猜错)。
+
+_ZH_ABS_YEAR_RE = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})\s*年(?:度|份)?(?!\s*(?:\d{1,2}\s*[月日]|代))"
+)
+_EN_ABS_YEAR_RE = re.compile(
+    r"\b(?:in|during|for|of|year)\s+((?:19|20)\d{2})\b", re.IGNORECASE
+)
+
+
+def _rule_abs_year_zh(text: str, ref: date) -> tuple[date, date] | None:
+    m = _ZH_ABS_YEAR_RE.search(text)
+    if not m:
+        return None
+    y = int(m.group(1))
+    return date(y, 1, 1), date(y, 12, 31)
+
+
+def _rule_abs_year_en(text: str, ref: date) -> tuple[date, date] | None:
+    m = _EN_ABS_YEAR_RE.search(text)
+    if not m:
+        return None
+    y = int(m.group(1))
+    return date(y, 1, 1), date(y, 12, 31)
+
+
 # ── Engine ────────────────────────────────────────────────
 
 _ZH_RULES = [
@@ -449,6 +482,7 @@ _ZH_RULES = [
     _rule_periods_zh,
     _rule_offsets_zh,
     _rule_durations_zh,
+    _rule_abs_year_zh,
 ]
 
 _EN_RULES = [
@@ -460,6 +494,7 @@ _EN_RULES = [
     _rule_periods_en,
     _rule_offsets_en,
     _rule_durations_en,
+    _rule_abs_year_en,
 ]
 
 

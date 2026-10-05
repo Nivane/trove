@@ -57,8 +57,8 @@ export function renderMarkdown(src: string): string {
 }
 
 /** 结论当主角（答案卡视觉层）：给 `### 结论 / ### Conclusion` 标题挂
- *  `concl-label`、其后的首段挂 `concl`，并把段落里第一个数字包进
- *  `hero-num`（品牌数字字号）。输入是 sanitize 之后的 HTML，这里只加
+ *  `concl-label`、其后的首段挂 `concl`，并把段落里的主角数字包进
+ *  `hero-num`（品牌数字字号；优先非年份。输入是 sanitize 之后的 HTML，这里只加
  *  class 与一个 span（不引入任何来自源的标记）；认不出结论标题就原样
  *  返回 —— 宁可不放大，也不把别的段落误当结论。 */
 export function enhanceConclusionHtml(html: string): string {
@@ -78,7 +78,7 @@ export function enhanceConclusionHtml(html: string): string {
   const para = heading.nextElementSibling
   if (!para || para.tagName !== 'P') return doc.body.innerHTML
   para.classList.add('concl')
-  wrapFirstNumber(para)
+  wrapHeroNumber(para)
   return doc.body.innerHTML
 }
 
@@ -86,25 +86,37 @@ export function enhanceConclusionHtml(html: string): string {
 const HERO_NUM_RE = /[$¥€]?\d[\d,]*(?:\.\d+)?(?:%|亿|万|千)?/
 // 中文夹单字数字（第3名 / 共5个）不是主角数字，跳过。
 const CJK_RE = /[一-鿿]/
+// 裸四位数年份（1997 / 2024，无单位无千分位）不是主角数字 —— 结论常以
+// 「1997年的贷款总额较1996年…」开头，不排除它，首匹配永远落在年份上。
+// 带千分位（1,997）或单位（1997万）的不算年份。
+const YEAR_LIKE_RE = /^(?:19|20)\d{2}$/
 
-function wrapFirstNumber(para: Element): void {
-  const walker = para.ownerDocument.createTreeWalker(para, NodeFilter.SHOW_TEXT)
+function wrapHeroNumber(para: Element): void {
+  const doc = para.ownerDocument
+  const candidates: { node: Text; index: number; text: string }[] = []
+  const walker = doc.createTreeWalker(para, NodeFilter.SHOW_TEXT)
   let node: Text | null
   while ((node = walker.nextNode() as Text | null)) {
     const text = node.nodeValue ?? ''
-    const m = HERO_NUM_RE.exec(text)
-    if (!m) continue
-    const before = text[m.index - 1]
-    const after = text[m.index + m[0].length]
-    if (before && after && CJK_RE.test(before) && CJK_RE.test(after)) continue
-    const span = para.ownerDocument.createElement('span')
-    span.className = 'hero-num'
-    span.textContent = m[0]
-    const rest = node.splitText(m.index)
-    rest.nodeValue = rest.nodeValue!.slice(m[0].length)
-    node.parentNode?.insertBefore(span, rest)
-    return
+    const re = new RegExp(HERO_NUM_RE.source, 'g')
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text))) {
+      const before = text[m.index - 1]
+      const after = text[m.index + m[0].length]
+      if (before && after && CJK_RE.test(before) && CJK_RE.test(after)) continue
+      candidates.push({ node, index: m.index, text: m[0] })
+    }
   }
+  // 两遍：先取非年份的（金额/占比），没有才退回年份 —— 答案是年份的题
+  //（「1997年是最高的年份」）照样放大；一个都没有就不动。
+  const hero = candidates.find((c) => !YEAR_LIKE_RE.test(c.text)) ?? candidates[0]
+  if (!hero) return
+  const span = doc.createElement('span')
+  span.className = 'hero-num'
+  span.textContent = hero.text
+  const rest = hero.node.splitText(hero.index)
+  rest.nodeValue = rest.nodeValue!.slice(hero.text.length)
+  hero.node.parentNode?.insertBefore(span, rest)
 }
 
 /** Strip the terminal ASCII chart block the output node embeds (the web

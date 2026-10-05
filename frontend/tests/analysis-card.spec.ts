@@ -189,3 +189,55 @@ describe('AnalysisCard — 噪声带', () => {
     expect(text).toContain('outside the noise band')
   })
 })
+
+describe('AnalysisCard — 降级记账（partial + evidence.degraded）', () => {
+  const withDegraded = (
+    degraded: { stage?: string; reason?: string }[],
+  ): AnalysisPayload => ({
+    ...V1,
+    partial: true,
+    evidence: { datasource: 'demo', queries: [], truncated: false, degraded },
+  })
+
+  async function openEvidence(): Promise<string> {
+    await wrapper?.find('.ana-evidence-toggle').trigger('click')
+    return wrapper?.text() ?? ''
+  }
+
+  it('partial 挂「部分结果」标；降级原因译成人话，原始码不出面', async () => {
+    mountCard(withDegraded([{ stage: 'period', reason: 'no_time_context' }]))
+    expect(wrapper?.find('.ana-chip.warn').exists()).toBe(true)
+    expect(wrapper?.text()).toContain('部分结果')
+    const text = await openEvidence()
+    expect(text).toContain('时间窗')
+    expect(text).toContain('问题里没有可解析的时间窗')
+    expect(text).not.toContain('no_time_context')
+  })
+
+  it('前端不认得的码露出 slug（不编造）；带细节的原因保留冒号后缀', async () => {
+    mountCard(
+      withDegraded([
+        { stage: 'brand_new_stage', reason: 'brand_new_reason' },
+        { stage: 'series', reason: 'compile_miss:no_metric_match' },
+      ]),
+    )
+    const text = await openEvidence()
+    expect(text).toContain('brand_new_stage')
+    expect(text).toContain('brand_new_reason')
+    expect(text).toContain('块序列')
+    expect(text).toContain('序列查询编译不出:no_metric_match')
+  })
+
+  it('英文渲染:stage 与 reason 都译', async () => {
+    mountCard(withDegraded([{ stage: 'period', reason: 'no_time_field' }]), 'en')
+    const text = await openEvidence()
+    expect(text).toContain('time window')
+    expect(text).toContain('no time field found')
+  })
+
+  it('queries 与 degraded 都空:证据抽屉整块不出现（无降级行可挂）', () => {
+    mountCard(V1) // V1.evidence.queries = [] 且 degraded = []
+    expect(wrapper?.find('.ana-evidence-toggle').exists()).toBe(false)
+    expect(wrapper?.find('.ana-degraded-row').exists()).toBe(false)
+  })
+})
