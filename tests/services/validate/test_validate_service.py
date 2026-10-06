@@ -1005,3 +1005,91 @@ async def test_run_section_passes_flags_through(tmp_path):
     # limit=0:fixtures 全被截 → 语料空 → 无法试跑;原文开关透传
     assert dry is not None and dry.exit_code == 2
     assert dry.include_questions is True
+
+
+# ── 影响面回放节(--impact,E4)─────────────────────────────
+
+
+def _candidate_guard(tmp_path: Path, name: str = "no-naked-select", *,
+                     expr: str = "has_limit == 1", severity: str = "blocking",
+                     check: str = "no-limit", root: str = "candidates") -> Path:
+    """待导入的资产目录(``<root>/<name>/SKILL.md``,read_skill 的同一条读路径)。"""
+    import yaml
+
+    d = tmp_path / root / name
+    d.mkdir(parents=True, exist_ok=True)
+    fm = yaml.safe_dump({
+        "name": name, "description": "候选守卫", "tier": "guard",
+        "status": "pending",
+        "guard": {"targets": ["sql"], "checks": [{
+            "name": check, "severity": severity, "expr": expr,
+            "reason": "缺 LIMIT", "hint_zh": "改", "hint_en": "fix"}]},
+    }, allow_unicode=True, sort_keys=False).strip()
+    (d / "SKILL.md").write_text(f"---\n{fm}\n---\n\n说明\n", encoding="utf-8")
+    return tmp_path / root
+
+
+async def test_impact_section_off_is_byte_identical(tmp_path):
+    """不带 --impact:与 run_validate 同一份报告(dict 逐字段相等)。"""
+    from trove.services.validate import run_validate_with_impact
+
+    _make_kb(tmp_path)
+    report, imp = await run_validate_with_impact("mini", project_root=tmp_path)
+    assert imp is None
+    plain = await run_validate("mini", project_root=tmp_path)
+    assert report.to_dict() == plain.to_dict()
+
+
+async def test_impact_section_on_keeps_static_report(tmp_path):
+    from trove.services.validate import run_validate_with_impact
+
+    _make_kb(tmp_path)
+    _make_fixtures(tmp_path)
+    cand = _candidate_guard(tmp_path)
+    report, imp = await run_validate_with_impact(
+        "mini", project_root=tmp_path, impact=str(cand))
+    assert report.ok and imp is not None
+    assert imp.datasource == "mini" and imp.exit_code == 1
+    assert imp.counts()["newly_blocked"] == 1
+    assert any(".trove/kb/mini/fixtures.yml" in s for s in imp.sources)
+    plain = await run_validate("mini", project_root=tmp_path)
+    assert report.to_dict() == plain.to_dict()      # 静态面未被回放改写
+
+
+async def test_impact_combined_exit_code_takes_the_stricter_side(tmp_path):
+    """静态干净 + 回放无法进行(缺语料)→ 2,不许被静态的 0 盖过去。"""
+    from trove.services.validate import combined_exit_code, run_validate_with_impact
+
+    _make_kb(tmp_path)                              # 无 fixtures → 语料为空
+    cand = _candidate_guard(tmp_path)
+    report, imp = await run_validate_with_impact(
+        "mini", project_root=tmp_path, impact=str(cand))
+    assert report.exit_code() == 0 and imp.exit_code == 2
+    assert combined_exit_code(report, imp) == 2
+    assert combined_exit_code(report, None) == 0    # 不带回放时语义与从前一致
+
+
+async def test_impact_section_passes_flags_through(tmp_path):
+    from trove.services.validate import run_validate_with_impact
+
+    _make_kb(tmp_path)
+    _make_fixtures(tmp_path)
+    cand = _candidate_guard(tmp_path)
+    _, imp = await run_validate_with_impact(
+        "mini", project_root=tmp_path, impact=str(cand), limit=0,
+        include_questions=True)
+    # limit=0:fixtures 全被截 → 语料空 → 无法回放;原文开关透传
+    assert imp is not None and imp.exit_code == 2
+    assert imp.include_questions is True
+
+
+async def test_impact_bad_candidate_is_error_not_exception(tmp_path):
+    """坏候选集不抛异常 —— 落成 errors(退出码 2),CLI 才出得了码。"""
+    from trove.services.validate import run_validate_with_impact
+
+    _make_kb(tmp_path)
+    _make_fixtures(tmp_path)
+    report, imp = await run_validate_with_impact(
+        "mini", project_root=tmp_path, impact=str(tmp_path / "ghost"))
+    assert report.ok and imp.exit_code == 2
+    assert any("不存在" in e for e in imp.errors)

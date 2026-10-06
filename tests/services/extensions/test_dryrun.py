@@ -562,11 +562,49 @@ def test_guard_without_sql_is_skipped():
 
 
 def test_guard_hit_triggered_alias_is_read():
-    """E2 的守卫若用 triggered 键表达判定,同样读得懂(只认布尔)。"""
+    """E2 的守卫用 ``triggered`` 表达判定 —— **极性要读对**(接缝钉子)。
+
+    ``triggered`` 与 ``verdict`` 极性相反:True = 命中(= 违反),False = 合规
+    (守卫作者写的是"合规的 SQL 长什么样";见 guards.py 的极性说明与
+    execute_sql 的 blocking 门)。读反了的后果不是报错,是**每条守卫判定都
+    反着来** —— 拦下的说成通过、通过的说成拦下。这条同时钉两个方向。
+    """
+    runner, _ = _guard_runner(payload=[
+        {"name": "g", "triggered": True, "severity": "advisory"}])
+    j = judge_guard(runner, [{"name": "g"}], _item())
+    assert j.post == "violated" and j.post_flagged_by == ("g",)
+
     runner, _ = _guard_runner(payload=[
         {"name": "g", "triggered": False, "severity": "advisory"}])
     j = judge_guard(runner, [{"name": "g"}], _item())
-    assert j.post == "violated" and j.post_flagged_by == ("g",)
+    assert j.post == "pass" and j.post_flagged_by == ()
+
+
+def test_guard_verdict_object_is_read():
+    """真实 ``run_guards`` 交的是 ``GuardVerdict`` dataclass(不是 dict)。
+
+    只认 mapping 的读法会把每条真实守卫判定读成"判不了" —— 报告上它看起来
+    只是"没有差异",而实际上一次都没判过。
+    """
+    from trove.services.skills.guards import GuardVerdict
+
+    runner, _ = _guard_runner(payload=[GuardVerdict(
+        name="no-limit", severity="blocking", triggered=True, reason="违反：x")])
+    j = judge_guard(runner, [{"name": "no-limit"}], _item())
+    assert j.post == "violated" and j.post_blocked_by == ("no-limit",)
+    assert j.post_hits[0]["name"] == "no-limit"
+    assert j.post_hits[0]["message"] == "违反：x"    # 守卫侧 reason = 判词
+
+
+def test_guard_verdict_object_none_is_unjudged():
+    from trove.services.skills.guards import GuardVerdict
+
+    runner, _ = _guard_runner(payload=[GuardVerdict(
+        name="g", severity="advisory", triggered=None, reason="",
+        none_reason="unparseable_sql")])
+    j = judge_guard(runner, [{"name": "g"}], _item())
+    assert j.post == "unjudged"
+    assert j.post_hits[0]["reason"] == "unparseable_sql"
 
 
 def test_guard_non_bool_verdict_is_unjudged():
