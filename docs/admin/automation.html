@@ -231,8 +231,8 @@
         <li><span class="n">2</span><strong>内置章</strong>——随代码发布的技能（只读，不提供确认/拒绝动作）。组织技能没有这个章，可被管理端处置。</li>
         <li><span class="n">3</span><strong>生效节点</strong>——技能挂在哪个生成环节：<code>query_sketch</code>（规划）/ <code>analyze_error</code>（失败诊断）/ <code>gen_sql</code>（生成）；「（全局）」表示对所有环节生效。</li>
         <li><span class="n">4</span><strong>档位</strong>——四种（两种注入 + 两种断言，见下表）。</li>
-        <li><span class="n">5</span><strong>状态</strong>——已确认 / 待确认（另有「已停用」态，经管理 API 颗粒停用）。待确认的草稿不进任何提示词，确认才生效，拒绝即删除草稿。</li>
-        <li><span class="n">6</span><strong>行内动作</strong>——待确认行给出「确认 / 拒绝」；已确认行可切换档位（「设为 required」/ 反向切回 available）并随时「预览」。</li>
+        <li><span class="n">5</span><strong>状态</strong>——已确认 / 待确认 / 已停用（第四态，灰色章）。待确认的草稿不进任何提示词，确认才生效，拒绝即删除草稿；停用是暂停投递，不是撤回确认。</li>
+        <li><span class="n">6</span><strong>行内动作</strong>——按状态给合法转移：待确认行「确认 / 拒绝」；已确认行可「停用」或切换档位（「设为 required」/ 反向切回 available）；已停用行只给「启用」——恢复走启用而不是再确认一次；「预览」随时可用。</li>
       </ol>
     </figure>
 

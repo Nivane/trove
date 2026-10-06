@@ -28,6 +28,7 @@
             <el-option :label="t('skillsFilterStatus', ui.lang)" value="" />
             <el-option :label="t('skillsStatusPending', ui.lang)" value="pending" />
             <el-option :label="t('skillsStatusConfirmed', ui.lang)" value="confirmed" />
+            <el-option :label="t('skillsStatusDisabled', ui.lang)" value="disabled" />
             <el-option :label="t('skillsStatusRejected', ui.lang)" value="rejected" />
           </el-select>
           <el-select v-model="values.tier" class="filter-select" :aria-label="t('skillsFilterTier', ui.lang)">
@@ -35,6 +36,7 @@
             <el-option :label="t('skillsRequired', ui.lang)" value="required" />
             <el-option :label="t('skillsAvailable', ui.lang)" value="available" />
             <el-option :label="t('skillsValidator', ui.lang)" value="validator" />
+            <el-option :label="t('skillsGuard', ui.lang)" value="guard" />
           </el-select>
           <span class="pill pill-neutral">{{ filtered.length }} {{ t('skillsCount', ui.lang) }}</span>
         </div>
@@ -67,7 +69,7 @@
             <!-- title 挂在包一层的 span 上:el-tag 不把未知 attr 透传到根元素,
                  直接写在它上面等于没写(实测 attributes() 里没有 title)。 -->
             <span v-if="row.source !== 'code'"
-                  :title="row.tier === 'validator' ? t('skillsValidatorHint', ui.lang) : ''"
+                  :title="tierHint(row.tier)"
             >
               <el-tag size="small" :type="tierTagType(row.tier)" effect="plain">
                 {{ tierLabel(row.tier) }}
@@ -81,17 +83,36 @@
             <span class="pill" :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="" width="250" fixed="right">
+        <!-- 290px:最宽一行(en「Disable + Set available + Preview」)实测约 263px
+             (12px SF 字宽 + small 按钮 22px 内边距 + 12px 间距 + 单元格 24px 内边距),
+             250 会折行。加动作时同步重算。 -->
+        <el-table-column label="" width="290" fixed="right">
           <template #default="{ row }">
             <template v-if="row.source !== 'code'">
               <el-button v-if="row.status === 'pending'" size="small" type="primary" @click="confirm(row)">
                 {{ t('skillsConfirm', ui.lang) }}
               </el-button>
-              <el-button v-if="row.status !== 'confirmed'" size="small" type="danger" plain @click="reject(row)">
+              <!-- reject 收窄到 pending:后端 reject 只查目录存在、不查状态,
+                   对 disabled 行调用会直接删掉资产 —— 这条路径不能出现在 UI 里。 -->
+              <el-button v-if="row.status === 'pending'" size="small" type="danger" plain @click="reject(row)">
                 {{ t('skillsReject', ui.lang) }}
               </el-button>
               <el-button
-                v-if="row.status === 'confirmed' && row.tier !== 'validator'"
+                v-if="row.status === 'confirmed'"
+                size="small"
+                plain
+                :title="t('skillsDisableHint', ui.lang)"
+                @click="disable(row)"
+              >
+                {{ t('skillsDisable', ui.lang) }}
+              </el-button>
+              <el-button v-if="row.status === 'disabled'" size="small" type="primary" plain @click="enable(row)">
+                {{ t('skillsEnable', ui.lang) }}
+              </el-button>
+              <!-- 档位切换只给 required/available:validator 与 guard 的
+                   四字段按当前 tier 投影,两个方向都 400,按钮恒失败不如不给。 -->
+              <el-button
+                v-if="row.status === 'confirmed' && (row.tier === 'required' || row.tier === 'available')"
                 size="small"
                 plain
                 @click="toggleTier(row)"
@@ -219,27 +240,39 @@ const filtered = computed(() =>
 function statusClass(s: string): string {
   if (s === 'confirmed') return 'pill-ok'
   if (s === 'pending') return 'pill-warn'
+  if (s === 'disabled') return 'pill-disabled'
   return 'pill-neutral'
 }
 
 function statusLabel(s: string): string {
   if (s === 'confirmed') return t('skillsStatusConfirmed', ui.lang)
   if (s === 'pending') return t('skillsStatusPending', ui.lang)
+  if (s === 'disabled') return t('skillsStatusDisabled', ui.lang)
   return t('skillsStatusRejected', ui.lang)
 }
 
-// validator 是**第三档**,不是"没选 required 的 available" —— 它按结果断言
-// 运行、正文从不投给模型。此前落到 available 分支上,显示的是别人的名字。
+// validator / guard 是**非提示词档**,不是"没选 required 的 available" ——
+// validator 按结果断言运行、guard 在 execute_sql 前拦截,正文从不投给模型。
+// 落到 available 分支上,显示的就是别人的名字。
 function tierLabel(tier: string): string {
   if (tier === 'required') return t('skillsRequired', ui.lang)
   if (tier === 'validator') return t('skillsValidator', ui.lang)
+  if (tier === 'guard') return t('skillsGuard', ui.lang)
   return t('skillsAvailable', ui.lang)
 }
 
 function tierTagType(tier: string): string {
   if (tier === 'required') return 'warning'
-  if (tier === 'validator') return 'danger'
+  if (tier === 'validator' || tier === 'guard') return 'danger'
   return 'info'
+}
+
+// 手写档(validator / guard)的提示:说清"SKILL.md 里手写"、别让人去找
+// 一个不存在的按钮。title 挂在外层 span(el-tag 双根条件渲染,不吃 attr)。
+function tierHint(tier: string): string {
+  if (tier === 'validator') return t('skillsValidatorHint', ui.lang)
+  if (tier === 'guard') return t('skillsGuardHint', ui.lang)
+  return ''
 }
 
 async function load() {
@@ -308,6 +341,29 @@ async function reject(row: SkillRow) {
   try {
     await apiPost(`/v1/admin/skills/${row.name}/reject`)
     notifySuccess(t('skillsRejected', ui.lang))
+    await load()
+  } catch (e) {
+    toastError(e)
+  }
+}
+
+// 颗粒停用/启用。后端严格非幂等(disable 仅 confirmed→disabled、
+// enable 仅 disabled→confirmed,非法流转 400)—— 按钮的 v-if 已保证
+// UI 只给合法转移,这里不做"兜底重试",失败就是失败,照原样报出来。
+async function disable(row: SkillRow) {
+  try {
+    await apiPost(`/v1/admin/skills/${row.name}/disable`)
+    notifySuccess(t('skillsDisabled', ui.lang))
+    await load()
+  } catch (e) {
+    toastError(e)
+  }
+}
+
+async function enable(row: SkillRow) {
+  try {
+    await apiPost(`/v1/admin/skills/${row.name}/enable`)
+    notifySuccess(t('skillsEnabled', ui.lang))
     await load()
   } catch (e) {
     toastError(e)

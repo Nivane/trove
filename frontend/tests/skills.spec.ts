@@ -157,3 +157,120 @@ describe('SkillsView URL state (§4.3)', () => {
     expect(names(view).length).toBe(3)
   })
 })
+
+describe('SkillsView disable / enable (E6)', () => {
+  function labels(view: VueWrapper): string[] {
+    return view.findAll('button').map((b) => b.text())
+  }
+
+  function rowNames(view: VueWrapper, known: string[]): string[] {
+    return view
+      .findAll('.el-table__body tbody tr .cell-mono')
+      .map((n) => n.text())
+      .filter((x) => known.includes(x))
+  }
+
+  it('labels a disabled row as disabled (not rejected) with the muted pill', async () => {
+    // disabled 是第四态;落到 statusLabel 的 else 分支上会显示"已拒绝" —— 一个
+    // 明确可恢复的状态被说成已删除,操作员会去找根本不需要的重建路径。
+    const view = await mountRows([
+      { ...ORG, name: 'paused', tier: 'available', status: 'disabled' },
+    ])
+    expect(view.text()).toContain('disabled')
+    expect(view.text()).not.toContain('rejected')
+    const pill = view.findAll('.pill').find((p) => p.text() === 'disabled')
+    expect(pill?.classes()).toContain('pill-disabled')
+  })
+
+  it('offers exactly the legal transition per status', async () => {
+    // pending → 确认/拒绝;confirmed → 停用(+档位切换);disabled → 仅启用。
+    // 后端状态机严格非幂等,UI 不给任何非法组合。
+    const view = await mountRows([
+      { ...ORG, name: 'active', tier: 'available' },
+      { ...ORG, name: 'paused', tier: 'available', status: 'disabled' },
+      { ...ORG, name: 'queued', tier: 'available', status: 'pending' },
+    ])
+    const all = labels(view)
+    expect(all.filter((l) => l === 'Disable').length).toBe(1)
+    expect(all.filter((l) => l === 'Enable').length).toBe(1)
+    expect(all.filter((l) => l === 'Confirm').length).toBe(1)
+    expect(all.filter((l) => l === 'Reject').length).toBe(1)
+    expect(all.filter((l) => l === 'Set required').length).toBe(1)
+  })
+
+  it('never shows reject on a disabled row (backend reject deletes without a state check)', async () => {
+    // 后端的 reject 只查目录存在、不查状态:对 disabled 行调用会直接删掉资产。
+    // 这是"hide 一个按钮"背后真正的承重项,不是样式问题。
+    const view = await mountRows([
+      { ...ORG, name: 'paused', tier: 'available', status: 'disabled' },
+    ])
+    expect(labels(view)).not.toContain('Reject')
+    expect(labels(view)).toContain('Enable')
+  })
+
+  it('posts disable for a confirmed row', async () => {
+    const view = await mountRows([{ ...ORG, name: 'soft', tier: 'available' }])
+    ;(apiPost as any).mockResolvedValue({})
+    const btn = view.findAll('button').find((b) => b.text() === 'Disable')!
+    await btn.trigger('click')
+    await flushPromises()
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/skills/soft/disable')
+  })
+
+  it('posts enable for a disabled row', async () => {
+    const view = await mountRows([
+      { ...ORG, name: 'soft', tier: 'available', status: 'disabled' },
+    ])
+    ;(apiPost as any).mockResolvedValue({})
+    const btn = view.findAll('button').find((b) => b.text() === 'Enable')!
+    await btn.trigger('click')
+    await flushPromises()
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/skills/soft/enable')
+  })
+
+  it('carries the granular-disable hint on the disable button', async () => {
+    const view = await mountRows([{ ...ORG, name: 'soft', tier: 'available' }])
+    const titles = view
+      .findAll('button[title]')
+      .map((b) => b.attributes('title') ?? '')
+    expect(titles.some((h) => h.includes('Granular disable'))).toBe(true)
+  })
+
+  it('names the guard tier, hints the hand-written SKILL.md, and hides its tier toggle', async () => {
+    // guard 与 validator 同族:手写档、正文不投模型、档位切换恒 400。
+    const view = await mountRows([
+      { ...ORG, name: 'guardrail', tier: 'guard' },
+      { ...ORG, name: 'soft', tier: 'available' },
+    ])
+    expect(view.text()).toContain('guard (SQL assertions)')
+    const all = labels(view)
+    expect(all.filter((l) => l === 'Set available').length).toBe(0)
+    expect(all.filter((l) => l === 'Set required').length).toBe(1)
+    const titles = view.findAll('[title]').map((el) => el.attributes('title') ?? '')
+    expect(titles.some((h) => h.includes('guard block'))).toBe(true)
+  })
+
+  it('filters to disabled rows from ?status=disabled', async () => {
+    const known = ['active', 'paused']
+    const view = await mountRows(
+      [
+        { ...ORG, name: 'active', tier: 'available' },
+        { ...ORG, name: 'paused', tier: 'available', status: 'disabled' },
+      ],
+      '?status=disabled',
+    )
+    expect(rowNames(view, known)).toEqual(['paused'])
+  })
+
+  it('filters to guard rows from ?tier=guard', async () => {
+    const known = ['guardrail', 'soft']
+    const view = await mountRows(
+      [
+        { ...ORG, name: 'guardrail', tier: 'guard' },
+        { ...ORG, name: 'soft', tier: 'available' },
+      ],
+      '?tier=guard',
+    )
+    expect(rowNames(view, known)).toEqual(['guardrail'])
+  })
+})
