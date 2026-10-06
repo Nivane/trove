@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve/admin/job/schedule/maintenance 子命令（<code>index</code> 归 <code>trove-cli</code>），以及 REPL 里的全部斜杠命令。">
+<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve / mcp / admin / job / schedule / maintenance / validate / extensions / preset 子命令（<code>index</code> 归 <code>trove-cli</code>），以及 REPL 里的全部斜杠命令。">
 <title>CLI 参考 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -45,7 +45,7 @@
         <tbody>
           <tr>
             <td class="mono">trove</td>
-            <td>REPL / serve / mcp / admin / job / schedule / maintenance</td>
+            <td>REPL / serve / mcp / admin / job / schedule / maintenance / validate / extensions / preset</td>
           </tr>
           <tr>
             <td class="mono">trove-cli</td>
@@ -67,12 +67,13 @@ flowchart LR
     T["trove<br/>常驻与运维"] --&gt; T1["REPL（默认）"]
     T --&gt; T2["serve · mcp"]
     T --&gt; T3["admin · job · schedule<br/>maintenance"]
+    T --&gt; T4["validate · extensions · preset<br/>干跑校验与扩展资产"]
     TC["trove-cli<br/>一次性"] --&gt; C1["提问：--print 输出 JSON"]
     TC --&gt; C2["index：kb / schema / sync<br/>只属于 trove-cli，trove index 不认"]
         </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 两个入口的分工：<code>trove</code> 是常驻与运维，<code>trove-cli</code> 是一次性提问与索引。要留意 <code>index</code> 只挂在后者上——<code>trove index …</code> 不认这个名字。</span>
+        <span class="cap-rendered">图 1 · 两个入口的分工：<code>trove</code> 是常驻与运维（干跑校验 <code>validate</code>、扩展资产与包 <code>extensions</code>、预设 <code>preset</code> 都挂在这一侧），<code>trove-cli</code> 是一次性提问与索引。要留意 <code>index</code> 只挂在后者上——<code>trove index …</code> 不认这个名字。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -119,6 +120,9 @@ flowchart LR
           <tr><td class="mono">job</td><td>定时任务增删查</td></tr>
           <tr><td class="mono">schedule</td><td>调度器（<code>--once</code> / <code>--daemon</code>）</td></tr>
           <tr><td class="mono">maintenance</td><td>会话维护：<code>run</code> / <code>status</code></td></tr>
+          <tr><td class="mono">validate</td><td>扩展面干跑校验：KB lint / 决策规则编译 / 技能挂点；<code>--run</code> 装前试跑、<code>--impact</code> 影响面回放、<code>--packs</code> 反作弊——零 LLM，退出码即结论（见下文）</td></tr>
+          <tr><td class="mono">extensions</td><td>扩展资产：<code>list</code> / <code>show</code> / <code>plan</code>（信封，能力从引用推导）；<code>export</code> / <code>import</code>（资产包，导入全落 pending）</td></tr>
+          <tr><td class="mono">preset</td><td>预设包（接入模板）：<code>list</code> / <code>show</code> / <code>apply</code>——套用只落 pending 草稿</td></tr>
           <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code>——<strong>只属于 <code>trove-cli</code> 入口</strong>，<code>trove index …</code> 不认它</td></tr>
         </tbody>
       </table>
@@ -167,6 +171,62 @@ trove schedule --daemon      # 常驻循环</code></pre>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/admin_cmds.py#L172">admin_cmds.py:172 <span class="ref-line">create-user</span></a>
     </p>
 
+    <h3>validate</h3>
+
+    <pre><code>trove validate                     # 全量干跑：KB / 决策规则 / 技能挂点
+trove validate --datasource demo   # 只体检一个数据源
+trove validate --json | jq .       # 机器可读（CI 消费）
+trove validate --strict            # 警告也算失败
+trove validate --live              # 连真源：枚举缺口 + 真方言编译
+trove validate --run               # 装前试跑：语料对已确认资产做装/不装双态消融
+trove validate --impact &lt;包|目录&gt;   # 影响面回放：候选资产装上前后判定差分（与 --run 互斥）
+trove validate --packs             # 反作弊：KB 示例 SQL vs 本地 gold 集（gold.sql）</code></pre>
+
+    <p>
+      <strong>退出码即结论</strong>：<code>0</code> 干净 · <code>1</code> 硬错误（<code>--strict</code>
+      下警告也算；试跑/回放里为有拦截变更或断言失败）· <code>2</code> 用法错误——以及在
+      <code>--run</code>/<code>--impact</code> 下「<strong>这次没验成</strong>」（语料缺失 / 判定执行出错 /
+      一条判定都没跑过 / 候选集读不出）。试跑与回放绝不静默返回 0。全部零 LLM；
+      <code>--json</code> 顶层 <code>metrics</code> 可直接喂回归门 <code>scripts/eval_gate.py</code>。
+      机制详解见<a href="../engineering/extension-governance.html#validate">扩展与治理 · 干跑校验</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L989">main.py:989 <span class="ref-line">validate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L92">validate_cmds.py:92 <span class="ref-line">main_validate</span></a>
+    </p>
+
+    <h3>extensions</h3>
+
+    <pre><code>trove extensions list [--kind skill|decision|preset]   # 资产总表（信封）
+trove extensions show &lt;名称&gt; [--kind ...]              # 单个信封：挂点 / 能力 / 来源 / unresolved
+trove extensions plan [--json]                         # 运行时装配清单 + 与信封对账（漂移 → 退出码 1）
+trove extensions export &lt;名称&gt; &lt;目录&gt; [--origin ...]    # 打包组织资产（原样 + sha256 + 来源）
+trove extensions import &lt;目录&gt; [--force]               # 校验并导入——全部落 pending</code></pre>
+
+    <p>
+      「信封」是资产的编译产物：<strong>能力从引用闭包推导</strong>（不是作者声明），
+      推导不出的引用响亮进 <code>unresolved</code>。导入是包级校验（缺文件 / 被篡改 / 版本过新
+      一条都不落）+ 逐条落 pending——已生效的决策规则<strong>永不被覆盖，<code>--force</code> 也不行</strong>；
+      条目级拒载时退出码 1（静默的成功码会让 CI 把「部分没导进去」当成「全导进去了」）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1001">main.py:1001 <span class="ref-line">extensions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/extensions_cmds.py#L188">extensions_cmds.py:188 <span class="ref-line">main_extensions</span></a>
+    </p>
+
+    <h3>preset</h3>
+
+    <pre><code>trove preset list              # 内置 + 组织预设
+trove preset show &lt;名称&gt;       # 逐段摘要 + 原文
+trove preset apply &lt;名称&gt;      # 套用（只落 pending 草稿，确认后才生效）</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L995">main.py:995 <span class="ref-line">preset</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/preset_cmds.py#L66">preset_cmds.py:66 <span class="ref-line">main_preset</span></a>
+    </p>
+
     <h2 id="repl">REPL 斜杠命令</h2>
 
     <h3>会话</h3>
@@ -202,6 +262,9 @@ trove schedule --daemon      # 常驻循环</code></pre>
           <tr><td class="mono">/model</td><td>切换模型</td></tr>
           <tr><td class="mono">/datasource</td><td>切换数据源</td></tr>
           <tr><td class="mono">/init</td><td>初始化</td></tr>
+          <tr><td class="mono">/validate [--live] [--run [--episodes]] [--impact &lt;包|目录&gt;]</td><td>扩展面干跑校验（REPL 无退出码——结论落在输出末尾的「退出码 N」一行）</td></tr>
+          <tr><td class="mono">/extensions</td><td>扩展资产信封：<code>list</code> / <code>show</code></td></tr>
+          <tr><td class="mono">/preset</td><td>预设包：<code>list</code> / <code>apply</code>（套用只落 pending 草稿）</td></tr>
         </tbody>
       </table>
     </div>
@@ -209,6 +272,9 @@ trove schedule --daemon      # 常驻循环</code></pre>
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/system_cmds.py#L55">system_cmds.py:55 <span class="ref-line">model</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/system_cmds.py#L61">system_cmds.py:61 <span class="ref-line">datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L193">validate_cmds.py:193 <span class="ref-line">validate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/extensions_cmds.py#L292">extensions_cmds.py:292 <span class="ref-line">extensions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/preset_cmds.py#L187">preset_cmds.py:187 <span class="ref-line">preset</span></a>
     </p>
 
     <h3>知识库</h3>
@@ -323,7 +389,7 @@ trove schedule --daemon      # 常驻循环</code></pre>
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: f7ca1d1</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -123,9 +123,11 @@
     <p>
       解析结果按条件文本缓存（AST 不可变，调度器每个 tick 都会重解析），但<strong>解析错误不缓存</strong>——
       一条正在被修的规则要保持可修。解析入口收一个 <code>variables</code> 参数，
-      结果域的 validator 检查用的是另一套闭集
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L92">expr.py:92 <span class="ref-line">VALIDATOR_VARIABLES</span></a>
-      ——同一台解析器，两套词，缓存键里带着词表，两个域永远不会共享一份缓存。
+      每个域带自己的一套闭集：结果域的 validator 检查用
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L92">expr.py:92 <span class="ref-line">VALIDATOR_VARIABLES</span></a>，
+      SQL 域的 guard 断言用
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L55">guards.py:55 <span class="ref-line">GUARD_VARIABLES</span></a>
+      ——同一台解析器，多套词，缓存键里带着词表，各域之间永远不会共享一份缓存。
     </p>
 
     <h2 id="three-valued">Kleene 三值：判不了是第三种答案</h2>
@@ -162,7 +164,8 @@
       对外的触发契约收敛为一个窄口：
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L520">expr.py:520 <span class="ref-line">evaluate_condition</span></a>
       只有在条件<strong>确定为真</strong>时才返回 True，Unknown 一律不触发——没有假阳性。
-      而 validator 档不走这个函数：它直接取三值，因为「判不了」与「违反」对结果断言是两件事。
+      而 validator 与 guard 两档不走这个函数：它们直接取三值，因为「判不了」与「违反」
+      对断言型检查是两件事——判不了绝不拦。
     </p>
 
     <div class="callout note">
@@ -459,7 +462,7 @@ rules:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: ee49d21</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: f7ca1d1</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

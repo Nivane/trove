@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove Skills：跨数据源的方法论资产，三档注入（required 全量注入 / available 按需加载 / validator 事后断言）、pending 确认门禁、以及管理端 API。">
+<meta name="description" content="Trove Skills：跨数据源的方法论资产，四档注入（required 全量注入 / available 按需加载 / validator 结果断言 / guard 执行前 SQL 拦截）、pending 确认门禁与颗粒停用、以及管理端 API。">
 <title>Skills · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -106,12 +106,13 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L275">service.py:275 <span class="ref-line">list_org</span></a>
     </p>
 
-    <h2 id="tiers">三档：注入、按需、以及不注入只断言</h2>
+    <h2 id="tiers">四档：注入、按需，以及两种不注入只断言</h2>
 
     <p>
       每个 skill 声明自己的档位。这个选择直接影响生成提示的长度，
       而提示长度直接影响成本与注意力分配——所以不该「全都塞进去」。
-      前两档是<strong>给模型读的</strong>，第三档不是。
+      前两档是<strong>给模型读的</strong>，后两档不是——validator 判结果、guard 判 SQL，
+      都由引擎执行、<strong>零 LLM</strong>。
     </p>
 
     <div class="table-wrap">
@@ -135,6 +136,11 @@
             <td><strong>正文从不进模型</strong>——它是一份给引擎执行的断言清单，跑在结果上</td>
             <td>组织自己不可让步的口径（如「金额不许为负」），要拦在交付前</td>
           </tr>
+          <tr>
+            <td><strong>guard</strong></td>
+            <td><strong>正文从不进模型</strong>——同样是给引擎执行的断言清单，但跑在生成的 <strong>SQL</strong> 上</td>
+            <td>组织不可让步的写法底线（如「聚合查询必须带 WHERE」），要拦在<strong>执行前</strong>——执行与交付都还没发生</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -150,10 +156,17 @@ flowchart TB
     S["SKILL.md 声明 tier"] --> R["required<br/>正文全文注入匹配节点的系统提示"]
     S --> A["available<br/>只广告描述，正文经 load_skill 工具按需取"]
     S --> V["validator<br/>正文从不进模型，是给引擎执行的断言清单"]
+    S --> G["guard<br/>正文从不进模型，是给引擎执行的 SQL 断言清单"]
     R --> P["模型读 → 生成 SQL"]
     A --> P
-    V --> X["validate 节点<br/>零 LLM，逐条判定结果"]
-    P --> X
+    P --> E["execute_sql 节点<br/>guard 在授权门之后、执行之前判定"]
+    G --> E
+    E --> E1["通过 → 执行"]
+    E --> E2["违反 · blocking → 回滚重算（目标可收窄）"]
+    E --> E3["违反 · advisory → 只进 guard_hits 附注"]
+    E --> E4["判不了（SQL 解析失败）→ 绝不拦"]
+    E1 --> X["validate 节点<br/>零 LLM，逐条判定结果"]
+    V --> X
     X --> X1["通过 → 交付"]
     X --> X2["违反 · blocking → 回滚重算"]
     X --> X3["违反 · advisory → 回答顶上一行提示"]
@@ -161,7 +174,7 @@ flowchart TB
         </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 前两档是给模型读的（全文注入 / 按需取正文），第三档不是——它是在结果上跑的断言，拦在交付前。</span>
+        <span class="cap-rendered">图 1 · 前两档是给模型读的（全文注入 / 按需取正文），后两档不是：validator 在结果上断言、拦在交付前；guard 在 SQL 上断言、拦在执行前。两道断言闸先后相接，把同一条答案夹在中间。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -259,6 +272,69 @@ flowchart TB
       </div>
     </div>
 
+    <h3>guard 怎么运行</h3>
+
+    <p>
+      第四档 <code>guard</code> 与 validator 是一对镜像：同样是<strong>正文从不进模型</strong>的
+      声明清单、同样零 LLM、同样三值判定与两档 severity。区别只在<strong>判什么、在哪判</strong>——
+      validator 看结果、在 <code>validate</code> 节点拦在交付前；
+      guard 看 SQL、在 <code>execute_sql</code> 节点拦在<strong>执行前</strong>。
+      宿主位置是写死的（<code>GUARD_HOST = "execute_sql"</code>），闸序是「<strong>授权门之后、
+      执行之前</strong>」——安全先于质量：一条没通过授权门的 SQL，轮不到守卫发表意见。
+    </p>
+
+    <p>
+      guard 能用的量是一组 <strong>SQL 结构变量</strong>的闭集，全部是 int 的 0/1：
+      <code>select_star</code> / <code>table_count</code> / <code>join_count</code> /
+      <code>has_where</code> / <code>has_limit</code> / <code>has_time_predicate</code> /
+      <code>has_aggregate</code> / <code>cte_count</code> / <code>sql_len</code>。
+      布尔语义用 0/1 而不是 true/false 是刻意的：引擎的取值函数对布尔类型返回
+      <code>None</code>——写成 <code>true</code> 的守卫不会报错，只会每条都判不了、永不生效。
+      这正是本页反复出现的「配了却静默失效」事故类型，所以从类型上就把域收死；
+      写入口（create / 导入）对域外标识符还有一道<strong>位置级</strong>校验，直接 400 指到出错的位置。
+    </p>
+
+    <p>
+      判定的落点沿用与 validator 相同的三值规矩：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>判定</th><th>什么情况</th><th>落点</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>通过</strong></td>
+            <td>断言为真</td>
+            <td>继续执行</td>
+          </tr>
+          <tr>
+            <td><strong>违反 · <code>blocking</code></strong></td>
+            <td>明确违反，且声明为拦</td>
+            <td>记为 <code>ORG_GUARD</code> 类错误回滚重算；失败分析节点对它走<strong>零 LLM 的确定性分流</strong>——指出是哪条守卫、哪个变量越了线，不把它当普通报错猜。回滚目标在声明里可收窄到 <code>gen_sql</code> / <code>query_sketch</code> / <code>schema_linking</code>（默认回到生成）</td>
+          </tr>
+          <tr>
+            <td><strong>违反 · <code>advisory</code></strong></td>
+            <td>明确违反，但声明只报告</td>
+            <td>命中记进 <code>guard_hits</code> 附注，<strong>不改执行</strong></td>
+          </tr>
+          <tr>
+            <td><strong>判不了</strong></td>
+            <td>SQL 解析失败（此时全部变量为 UNKNOWN）</td>
+            <td><strong>绝不拦</strong>——守卫的失败方向是「放过」，而不是误杀一条正确的 SQL</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L45">guards.py:45 <span class="ref-line">GUARD_HOST</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L55">guards.py:55 <span class="ref-line">GUARD_VARIABLES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L61">execute_sql.py:61 <span class="ref-line">ORG_GUARD_TAG</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/analyze_error.py#L496">analyze_error.py:496 <span class="ref-line">ORG_GUARD_TAG</span></a>
+    </p>
+
     <h2 id="gate">确认门禁：草案不进提示</h2>
 
     <p>
@@ -270,6 +346,41 @@ flowchart TB
     <p>
       这条一致性很重要：Skills 直接写进系统提示，影响力比 KB 条目更大。
       如果草案能进提示，那「AI 自己写方法论给自己看」就成了一个自我强化的回路。
+    </p>
+
+    <h2 id="disable">颗粒停用：停一个资产，不是停一层</h2>
+
+    <p>
+      治理动作有两个粒度：<strong>整层总开关</strong>停的是全部 org 资产
+      （见 <a href="../engineering/extension-governance.html#switch">深潜 · 扩展与治理</a>）；
+      <strong>颗粒停用</strong>停的是某一条已确认的资产——<code>status: disabled</code>
+      是继 pending / confirmed / rejected 之后的第四个状态。不删内容、不退成草案，
+      只是让它从消费面上消失。
+    </p>
+
+    <p>
+      状态机是<strong>严格且非幂等</strong>的：<code>disable</code> 只接受
+      <code>confirmed → disabled</code>，<code>enable</code> 只接受
+      <code>disabled → confirmed</code>；对已停用的再停一次是显式错误，不是无声成功
+      （把状态机做成幂等，「谁什么时候关的、谁又开的」就从审计史里消失了）。
+      恢复走 <code>enable</code> 而不是再确认一次——<strong>停用是暂停投递，不是撤回确认</strong>。
+      每次变更都是一条 git 提交；自动路径（起草、学习、记忆回写）绝不写入 disabled，
+      停用永远是管理员的显式动作。
+    </p>
+
+    <p>
+      停用后<strong>四个消费面同断</strong>：节点提示词注入、<code>load_skill</code> 的广告
+      与<strong>按名直取</strong>、validator / guard 的执行、以及信封枚举与试跑语料。
+      消费者共用同一个过滤点（<code>list_org(confirmed_only=True)</code>）——
+      停用一个资产等于四处同时熄灭。按名直取也拒绝这一点值得单说：
+      <strong>点名不是提权</strong>，已停用的资产即使被工具按名字精确命中也不会返回正文，
+      判词还会分方向（「还没确认」与「已被管理员停用」是管理员的两个不同下一步）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L295">service.py:295 <span class="ref-line">confirmed_only</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L731">service.py:731 <span class="ref-line">disable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L173">skills.py:173 <span class="ref-line">disable</span></a>
     </p>
 
     <h2 id="draft">起草：LLM 帮忙，但只到草案为止</h2>
@@ -303,7 +414,9 @@ flowchart TB
           <tr><td class="mono">GET /v1/admin/skills/{name}/body</td><td>读正文</td></tr>
           <tr><td class="mono">POST /v1/admin/skills/{name}/confirm</td><td>确认——<strong>此时才可能进入提示</strong></td></tr>
           <tr><td class="mono">POST /v1/admin/skills/{name}/reject</td><td>驳回</td></tr>
-          <tr><td class="mono">POST /v1/admin/skills/{name}/tier</td><td>在 <code>required</code> ↔ <code>available</code> 之间搬——<strong><code>validator</code> 走不了这个接口</strong></td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/disable</td><td>颗粒停用一条已确认的资产（<code>status → disabled</code>，写一条 git 提交）</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/enable</td><td>恢复（<code>disabled → confirmed</code>）——暂停投递的逆操作，不走确认门，但它本身必须是显式管理动作</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/tier</td><td>在 <code>required</code> ↔ <code>available</code> 之间搬——<strong><code>validator</code> 与 <code>guard</code> 走不了这个接口</strong></td></tr>
         </tbody>
       </table>
     </div>
@@ -323,12 +436,14 @@ flowchart TB
 
     <p>
       这个接口只在 <code>required</code> 与 <code>available</code> 两档之间搬。
-      <strong><code>validator</code> 档不在这里切换</strong>——它的 <code>mode</code> /
-      <code>severity</code> / <code>targets</code> / <code>checks</code> 四个字段与 tier
-      必须在 <code>SKILL.md</code> 里一起手写：升档时这些字段还没被投影到条目上，
+      <strong><code>validator</code> 与 <code>guard</code> 两档都不在这里切换</strong>——
+      validator 的 <code>mode</code> / <code>severity</code> / <code>targets</code> /
+      <code>checks</code> 四个字段、guard 的 <code>guard</code> 块（表达式 + severity + targets），
+      都必须与 tier 在 <code>SKILL.md</code> 里一起手写：升档时这些字段还没被投影到条目上，
       降档时又已经在条目上，两个方向都无法在这条路径上校验，所以两个方向都直接拒。
-      真相是 tier 与那四个字段只能同一次写入。
-      校验本体见 <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L758">service.py:758 <span class="ref-line">set_tier</span></a>。
+      真相是 tier 与那些投影字段只能同一次写入。
+      校验本体见 <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L758">service.py:758 <span class="ref-line">set_tier</span></a>
+      与 <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L396">service.py:396 <span class="ref-line">_validate_guard_spec</span></a>。
     </p>
 
     <h2 id="next">继续读</h2>

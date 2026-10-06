@@ -99,7 +99,7 @@
           <line class="edge" x1="874" y1="52" x2="888" y2="52"/>
         </svg>
       </div>
-      <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">7400+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
+      <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">8000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
     </div>
 
     <div class="hp-connector" aria-hidden="true">
@@ -294,7 +294,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <a class="card" id="deepdive" href="engineering/semantic-compiler.html">
         <span class="card-kicker">深潜 · 工程</span>
         <span class="card-title">设计深潜（八篇）</span>
-        <span class="card-desc">语义编译边界、分解数学与驱动器树、统计与噪声带、判定内核、因果与模拟、闭环与契约、行动安全架构、扩展与治理——每篇按同一骨架讲清问题、原理、用法与取舍。</span>
+        <span class="card-desc">语义编译边界、分解数学与驱动器树、统计与噪声带、判定内核、因果与模拟、闭环与契约、行动安全架构、扩展与治理（信封 · guard · 装前试跑与影响面）——每篇按同一骨架讲清问题、原理、用法与取舍。</span>
       </a>
     </div>
   </section>
@@ -351,7 +351,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <span class="sec-label">边界 · 05</span>
       <h2>安全与可核对</h2>
       <p class="sec-intro">
-        问数系统要落地，安全边界不能是提示词里的一句请求。以下六条都在链路上生效——
+        问数系统要落地，安全边界不能是提示词里的一句请求。以下七条都在链路上生效——
         它们全部是代码，不是模型行为。
       </p>
     </div>
@@ -376,6 +376,11 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <td>执行前授权门</td>
             <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是全量快径示例 SQL 静态核验违规 0 条）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L81">core/config.py:81 <span class="ref-line">AuthzConfig</span></a></td>
+          </tr>
+          <tr>
+            <td>组织守卫（guard 档）</td>
+            <td>管理员把 SQL 断言写成声明式条件（<code>select_star</code>、<code>join_count</code>、<code>has_time_predicate</code> 等九变量闭集），在授权门之后、执行之前零 LLM 判定：明确违反即拦、回滚到生成侧收窄；<strong>判不了绝不拦</strong>——缺失基线或类型不匹配记为「判不了」，不会把否定式断言翻成假阳性。</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L55">services/skills/guards.py:55 <span class="ref-line">GUARD_VARIABLES</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L61">workflow/nodes/execute_sql.py:61 <span class="ref-line">ORG_GUARD_TAG</span></a></td>
           </tr>
           <tr>
             <td>字段级脱敏</td>
@@ -451,11 +456,17 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
 uv run python scripts/eval_bird.py --kb-dir &lt;你的 KB 目录&gt;
 
 <span class="cmt"># 2. 拿到 baseline 后，之后每次改动都过一遍零成本回归门</span>
-uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;</code></pre>
+uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;
+
+<span class="cmt"># 3. 扩展资产装上之前，先试跑再回放——同样零 LLM，--json 直喂同一道门</span>
+uv run trove validate --run --datasource &lt;你的数据源&gt;           <span class="cmt"># 装 / 不装 双态消融</span>
+uv run trove validate --impact &lt;包或目录&gt; --datasource &lt;你的数据源&gt;  <span class="cmt"># 影响面四桶差分</span></code></pre>
 
     <p style="color:var(--text-secondary);font-size:14.5px">
       第 2 步是这套评测设计的关键：判定落盘之后，回归检查不调用任何模型、不碰网络，
-      所以它可以进 CI，也可以在你提交前顺手跑一次。完整方法见 <a href="ops/eval.html">评测与回归门</a>。
+      所以它可以进 CI，也可以在你提交前顺手跑一次。同一道门也吃第 3 步的输出：
+      新技能、判定规则、预设装上之前，先用本机语料<b>装前试跑</b>与<b>影响面回放</b>——
+      和评测共用一份语料、报告直喂 <code>eval_gate.py</code>。完整方法见 <a href="ops/eval.html">评测与回归门</a>。
     </p>
   </section>
 
@@ -514,7 +525,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
       可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
     </p>
     <div class="attribution">
-      <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">24eb23b</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 24eb23b</code></p>
+      <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">f7ca1d1</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: f7ca1d1</code></p>
       <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
       <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
     </div>

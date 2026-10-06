@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 扩展与治理：适配器注册通电的单一入口、组织资产的统一治理形状（pending→确认→版本化→回滚）、trove validate 干跑校验的退出码契约、扩展面总开关的停用语义、以及 RunTracer 单点落盘的运行证据。">
+<meta name="description" content="Trove 扩展与治理：适配器注册通电的单一入口、组织资产的统一治理形状（pending→确认→版本化→回滚，含颗粒停用）、信封与 guard 断言档、trove validate 干跑校验的退出码契约（含装前试跑与影响面回放）、资产包与来源链、以及 RunTracer 单点落盘的运行证据。">
 <title>扩展与治理 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -29,11 +29,14 @@
       <h1>扩展与治理</h1>
       <p class="lede">
         Trove 的扩展面很多：数据源适配器、组织技能、判定规则、行动模板、语义模型、
-        MCP 工具面。它们有两个共同的工程问题——<strong>扩展点真的通电了吗</strong>
-        （函数存在但零调用方，是历史上真实发生过的），以及
-        <strong>组织资产谁说了算</strong>（自动生成的草稿绝不自己生效）。
-        这页讲一条注册路径、一套统一的治理形状、一个能进 CI 的干跑校验、
-        一个语义明确的停用开关，以及每次运行留下的那两份证据。
+        MCP 工具面。它们有三个共同的工程问题——<strong>扩展点真的通电了吗</strong>
+        （函数存在但零调用方，是历史上真实发生过的）、
+        <strong>组织资产谁说了算</strong>（自动生成的草稿绝不自己生效），以及
+        <strong>这个资产到底是什么</strong>（读什么、作用在哪个域、装上去会改变什么）。
+        这页讲一条注册路径、一套统一的治理形状、信封与 guard 断言档、
+        一个能进 CI 的干跑校验（装前试跑与影响面回放共用同一条退出码契约）、
+        两个粒度的停用（整层总开关与单资产停用）、能带着来源链搬走的资产包，
+        以及每次运行留下的那两份证据。
       </p>
     </div>
 
@@ -118,7 +121,7 @@ flowchart LR
 
     <p>
       同样的形状在三个管理面重复出现：技能（draft / llm-draft / confirm / reject /
-      tier / body / history / rollback，
+      tier / body / history / rollback / disable / enable，
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L266">skills.py:266 <span class="ref-line">history</span></a>）、
       语义模型草稿（drafts / confirm / reject / history / rollback，
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L193">semantic.py:193 <span class="ref-line">history</span></a>）、
@@ -126,6 +129,66 @@ flowchart LR
       <a href="action-safety.html">行动安全架构</a>）。
       学习回路（<a href="closed-loop.html">闭环与契约</a>）的产物也全部落在这一形状里——
       自动内容从不为自己背书。
+    </p>
+
+    <h2 id="envelope">信封：能力是推导的，不是声明的</h2>
+
+    <p>
+      治理要回答的第一个问题不是「谁批准了」，而是「<strong>这个东西到底是什么</strong>」：
+      它读哪些输入、产生什么效果、作用在哪个域（提示词、结果，还是 SQL）。
+      每个组织资产都能编译出一份这样<strong>信封</strong>（envelope）——
+      它不是新的文件格式，而是从资产本体推导出的编译产物：
+      <code>trove extensions list</code> / <code>show</code> 读的就是它。
+    </p>
+
+    <p>
+      关键在「推导」二字：<strong>能力清单不是作者声明的，是从引用闭包里算出来的</strong>。
+      断言表达式实际读到的标识符闭包，就是它需要的变量域；效果取自闭集；
+      作用域跟着表达式使用的域走——一个 guard 断言的信封上，<code>targets</code>
+      自然是 <code>sql</code>。推导不出引用的（表达式里出现了域外的东西），
+      信封不猜，而是把它列进 <code>unresolved</code> <strong>响亮报出来</strong>。
+      「作者声明了一套、表达式读的是另一套」这种漂移从结构上就没有发生的余地：
+      声明与校验读的是同一份事实。
+    </p>
+
+    <p>
+      信封还出现在另外两处：<code>--run</code> 试跑的语料<strong>按信封枚举资产</strong>
+      （测什么由信封决定，不由测试脚本手抄清单）；<code>extensions plan</code>
+      把信封与运行时装配对账（见下文）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/envelope.py#L122">envelope.py:122 <span class="ref-line">Capabilities</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/envelope.py#L257">envelope.py:257 <span class="ref-line">derive_check_capabilities</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/sources.py#L113">sources.py:113 <span class="ref-line">collect_assets</span></a>
+    </p>
+
+    <h2 id="guard">guard 档：把组织底线放上 SQL 闸</h2>
+
+    <p>
+      治理形状之外，扩展面还有一道<strong>运行时的闸</strong>：技能的第<strong>四</strong>档
+      <code>guard</code>——正文从不进模型的声明清单，由引擎在 <code>execute_sql</code> 节点
+      「<strong>授权门之后、执行之前</strong>」逐条判定。判定机制（九个 SQL 结构变量、
+      三值落点、两档 severity）在 <a href="../capabilities/skills.html#tiers">Skills</a> 页，
+      这里讲它为什么长这样：
+    </p>
+
+    <ul>
+      <li><strong>闸序：安全先于质量。</strong>guard 排在授权门之后——没通过授权判定的 SQL，
+      轮不到守卫发表意见；同时排在执行之前——拦的价值随「钱已经花了多少」递减，
+      执行前是拦截成本为零的唯一位置。</li>
+      <li><strong>回滚目标收窄成闭集。</strong>blocking 命中时回滚到哪，不是自由文本，而是
+      <code>gen_retrieve</code> / <code>gen_sql</code> / <code>query_sketch</code> /
+      <code>schema_linking</code> 四选一（默认回生成）——守卫说得出「错在 SQL」还是
+      「错在计划」，回滚就不该一律从头再来。</li>
+      <li><strong>判不了绝不拦。</strong>SQL 解析失败时全部变量为 UNKNOWN，守卫放过并在
+      <code>guard_hits</code> 记一笔。哨兵型断言的职责是拦<strong>明确违反</strong>，
+      不是替解析器补漏——误杀一条正确 SQL 的代价高于放过一条可疑的。</li>
+    </ul>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L71">guards.py:71 <span class="ref-line">GUARD_TARGETS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L61">execute_sql.py:61 <span class="ref-line">ORG_GUARD_TAG</span></a>
     </p>
 
     <h2 id="validate">干跑校验：一条能进 CI 的退出码契约</h2>
@@ -141,6 +204,14 @@ flowchart LR
       而不是管理员肉眼巡检。
     </p>
 
+    <p>
+      同一条命令还带两条<strong>语料回放</strong>——<code>--run</code> 装前试跑与
+      <code>--impact</code> 影响面回放（见下两节）。它们零 LLM、与静态检查共用同一条退出码，
+      并把它<strong>扩写</strong>了一格：在试跑与回放里，<strong>2 意为「这次没验成」</strong>——
+      语料缺失、判定执行出错、首选方案读不出、一条判定都没跑过，都走 2。
+      静默的 0 会把「没验成」卖成「验过了」，所以这里宁可响亮。
+    </p>
+
     <div class="table-wrap">
       <table>
         <thead>
@@ -151,15 +222,67 @@ flowchart LR
           <tr><td><code>--json</code></td><td>机器可读整份报告（CI 消费）</td></tr>
           <tr><td><code>--strict</code></td><td>警告也视为失败（退出码 1）</td></tr>
           <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong>——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1384">service.py:1384 <span class="ref-line">run_validate</span></a>）</td></tr>
+          <tr><td><code>--run</code></td><td><strong>装前试跑</strong>：用本机语料对已确认资产做「装 / 不装」双态消融（零 LLM；语料见 <code>--fixtures</code> / <code>--episodes</code>）</td></tr>
+          <tr><td><code>--impact &lt;包|目录&gt;</code></td><td><strong>影响面回放</strong>：候选资产集（待导入的包，或直接的资产目录）装上前后，同一份语料的判定差分；与 <code>--run</code> 互斥</td></tr>
+          <tr><td><code>--packs</code></td><td><strong>反作弊检查</strong>：KB 示例 SQL 与本地 gold 集（<code>gold.sql</code>）的相似度——命中只出警告，绝不自动拒载或改写 KB；没有 gold 集时如实报 <code>skipped</code>（未检查 ≠ 检查过，<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1312">service.py:1312 <span class="ref-line">_check_packs</span></a>）</td></tr>
         </tbody>
       </table>
     </div>
 
+    <h3>装前试跑：装上会拦什么</h3>
+
     <p>
-      同一套校验在 REPL 里是 <code>/validate [--live]</code>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L157">validate_cmds.py:157 <span class="ref-line">/validate</span></a>，不出退出码），
+      <code>--run</code> 拿<strong>本机语料</strong>（默认读 <code>.trove/kb/&lt;ds&gt;/fixtures.yml</code>；
+      <code>--episodes</code> 追加本机历史问答）把已确认资产「装 / 不装」两种装配各判一遍，
+      差分出这批资产的净效果（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1523">service.py:1523 <span class="ref-line">run_validate_with_dryrun</span></a>）。
+      两个细节：
+    </p>
+
+    <ul>
+      <li><strong>测什么由信封决定。</strong>语料按信封枚举资产（见上文），
+      不由测试脚本手抄一份清单——资产与测试对不上这种事从结构上排除。
+      显式给的语料路径不存在 = 无法试跑（退出码 2），不悄悄退回默认语料。</li>
+      <li><strong>只有 SQL 的语料如实计 skipped。</strong>历史问答（<code>--episodes</code>）只带 SQL
+      没有结果集，validator 型（判结果的）资产对它<strong>判不了</strong>——计
+      <code>skipped</code> 而不是计通过：三值纪律在语料这一侧也成立。</li>
+    </ul>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/dryrun.py#L957">dryrun.py:957 <span class="ref-line">run_dryrun</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/dryrun.py#L636">dryrun.py:636 <span class="ref-line">Assembly</span></a>
+    </p>
+
+    <h3>影响面回放：换一批，判定差在哪</h3>
+
+    <p>
+      <code>--impact</code> 面向「<strong>换资产</strong>」这件事：候选包（或资产目录）装上前后
+      各判一遍同一份语料，差分落进四个桶——<strong>新增拦截 / 新放行 / 无变化 / 无法判定</strong>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/impact.py#L313">impact.py:313 <span class="ref-line">classify</span></a>），
+      每一行都带证据：哪条断言触发、表达式是什么、变量当时的取值。
+      <code>--json</code> 的顶层 <code>metrics</code> 就是回归门 <code>scripts/eval_gate.py</code>
+      认的 scorecard 形状——回放报告不需要转换脚本就能挂进离线评测回归门
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/impact.py#L881">impact.py:881 <span class="ref-line">run_impact</span></a>）。
+    </p>
+
+    <ul>
+      <li><strong>可复现写进输出。</strong>同输入两次，报告逐字节一致（无时间戳、无集合迭代序）——
+      影响面是给别人签字用的，它自己得先站得住
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/impact.py#L598">impact.py:598 <span class="ref-line">diff_assembly</span></a>）。</li>
+      <li><strong>隐私默认收紧。</strong>问题文本默认只出哈希短码，<code>--include-questions</code>
+      才保留原文——报告多半会进 CI 日志，日志不是放业务问题原话的地方。</li>
+      <li><strong>与 <code>--run</code> 互斥。</strong>两条路问的是不同的问题（装/不装 vs 现状/现状+候选），
+      同时给两个是<strong>用法错误</strong>（stderr + 退出码 2），不是「两个都跑一遍」。
+      两条路各自的结论与静态检查取更严的一支
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1600">service.py:1600 <span class="ref-line">combined_exit_code</span></a>）——
+      静态干净但试跑没跑成，「这次没验成」不许被静态的 0 盖过去。</li>
+    </ul>
+
+    <p>
+      同一套校验在 REPL 里是
+      <code>/validate [--live] [--run [--episodes]] [--impact &lt;包|目录&gt;]</code>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L157">validate_cmds.py:157 <span class="ref-line">/validate</span></a>，不出退出码——结论落在输出末尾的「退出码 N」一行）。
       技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L507">service.py:507 <span class="ref-line">_check_skills</span></a>）——
-      包括 validator 型技能的断言规格（结果域变量的闭集校验，
+      包括 validator 与 guard 两型技能的断言规格（结果域 / SQL 域两套闭集校验，
       见<a href="decision-engine.html">判定内核</a>）。
     </p>
 
@@ -169,7 +292,8 @@ flowchart LR
       扩展面治理有一个总开关 <code>agent.extensions.org_extensions_enabled</code>
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L361">config.py:361 <span class="ref-line">ExtensionsConfig</span></a>，
       默认全开）。它停用的是<strong>组织扩展这一层</strong>的消费面：组织技能的注入与
-      <code>load_skill</code> 广告、validator 断言、决策规则的<strong>执行</strong>。
+      <code>load_skill</code> 广告、validator 断言（结果域）与 guard 断言（SQL 域）、
+      决策规则的<strong>执行</strong>。
       两条边界写死在文档字符串里：
     </p>
 
@@ -178,7 +302,7 @@ flowchart LR
 <pre class="mermaid">
 flowchart TB
     SW["org_extensions_enabled = false"] --&gt; STOP1["停：组织技能注入与 load_skill 广告"]
-    SW --&gt; STOP2["停：validator 断言（结果域）"]
+    SW --&gt; STOP2["停：validator 断言（结果域）与 guard 断言（SQL 域）"]
     SW --&gt; STOP3["停：决策规则的执行（DecisionService 评估入口）"]
     SW -.-&gt; KEEP1["不动：code skills（trove/prompts/skills/）"]
     SW -.-&gt; KEEP2["不动：KB / few-shots / 语义模型"]
@@ -198,6 +322,90 @@ flowchart TB
       一个安静跑着的健康态和一个被关掉的判定，从运行记录上看必须不一样。
       这是全仓同一哲学的另一处实例：<a href="decision-engine.html#error">失败要响亮</a>，
       沉默是最难排查的状态。
+    </p>
+
+    <h3>颗粒停用：停一个资产</h3>
+
+    <p>
+      总开关停的是一层；颗粒停用停的是技能面上的一条：org 技能的第四个状态
+      <code>disabled</code>（状态机与消费面细节见
+      <a href="../capabilities/skills.html#disable">Skills · 颗粒停用</a>）。
+      两条停用语义一致——<strong>停消费面、不碰写入面</strong>：停用期间资产照常被编辑、
+      确认、回滚，重开后即刻生效。状态机严格非幂等（<code>disable</code> 仅
+      confirmed→disabled，<code>enable</code> 仅 disabled→confirmed），每次变更一条 git 提交；
+      自动路径绝不写入 disabled——停用永远是管理员的显式动作。
+    </p>
+
+    <p>
+      与总开关的第二处一致：<strong>停就要停得干净</strong>。四个消费面（节点提示注入、
+      <code>load_skill</code> 广告与按名直取、validator / guard 执行、信封枚举与试跑语料）
+      共用同一个过滤点，停一个资产等于四处同时熄灭；<code>load_skill</code>
+      即使被<strong>点名直取</strong>也拒绝——点名不是提权。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L731">service.py:731 <span class="ref-line">disable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L173">skills.py:173 <span class="ref-line">disable</span></a>
+    </p>
+
+    <h2 id="plan">装配清单：plan 与信封对账</h2>
+
+    <p>
+      <code>trove extensions plan</code> 回答「<strong>现在到底哪些资产在动</strong>」：
+      它是信封在运行时装配视角的投影——已停用的资产整封摘除。每个条目给出两侧的存活状态：
+      <strong>预期存活</strong>（静态信封的 state）与<strong>运行时存活</strong>（消费面真读一遍），
+      再逐条<strong>对账</strong>（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/plan.py#L170">plan.py:170 <span class="ref-line">reconcile_plan</span></a>）。
+      对账漂移即退出码 1——静默的成功码会让 CI 把「两份副本已经对不上」当成「一致」。
+    </p>
+
+    <p>
+      两侧刻意走不同路径：静态侧读信封的 state 列，运行时侧走消费面<strong>真读函数</strong>
+      （不过信封）——如果两边都读信封，对账就成了自己跟自己比。
+      它是影响面回放的运行时镜像：<code>--impact</code> 回答「装上会改变什么」，
+      plan 回答「现在有哪些在动」。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/plan.py#L106">plan.py:106 <span class="ref-line">expected_liveness</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/plan.py#L121">plan.py:121 <span class="ref-line">runtime_liveness</span></a>
+    </p>
+
+    <h2 id="pack">包与来源：搬走也带着出处</h2>
+
+    <p>
+      组织资产可以打成一个<strong>包</strong>搬走：
+      <code>trove extensions export &lt;name&gt; &lt;dir&gt;</code> 把技能、生效的决策规则、
+      预设<strong>原样</strong>落盘（导出物 = 文件逐字节原样，往返保真因此是可断言的性质），
+      加一份 manifest 与逐文件 sha256（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/presets/service.py#L583">service.py:583 <span class="ref-line">export_pack</span></a>）。
+      只收组织资产：内置 / 代码资产不进包——它们随代码分发，打包会制造第二份会漂移的事实源；
+      会话数据（episodes、用户事实）永不进包。空包直接拒绝生成。
+    </p>
+
+    <p>
+      导入是<strong>包级校验 + 逐条落 pending</strong>：
+    </p>
+
+    <ul>
+      <li><strong>包级失败什么都不落。</strong>不是包 / 缺文件 / 被篡改（sha256 对不上，点名报哪个文件）/
+      pack_schema 比本代码新——一条资产都不写。半导入的包在接收方看起来和完整导入一样，
+      那正是要避免的结局。</li>
+      <li><strong>落点全部 pending。</strong>技能 = 文件原样 + <code>status</code> 行归一为 pending
+      （唯一字节改动；源文件本已 pending 时逐字节相同）；决策 = 落
+      <code>decision_drafts.yml</code> 草稿（执行面结构上读不到）；预设 = 文件原样落盘，
+      但预设本身不被消费——<code>apply</code> 时仍只落 pending 草稿。导入永远等价于
+      「多了一批待审草稿」，外来资产最需要过确认门，这条路径不绕过它
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/presets/service.py#L622">service.py:622 <span class="ref-line">import_pack</span></a>）。</li>
+      <li><strong><code>--force</code> 也有一条天花板。</strong>同名技能默认拒载，
+      <code>--force</code> 以 pending 形态覆盖；但<strong>已生效的决策规则永不被包覆盖，
+      <code>--force</code> 也不行</strong>——要改生效规则请走管理端。</li>
+      <li><strong>来源链。</strong>本地导出记 <code>origin: local</code>；从包导入后再导出，
+      可用 <code>--origin export:&lt;包名&gt;</code> 把上一跳写进 provenance——
+      「这个东西从哪来」是审计链的一环，不是注释。</li>
+    </ul>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/pack.py#L208">pack.py:208 <span class="ref-line">PackManifest</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/pack.py#L364">pack.py:364 <span class="ref-line">read_pack</span></a>
     </p>
 
     <h2 id="trace">运行证据：一次 run 留下什么</h2>
@@ -243,8 +451,20 @@ trove validate                     # 退出码 0/1/2 即判定
 trove validate --json | jq .       # 机器可读
 trove validate --live --datasource demo   # 连真源：枚举缺口 + 真方言编译
 
+# 语料回放（同样零 LLM；--json 顶层 metrics 可直喂 eval_gate）
+trove validate --run --datasource demo              # 装前试跑：装/不装 双态消融
+trove validate --impact ./my-pack --datasource demo # 影响面回放：四桶差分
+trove validate --packs                              # 反作弊：KB 示例 vs 本地 gold 集
+
 # REPL 内
-/validate [--live]</code></pre>
+/validate [--live] [--run [--episodes]] [--impact &lt;包|目录&gt;]</code></pre>
+
+<pre><code># 信封与包（零 LLM 零网络）
+trove extensions list --kind skill   # 资产信封：能力从引用推导
+trove extensions show &lt;名称&gt;        # 单个信封：挂点 / 能力 / 来源 / unresolved
+trove extensions plan                # 运行时装配清单 + 与信封对账（漂移 → 退出码 1）
+trove extensions export my-pack ./my-pack-dir
+trove extensions import ./my-pack-dir   # 全落 pending；--force 也不覆盖生效规则</code></pre>
 
 <pre><code># conf/agent.yml —— 扩展面总开关（管理端可配）
 agent:
@@ -302,6 +522,26 @@ agent:
             <td>更丰富的运行中实时观测</td>
             <td>观测物不得影响被观测对象；一次 run 一份清单，写入点唯一才不会有半个状态</td>
           </tr>
+          <tr>
+            <td>能力从引用推导（信封），不采信作者声明</td>
+            <td>「<code>capabilities:</code> 字段想写什么写什么」的自由</td>
+            <td>声明与表达式会漂：推导让信封、校验、试跑语料读同一份事实；推导不出的引用响亮进 <code>unresolved</code>，不猜</td>
+          </tr>
+          <tr>
+            <td>试跑与回放共用退出码，2 = 「这次没验成」</td>
+            <td>「没跑成 = 当没事发生」的宽松</td>
+            <td>零 LLM 让语料回放便宜到可以进 CI；静默的 0 会把「没验成」卖成「验过了」——同一个数字不许兼职两种结论</td>
+          </tr>
+          <tr>
+            <td>导入全落 pending（<code>--force</code> 也不覆盖生效规则）</td>
+            <td>「导包即生效」的迁移效率</td>
+            <td>包是外来资产，最需要过确认门；半导入的包在接收方看起来和完整导入一样，那是最贵的失败</td>
+          </tr>
+          <tr>
+            <td>颗粒停用走文件状态 + git 提交</td>
+            <td>内存里的热停用</td>
+            <td>治理动作不落盘等于两处事实源；「谁关的、谁开的」必须留在审计史里，所以状态机严格非幂等</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -313,6 +553,10 @@ agent:
       <li><strong>治理形状统一，学习成本一次。</strong>四个资产面同一套 pending→确认→历史→回滚；管理端的操作肌肉记忆可以跨面迁移。</li>
       <li><strong>健康量可进 CI。</strong><code>trove validate</code> 的 0/1/2 退出码 + <code>--json</code> + <code>--live</code>，让「资产没坏」在合并前就被证明。</li>
       <li><strong>停用语义诚实。</strong>开关停的是消费面、写入面照常、产品默认不动；被停用的判定任务报错而不是静默通过。</li>
+      <li><strong>资产「是什么」可对账。</strong>信封从引用闭包推导能力，与授权面、试跑语料、<code>extensions plan</code> 共用同一份事实；推导不出的引用响亮列出。</li>
+      <li><strong>装得上装不上，CI 里先跑。</strong><code>--run</code> 双态消融与 <code>--impact</code> 四桶差分零 LLM、可复现、报告直喂回归门；「没验成」有自己的退出码。</li>
+      <li><strong>停用有两个粒度，一套语义。</strong>整层总开关与单资产停用都停消费面、不碰写入面；<code>plan</code> 让「现在有哪些在动」随时可对账。</li>
+      <li><strong>包带着出处走。</strong>逐文件 sha256 + provenance 来源链 + 导入全落 pending（<code>--force</code> 也不覆盖生效规则）。</li>
       <li><strong>每次运行都可回答「用了什么」。</strong><code>.assembly.json</code> 把上下文块成本、工具激活、确定性判定三个治理面落成同一份 run 级证据。</li>
     </ul>
 
@@ -324,7 +568,7 @@ agent:
           <tr><th>想了解</th><th>去哪</th></tr>
         </thead>
         <tbody>
-          <tr><td>组织技能的两个注入层与 validator 执行层</td><td><a href="../capabilities/skills.html">技能</a></td></tr>
+          <tr><td>组织技能的四档（注入 / 按需 / validator / guard）与颗粒停用</td><td><a href="../capabilities/skills.html">技能</a></td></tr>
           <tr><td>判定规则文件与条件语言</td><td><a href="decision-engine.html">判定内核</a></td></tr>
           <tr><td>自动内容的确认门在记忆子系统里怎么用</td><td><a href="../capabilities/memory.html">记忆</a></td></tr>
           <tr><td>行动模板的治理（与技能同门）</td><td><a href="action-safety.html">行动安全架构</a></td></tr>

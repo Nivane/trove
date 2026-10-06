@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-7400%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-8000%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -186,7 +186,7 @@ flowchart TB
 | 因果与模拟 | 分解是描述,因果主张要过实验设计的升级梯;算不出就直说 | [因果与模拟](https://nivane.github.io/trove/engineering/causal-whatif.html) |
 | 闭环与契约 | 判定 → 行动 → 验收走完整环;测量纪律写进 verifier 契约 | [闭环与契约](https://nivane.github.io/trove/engineering/closed-loop.html) |
 | 行动安全架构 | 只读姿态由签名与测试钉死;模板闭集渲染;失败永不静默 | [行动安全架构](https://nivane.github.io/trove/engineering/action-safety.html) |
-| 扩展与治理 | 扩展点单一路径;组织资产 pending → 确认 → 版本化 → 回滚 | [扩展与治理](https://nivane.github.io/trove/engineering/extension-governance.html) |
+| 扩展与治理 | 扩展点单一路径;信封能力推导、装前试跑 / 影响面回放、包导出导入;组织资产 pending → 确认 → 版本化 → 回滚,可颗粒停用 | [扩展与治理](https://nivane.github.io/trove/engineering/extension-governance.html) |
 
 ## 快速开始
 
@@ -245,7 +245,7 @@ docker compose down
 | 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
-| Skills | 组织级方法论:`required` 注入 / `available` 按需 / `validator` 断言 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
+| Skills | 组织级方法论:四档——`required` 注入 / `available` 按需 / `validator` 断结果 / guard 断 SQL;确认门禁,可颗粒停用 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;显著性、置信与季节基线出自可复算的统计器械;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [噪声带](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
 | 八种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB / Snowflake / BigQuery,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
 | 接口与治理 | Web UI、REST(`/v1`)、MCP、CLI;管理端审批、审计、可观测 | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
@@ -321,12 +321,12 @@ uv run python scripts/eval_bird.py --db-id financial \
   --datasource mysql://root:root@127.0.0.1:3306/financial [--limit 10]
 ```
 
-逐题判定(每条带 `qid` 与消耗的 token)落 `.trove/eval/results.jsonl`。`offline_eval.py record` 用真凭证录一遍轨迹,`replay` 之后**零 LLM 调用**反复打分;`eval_gate.py` 是 CI 里的回归门——指标变差即退出码 1。详见[评测与回归门](https://nivane.github.io/trove/ops/eval.html)。
+逐题判定(每条带 `qid` 与消耗的 token)落 `.trove/eval/results.jsonl`。`offline_eval.py record` 用真凭证录一遍轨迹,`replay` 之后**零 LLM 调用**反复打分;`eval_gate.py` 是 CI 里的回归门——指标变差即退出码 1。同一道门也吃扩展资产的装前试跑与影响面回放(`trove validate --run` / `--impact`,同样零 LLM,`--json` 顶层 `metrics` 直喂)。详见[评测与回归门](https://nivane.github.io/trove/ops/eval.html)。
 
 ## 开发
 
 ```bash
-uv run pytest                     # 全量 7400+ 测试,mocked LLM,零网络 / 零 key
+uv run pytest                     # 全量 8000+ 测试,mocked LLM,零网络 / 零 key
 uv run pytest tests/workflow/     # 只跑 LangGraph 图与节点
 uv run pytest -m "not slow"       # 跳过慢测试
 ```

@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-7400%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-8000%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -186,7 +186,7 @@ Each row above rests on specific algorithms and boundaries that get their own de
 | Causality & what-if | Decomposition is description; causal claims climb an experimental-design ladder — or say they can't be made | [Causality and what-if](https://nivane.github.io/trove/engineering/causal-whatif.html) |
 | Closed loop & contracts | Verdict → action → measurement runs as a full loop; measurement discipline lives in the verifier contract | [The closed loop and its contracts](https://nivane.github.io/trove/engineering/closed-loop.html) |
 | Action safety | Read-only posture pinned by signatures and tests; closed-set templating; failures are never silent | [Action safety architecture](https://nivane.github.io/trove/engineering/action-safety.html) |
-| Extension & governance | One registration path for every extension; org assets go pending → confirm → versioned → rollback | [Extension and governance](https://nivane.github.io/trove/engineering/extension-governance.html) |
+| Extension & governance | One registration path for every extension; envelope-derived capabilities; dry-run and impact replay; asset packs export/import; org assets go pending → confirm → versioned → rollback, individually disableable | [Extension and governance](https://nivane.github.io/trove/engineering/extension-governance.html) |
 
 ## Quick Start
 
@@ -245,7 +245,7 @@ Every row has a deeper version on the docs site, anchored to source:
 | Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
-| Skills | Org-wide methodology: `required` injected / `available` on demand / `validator` assertions | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
+| Skills | Org-wide methodology in four tiers: `required` injected / `available` on demand / `validator` result assertions / guard SQL assertions; confirmation gate, individually disableable | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; significance, confidence and seasonal baselines come from a recomputable statistics kit; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) · [noise band](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
 | Eight datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB / Snowflake / BigQuery, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
 | Interfaces and governance | Web UI, REST (`/v1`), MCP, CLI; admin review, audit, observability | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
@@ -321,12 +321,12 @@ uv run python scripts/eval_bird.py --db-id financial \
   --datasource mysql://root:root@127.0.0.1:3306/financial [--limit 10]
 ```
 
-Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/results.jsonl`. `offline_eval.py record` captures a trace with real credentials, after which `replay` scores it with **zero LLM calls**; `eval_gate.py` is the CI regression gate — any metric getting worse exits 1. See [eval and regression gate](https://nivane.github.io/trove/ops/eval.html).
+Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/results.jsonl`. `offline_eval.py record` captures a trace with real credentials, after which `replay` scores it with **zero LLM calls**; `eval_gate.py` is the CI regression gate — any metric getting worse exits 1. The same gate also consumes dry-run and impact replay of extension assets (`trove validate --run` / `--impact`, also zero-LLM; their `--json` top-level `metrics` feeds straight in). See [eval and regression gate](https://nivane.github.io/trove/ops/eval.html).
 
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 7400+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 8000+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```

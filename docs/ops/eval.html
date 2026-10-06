@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、三类产物的消费方式、退出码语义，以及检索/RRF 评测脚本。">
+<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、四类产物的消费方式、退出码语义，以及检索/RRF 评测脚本。">
 <title>评测与回归门 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -73,6 +73,7 @@ flowchart LR
     RES --> GATE["回归门<br/>trove/eval/gate.py<br/>零 LLM，纯函数"]
     REP --> GATE
     SC["检索 scorecard<br/>tune_rrf / eval_*_retrieval"] --> GATE
+    VR["扩展面报告<br/>trove validate --run / --impact<br/>零 LLM"] --> GATE
     GATE --> VERDICT["按方向 + 容差判定<br/>有回归 → 退出码 1 拦下"]
         </pre>
       </div>
@@ -200,7 +201,7 @@ flowchart LR
       （比如你只是加了几道题）。告警把判断权交回给人。
     </p>
 
-    <h2 id="consume">门消费哪三类产物</h2>
+    <h2 id="consume">门消费哪四类产物</h2>
 
     <div class="table-wrap">
       <table>
@@ -223,6 +224,11 @@ flowchart LR
             <td><code>tune_rrf.py</code> / <code>eval_hybrid_retrieval.py</code> / <code>eval_bird_retrieval.py</code> / <code>offline_eval.py replay --scorecard</code></td>
             <td>检索与 RRF 指标；回放那条给的是评分指标（CI 用它重算冻结基线）</td>
           </tr>
+          <tr>
+            <td class="mono">validate 报告 json</td>
+            <td><code>trove validate --run --json</code> / <code>trove validate --impact &lt;包|目录&gt; --json</code></td>
+            <td>扩展资产的装前试跑与影响面回放指标（顶层 <code>metrics</code>，走 scorecard 消费面）——技能、判定规则、预设装上之前，也过同一道门</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -231,6 +237,8 @@ flowchart LR
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L569">gate.py:569 <span class="ref-line">load_entries</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L118">eval_bird.py:118 <span class="ref-line">RESULTS_PATH</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L44">offline_eval.py:44 <span class="ref-line">--scorecard</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L138">cli/commands/validate_cmds.py:138 <span class="ref-line">顶层 metrics 接线</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/dryrun.py#L857">services/extensions/dryrun.py:857 <span class="ref-line">metrics 段</span></a>
     </p>
 
     <p>
@@ -561,7 +569,7 @@ uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: f7ca1d1</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
