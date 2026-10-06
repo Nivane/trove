@@ -147,10 +147,103 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
     </p>
   </section>
 
+  <!-- ══ 分析 · 决策 · 行动 ══ -->
+  <section id="beyond">
+    <div class="sec-head">
+      <span class="sec-label">链路 · 02</span>
+      <h2>分析 · 决策 · 行动</h2>
+      <p class="sec-intro">
+        问数回答「是多少」。这条链路还有三段——分析回答「为什么变了」，决策回答「该不该警觉」，
+        行动把触发变成一份等人拍板的提案，并在事后验收效果。三段与问数共用同一套纪律：
+        <b>数字由确定性引擎算出来，模型只写解读</b>，每个数字都带着可复算的证据。
+      </p>
+    </div>
+
+    <h3>分析 ——「为什么变了」</h3>
+    <p>
+      问「为什么……」「什么导致……」时，不走生成 SQL，走确定性分解：先按贡献最大的维度把总变化拆开
+      （贡献分解 / 比率 shift-share），再沿指标表达式下钻成驱动器树。每个数字都由可复算的查询算出来、进证据，
+      LLM 只把结果写成一句人话。「变了多少才算变了」由稳健 z 与历史同粒度块的<b>噪声带</b>回答——
+      超出噪声带 / 落在带内 / 判不了，三态如实；判不了绝不冒充「没变化」。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="assets/shots/user-chat-attribution.png" alt="归因分析卡：卡片头的已声明度量章与「归因 · 分解」标记，总变化与主维度，分类瀑布图、维度贡献表（基期 / 当前 / Δ / 贡献）与证据入口" width="2880" height="1800" decoding="async" loading="lazy">
+        <span class="pin" style="--x:42.8%;--y:17.1%">1</span>
+        <span class="pin" style="--x:40.8%;--y:21.3%">2</span>
+        <span class="pin" style="--x:47.4%;--y:38.4%">3</span>
+        <span class="pin" style="--x:37.2%;--y:70.2%">4</span>
+      </div>
+      <figcaption>图 2 · 归因分析卡：总变化被拆到主维度的每个分类上，瀑布、贡献表与证据里的 SQL 同源同数——分解是确定性的，只有解读是模型写的。读法见 <a href="user/ask.html#attribution">用户指南 · 归因分析卡</a>。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>已声明度量</strong>——归因沿语义模型声明过的指标解析（这里是 <code>max_loan_amount</code>）；「归因」标卡片类型，「本期」标基线口径。</li>
+        <li><span class="n">2</span><strong>总变化与主维度</strong>——一句话说清变化多大、沿哪个维度分解（这里是 <code>loan.status</code>）。</li>
+        <li><span class="n">3</span><strong>分类瀑布与贡献表</strong>——每个分类的增减推演与贡献占比；度量可分解时，贡献表下面还会多一段沿表达式逐层拆的驱动器树。</li>
+        <li><span class="n">4</span><strong>证据（查询 N）</strong>——这次归因实跑过的查询清单，当期与基期各一条，每个数字都能复算；哪一步没做成以 <code>degraded</code> 如实记在这里。</li>
+      </ol>
+    </figure>
+
+    <h3>决策 ——「该不该警觉」</h3>
+    <p>
+      阈值规则直接用语义模型自己的词汇声明：指标、维度、过滤、时间窗——声明一次，每次求值都按它执行，
+      <b>判定过程零 LLM</b>；「变了多少才算警觉」同样交给季节噪声带：超出才触发、在带内不打扰、判不了如实报。
+      每条判定都留着它当时判的 SQL 与原始结果行；规则文件每次改动都是一次 git 提交，判定史按规则版本分桶回评。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="assets/shots/admin-verdict-history.png" alt="判定历史抽屉（loan-high）：每条判定带级别与一句话消息，展开的一条显示证据 SQL、原始结果行与判定行（当期 / 基期 / Δ / Δ% / 结论）；相邻判定用芯片标出关系——与上次相同 / 规则已修改 / 无前次可比；左侧是判定质量卡，按规则版本分桶" width="2880" height="1800" decoding="async" loading="lazy">
+        <span class="pin" style="--x:53.6%;--y:17.1%">1</span>
+        <span class="pin" style="--x:58.5%;--y:29.6%">2</span>
+        <span class="pin" style="--x:75.4%;--y:47.6%">3</span>
+        <span class="pin" style="--x:55.6%;--y:73.5%">4</span>
+        <span class="pin" style="--x:27.5%;--y:50.6%">5</span>
+      </div>
+      <figcaption>图 3 · 判定历史：一次触发留下了什么——当时跑的 SQL、原始结果行、判定行，以及它与上一次的关系（与上次相同 / 规则已修改 / 无前次可比）。判定不可编辑，这是它被判定时的数字原样。读法见 <a href="capabilities/decisions.html#history">判定规则 · 判定历史</a>。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>一条判定</strong>——时间、级别（<code>alert</code> / <code>ok</code> / <code>error</code>）与一句话结论；下面的芯片是相邻 diff 的一句话。</li>
+        <li><span class="n">2</span><strong>证据 · SQL 与原始结果行</strong>——判定当时真正执行的那条查询，与它判到的数字原样。</li>
+        <li><span class="n">3</span><strong>判定行</strong>——分组、当期、基期、Δ、Δ% 与结论逐项列出；维度不足时照实呈现，不补造。</li>
+        <li><span class="n">4</span><strong>更早的判定</strong>——逐条同样带芯片；「无前次可比」也是一枚芯片，而不是一个消失的区块。</li>
+        <li><span class="n">5</span><strong>判定质量</strong>——判定史按规则版本分桶回评：触发率、行动有效 / 无变化 / 测不了的条数；样本不足不报比率。</li>
+      </ol>
+    </figure>
+
+    <h3>行动 ——「接下来做什么」</h3>
+    <p>
+      判定触发不会只发一条通知了事：它冻结成一份<b>行动提案</b>——载荷在创建那一刻定死，之后谁批准，
+      外送的就是那一份；<b>批准之前，任何东西都不会离开系统</b>。批准后外送走 webhook / IM，回执逐条落库；
+      行动之后还会用与判定同一套噪声带复测「数字动了没有」——超出 / 无变化 / 判不了，三态如实。
+      系统自身没有写回业务库的通道，这是构造上的保证，不是配置开关。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="assets/shots/admin-actions.png" alt="管理台「行动」页的提案页签：页头写明「行动只提议、不触碰业务库」，一条待批准提案（loan-high → loan-baseline-alert，风险中）与行尾的批准 / 拒绝 / 详情" width="2880" height="1800" decoding="async" loading="lazy">
+        <span class="pin" style="--x:46.5%;--y:19.0%">1</span>
+        <span class="pin" style="--x:26.5%;--y:35.9%">2</span>
+        <span class="pin" style="--x:84.7%;--y:45.9%">3</span>
+      </div>
+      <figcaption>图 4 · 行动：判定命中后生成的提案在这里等人拍板——模板先过确认门，提案经批准才外送，回执逐条落库，验收用与判定同一套噪声带。读法见 <a href="capabilities/actions.html#lifecycle">行动与审批 · 提案生命周期</a>。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>只提议，不触碰业务库</strong>——页面自己写明的姿态：批准之前，任何东西都不会离开系统。</li>
+        <li><span class="n">2</span><strong>载荷创建时冻结</strong>——批准外送的就是抽屉里看到的那一份。</li>
+        <li><span class="n">3</span><strong>一条提案与行尾动作</strong>——规则、模板、风险、数据源与创建时间；批准之后才会出现「外送」等后续动作，回执与效果验收都记在这一条的详情里。</li>
+      </ol>
+    </figure>
+
+    <p style="color:var(--text-secondary);font-size:14.5px">
+      逐条展开：判定规则、因果升级与 what-if 见 <a href="capabilities/decisions.html">判定规则</a>；
+      提案、审批与效果验收见 <a href="capabilities/actions.html">行动与审批</a>；分解数学与统计器械见
+      <a href="engineering/decomposition.html">分解数学与驱动器树</a> 与 <a href="engineering/statistics.html">统计与噪声带</a>。
+    </p>
+  </section>
+
   <!-- ══ 从这里开始 ══ -->
   <section id="start">
     <div class="sec-head">
-      <span class="sec-label">入口 · 02</span>
+      <span class="sec-label">入口 · 03</span>
       <h2>从这里开始</h2>
       <p class="sec-intro">
         第一次来，按「快速上手」走一遍；想先建立心智模型，看「产品概念」；要对着界面操作，走图文指南。
@@ -209,7 +302,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
   <!-- ══ 为什么语义优先 ══ -->
   <section id="why">
     <div class="sec-head">
-      <span class="sec-label">方法 · 03</span>
+      <span class="sec-label">方法 · 04</span>
       <h2>为什么语义优先</h2>
       <p class="sec-intro">
         大多数问数系统的准确率上限押在模型和检索上。Trove 换了一个问题：
@@ -255,7 +348,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
   <!-- ══ 安全与可核对 ══ -->
   <section id="safety">
     <div class="sec-head">
-      <span class="sec-label">边界 · 04</span>
+      <span class="sec-label">边界 · 05</span>
       <h2>安全与可核对</h2>
       <p class="sec-intro">
         问数系统要落地，安全边界不能是提示词里的一句请求。以下六条都在链路上生效——
@@ -312,17 +405,17 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <div class="shot-frame">
         <img src="assets/shots/user-chat-evidence.png" alt="答案依据抽屉：来源档位、生成的 SQL、执行与计划要点、结果集预览、校验与反思记录、反馈入口、运行轨迹" width="2880" height="1800" decoding="async" loading="lazy">
       </div>
-      <figcaption>图 2 · 每条答案都能展开「查看依据」：执行的 SQL、执行与计划要点、校验与反思记录——数字可疑时先读这里。读法见 <a href="user/ask.html#evidence">用户指南 · 依据抽屉</a>。</figcaption>
+      <figcaption>图 5 · 每条答案都能展开「查看依据」：执行的 SQL、执行与计划要点、校验与反思记录——数字可疑时先读这里。读法见 <a href="user/ask.html#evidence">用户指南 · 依据抽屉</a>。</figcaption>
     </figure>
   </section>
 
   <!-- ══ 界面 ══ -->
   <section id="ui">
     <div class="sec-head">
-      <span class="sec-label">界面 · 05</span>
+      <span class="sec-label">界面 · 06</span>
       <h2>界面：用户端与管理台</h2>
       <p class="sec-intro">
-        用户端只做三件事——提问、读答案、核对依据（上文图 1、图 2 即是）；
+        用户端只做三件事——提问、读答案、核对依据（上文图 1、图 5 即是）；
         管理台负责接入、建模与治理。逐屏读法见 <a href="user/ui-tour.html">界面导览</a> 与
         <a href="admin/console.html">管理指南</a>。
       </p>
@@ -332,21 +425,21 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <div class="shot-frame">
         <img src="assets/shots/admin-overview.png" alt="管理台总览：健康横幅、六项 KPI、数据源健康表、待办队列与接入向导" width="2880" height="1800" decoding="async" loading="lazy">
       </div>
-      <figcaption>图 3 · 管理台总览：健康横幅、KPI、数据源健康表与待办队列——一屏回答「今天平台健康吗」。读法见 <a href="admin/console.html">管理台总览</a>。</figcaption>
+      <figcaption>图 6 · 管理台总览：健康横幅、KPI、数据源健康表与待办队列——一屏回答「今天平台健康吗」。读法见 <a href="admin/console.html">管理台总览</a>。</figcaption>
     </figure>
 
     <figure class="shot">
       <div class="shot-frame">
         <img src="assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/待审批四个 tab 与资产表" width="2880" height="1800" decoding="async" loading="lazy">
       </div>
-      <figcaption>图 4 · 语义模型工作台：摘要、校验问题与漂移、指标 / 数据集 / 字段 / 待审批四个 tab——可答边界在这里维护。读法见 <a href="admin/semantic.html">语义层治理</a>。</figcaption>
+      <figcaption>图 7 · 语义模型工作台：摘要、校验问题与漂移、指标 / 数据集 / 字段 / 待审批四个 tab——可答边界在这里维护。读法见 <a href="admin/semantic.html">语义层治理</a>。</figcaption>
     </figure>
   </section>
 
   <!-- ══ 怎么验证 ══ -->
   <section id="eval">
     <div class="sec-head">
-      <span class="sec-label">验证 · 06</span>
+      <span class="sec-label">验证 · 07</span>
       <h2>怎么验证，而不是信谁的数字</h2>
       <p class="sec-intro">
         这个页面<b>不给准确率数字</b>。问数系统的准确率高度依赖数据集、方言、语义模型完备度，
@@ -369,7 +462,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
   <!-- ══ 定位 ══ -->
   <section id="pos">
     <div class="sec-head">
-      <span class="sec-label">定位 · 07</span>
+      <span class="sec-label">定位 · 08</span>
       <h2>这套设计押在哪</h2>
     </div>
     <div class="claim">

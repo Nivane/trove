@@ -104,6 +104,41 @@ The pipeline for real — ask a question, watch the analysis steps unfold live o
 
 <p align="center"><img src="assets/demo.gif" alt="Trove demo: ask a question, watch the pipeline steps unfold live (routing → SQL generation → validation → insights → chart), and get an answer with a chart plus KB-hit and verified badges" width="880"></p>
 
+## Analysis · Decisions · Action
+
+The last three links of the chain run on the same discipline as asking: **numbers come from deterministic engines, the LLM only writes the narrative**, and every number carries evidence you can re-run. **Analysis** answers "why did it change"; **decisions** answer "should this raise a flag" on a schedule; **action** freezes a trigger into a proposal a human signs off on, and measures what happened after.
+
+**Analysis: "why did it change?".** Why-questions skip SQL generation and run deterministic decomposition: the total change is split along the highest-contribution dimension (contribution decomposition / ratio shift-share), then drilled down the metric's expression tree into driver trees. Significance comes from a statistics layer: robust z (median + MAD) against a noise band built from same-grain historical blocks — **outside the band / within the band / cannot tell**, three honest states; when it cannot compute, it returns nothing rather than a 0 pretending "no change". Pure stdlib: no p-values (false precision at n≈8–12), seeds derived deterministically. The real thing:
+
+<img src="docs/assets/shots/user-chat-attribution.png" alt="Trove attribution card: the declared metric max_loan_amount with its attribution · decomposition tags; total change +590,820 and the primary dimension loan_status; a category waterfall and a contribution table (base / current / Δ / contribution for C, D, B, A); an evidence entry reading 2 queries" width="880">
+
+**Decisions: "should this raise a flag?".** Threshold rules are declared in the semantic model's own vocabulary (metric / dimension / filter / time window) and evaluated on a schedule — **zero LLM in the verdict path**; "how much change counts as change" is answered by the seasonal noise band, where "cannot tell" surfaces as an error run, never a silent pass. Every verdict keeps the SQL it ran and the raw rows it judged; where conditions allow it escalates to a causal contrast (placebo DiD → optimizer-free synthetic control), and each conclusion carries its assumptions. Every rule edit is a git commit, and verdict history is scored per rule revision; what-if replays hypothetical numbers through the same judging kernel without re-querying the database. The real thing:
+
+<img src="docs/assets/shots/admin-verdict-history.png" alt="Trove admin console · verdict history drawer: each verdict carries a level and a one-line message; the expanded one shows its evidence SQL (SELECT SUM(loan.amount) FROM loan), the raw result row 470,000 and the verdict row (current 470,000 / baseline 100,000 / Δ 370,000 / Δ% 370.0% / triggered); neighbouring verdicts carry diff chips (same as last time / rule edited / no comparable predecessor); the verdict-quality card on the left is bucketed per rule revision (56da39b9 previous / ae5a40ca current)" width="880">
+
+**Action: "what happens next?".** A trigger freezes into an action proposal — **the payload is fixed at creation**, so what gets approved is what gets sent; templates pass a pending → confirm gate, idempotency keys prevent duplicates, and risk caps and per-channel rate limits are built in. Dispatch happens only after a human approval (webhook / IM), receipts land row by row, and afterwards the same noise band verifies whether the number actually moved (outside / no identifiable change / cannot tell) and feeds the quality scoreboard. Trove itself has no write path back into your database — `ActionService`'s constructor takes no connectors, and the read-only posture is pinned by tests. The real thing:
+
+<img src="docs/assets/shots/admin-actions.png" alt="Trove admin console · the Actions page, Proposals tab: the page header says it in as many words — action only proposes, it never touches your database, and nothing leaves the system before approval; pending counters (1 open · 1 awaiting approval); one pending proposal loan-high → loan-baseline-alert (risk: medium, demo datasource) with Approve / Reject / Details at the row's end" width="880">
+
+The three close a loop — decisions run on the semantic model, action runs on decisions, and measurement runs on action:
+
+```mermaid
+flowchart TB
+    M["Semantic model<br/>metrics / dimensions / windows"] --> R["Decision rules<br/>zero-LLM, on a schedule"]
+    R --> BAND{"Seasonal noise band<br/>triggers only outside"}
+    BAND -->|"cannot tell"| ERR["Honest error run<br/>never a silent pass"]
+    BAND -->|"outside + condition met"| V["Verdict: triggered<br/>SQL + raw rows"]
+    V --> C["Causal contrast (optional)<br/>DiD → synthetic control"]
+    V --> P["Action proposal<br/>payload frozen at creation"]
+    P --> A{"Human approval"}
+    A -->|"approve"| D["Dispatch webhook / IM<br/>receipts recorded"]
+    A -->|"reject"| X["Closed"]
+    D --> M2["Outcome measurement<br/>same noise band"]
+    M2 -.->|"scored"| Q["Verdict quality<br/>bucketed per rule revision"]
+```
+
+Read more: [decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [actions & approvals](https://nivane.github.io/trove/capabilities/actions.html) · [decomposition math & driver trees](https://nivane.github.io/trove/engineering/decomposition.html) · [statistics & noise bands](https://nivane.github.io/trove/engineering/statistics.html) · [the closed loop & its contracts](https://nivane.github.io/trove/engineering/closed-loop.html).
+
 ## Why Not Another NL2SQL
 
 Raw-LLM agents write SQL from raw DDL, and are confidently wrong about business meaning: a column named `A11` or a status code `A` means nothing without the glossary, and "average loan amount" is not derivable from a schema. RAG helps — a glossary, examples and lessons anchor generation — but RAG feeds the *ammo*, it does not draw the *boundary*: retrieval misses still get answered with plausible guesses.
