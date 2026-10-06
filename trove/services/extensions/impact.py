@@ -751,6 +751,9 @@ class ImpactReport:
             "judgments": len(self.rows),
             "corpus": self.corpus_n,
             "decided": self.decided,
+            "covered": self.covered,
+            "skipped": self.skipped,
+            "errored": self.errored,
             "candidates": len(self.candidates),
         }
 

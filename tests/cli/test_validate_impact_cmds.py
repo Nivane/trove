@@ -248,6 +248,45 @@ def test_impact_masks_questions_by_default_and_flag_shows(tmp_path, monkeypatch,
     assert "How many loans?" in capsys.readouterr().out
 
 
+def test_impact_scorecard_is_directly_consumed_by_eval_gate_cli(tmp_path, monkeypatch, capsys):
+    """字面验收:回放报告当 scorecard **直接喂 scripts/eval_gate.py**。
+
+    同一份报告 → 门退出 0(无误报);拦截率变差的那份 → 门退出 1(门能红)。
+    两个方向都测,否则"过门"可能只是门没在看这个指标。
+    """
+    import importlib.util
+
+    _project(tmp_path, monkeypatch)
+    clean = _candidate_dir(tmp_path, expr="has_limit == 0", root="cand-clean")
+    blocking = _candidate_dir(tmp_path, expr="has_limit == 1", root="cand-block")
+
+    def _scorecard(target: Path, name: str) -> Path:
+        code = main_validate([
+            "--impact", str(target), "--datasource", "mini", "--json"])
+        assert code in (0, 1)
+        data = json.loads(capsys.readouterr().out)
+        p = tmp_path / name
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    base = _scorecard(clean, "baseline.json")          # 0 拦截
+    same = _scorecard(clean, "same.json")              # 同一份
+    worse = _scorecard(blocking, "worse.json")         # 新增拦截 1
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "eval_gate.py"
+    spec = importlib.util.spec_from_file_location("eval_gate_under_test", path)
+    gate = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = gate
+    spec.loader.exec_module(gate)
+
+    monkeypatch.setattr(sys, "argv", [
+        "eval_gate", "--baseline", str(base), "--current", str(same), "--min-n", "0"])
+    assert gate.main() == 0                            # 无误报
+    monkeypatch.setattr(sys, "argv", [
+        "eval_gate", "--baseline", str(base), "--current", str(worse), "--min-n", "0"])
+    assert gate.main() == 1                            # 门能红
+
+
 # ── 确定性证明:PYTHONHASHSEED 三连跑逐字节一致 ──────────
 
 _DETERMINISM_CODE = """
