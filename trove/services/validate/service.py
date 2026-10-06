@@ -1017,3 +1017,58 @@ async def run_validate(
         report.issues.append(_err("validate.internal", f"preset 检查异常: {e}"))
 
     return report
+
+
+# ── 装前试跑节(--run,E3)─────────────────────────────────
+#
+# 静态面回答「配置长什么样」,试跑面回答「装上会发生什么」—— 两段各是独立
+# 报告,静态面绝不因试跑改写(试跑是加法,不是替换)。整段由服务层拥有,
+# CLI 只负责打印与出码(与本模块其余部分同一条分工)。
+
+
+async def run_validate_with_dryrun(
+    datasource: str = "",
+    *,
+    project_root: str | Path | None = None,
+    live: bool = False,
+    run: bool = False,
+    fixtures: str = "auto",
+    episodes: bool = False,
+    limit: int | None = None,
+    include_questions: bool = False,
+) -> tuple[ValidateReport, Any]:
+    """静态体检 + 可选装前试跑(``--run``)→ ``(静态报告, 试跑报告 | None)``。
+
+    ``run=False`` 时与 ``run_validate`` 逐字节一致 —— 装上 ``--run`` 是加一
+    段,不是换一条路。试跑自身的坏输入不抛异常(见 ``extensions.dryrun``
+    的 never-raises 姿态),它落成试跑报告里的 ``errors``。
+    """
+    report = await run_validate(datasource, project_root=project_root, live=live)
+    if not run:
+        return report, None
+    from trove.services.extensions.dryrun import DEFAULT_LIMIT, run_dryrun
+
+    dry = await run_dryrun(
+        datasource=datasource or "",
+        project_root=project_root,
+        fixtures=fixtures,
+        episodes=episodes,
+        limit=DEFAULT_LIMIT if limit is None else limit,
+        include_questions=include_questions,
+    )
+    return report, dry
+
+
+def combined_exit_code(
+    report: ValidateReport, dry: Any | None, *, strict: bool = False,
+) -> int:
+    """合并退出码:取更严的一支(2 > 1 > 0)。
+
+    静态干净但试跑无法进行 → **2**:结论是「这次没验成」,不许被静态的 0
+    盖过去(试跑绝不静默 0 是同一条纪律的另一面)。``dry=None`` 时与
+    ``ValidateReport.exit_code`` 完全一致。
+    """
+    code = report.exit_code(strict=strict)
+    if dry is not None:
+        code = max(code, dry.exit_code)
+    return code

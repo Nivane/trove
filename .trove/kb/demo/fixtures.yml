@@ -1,0 +1,36 @@
+# 装前试跑（E3）语料 —— `trove validate --run --datasource demo` 按 auto 读本文件。
+#
+# 每条语料 = 一个被真实问过的问题 + 它当时的结果：
+#   - validator 档（结果断言，如 min >= 0）直接拿 rows/columns 回放，不执行 SQL；
+#   - guard 档（SQL 域断言，E2 合流后可用）用 sql/dialect 回放；
+#   - verdict 是可选断言：pass / violated / unjudged —— 这条语料在「装」态的
+#     判定必须与它一致，不一致即断言失败（退出码 1）。不写 = 只报告不判定。
+#
+# 行来自内置 demo 生成器的确定性数据（trove/demo.py）；数据若变，这里先复核。
+items:
+  - question: "How many loans are there?"
+    sql: "SELECT COUNT(*) AS loan_count FROM loan"
+    dialect: sqlite
+    columns: [loan_count]
+    rows:
+      - [3]
+    verdict: pass
+
+  - question: "How many loan records are there for each Loan status code (A) / (B) / (C)?"
+    sql: "SELECT status, COUNT(*) AS cnt, AVG(amount) AS avg_amount FROM loan GROUP BY status ORDER BY status"
+    dialect: sqlite
+    columns: [status, cnt, avg_amount]
+    rows:
+      - [A, 1, 150000.0]
+      - [B, 1, 80000.0]
+      - [C, 1, 240000.0]
+
+  - question: "Which district has the highest average loan amount?"
+    sql: "SELECT d.A2 AS district_name, AVG(l.amount) AS avg_amount FROM loan l JOIN account a ON l.account_id = a.account_id JOIN district d ON a.district_id = d.district_id GROUP BY d.A2 ORDER BY avg_amount DESC"
+    dialect: sqlite
+    columns: [district_name, avg_amount]
+    rows:
+      - [Benesov, 240000.0]
+      - [Hl.m. Praha, 150000.0]
+      - [Brno-mesto, 80000.0]
+    verdict: pass
