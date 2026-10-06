@@ -610,6 +610,60 @@ class TestAuthorizerWiring:
             assert kwargs["authorizer"].mode == "enforce"
 
 
+class TestGuardWiring:
+    """组织守卫门走装配线(设计 §3a / guard 档)。
+
+    判定与执行语义的用例在 ``tests/services/skills/test_guards.py`` 与
+    ``tests/workflow/test_guard_gate.py``;这里证明的是**真的会装配**:
+    接上 SkillService 才建 GuardRunner,缺席时 ``None`` —— 那是"无守卫路径
+    逐字节不变"的前提,漏了它 `guards is not None` 的短路就没有被照到。
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        """拦下 ``make_execute_sql``,留下每次接线的关键字参数。"""
+        seen: list[dict] = []
+        real = graphs_module.make_execute_sql
+
+        def spy(connectors, **kwargs):
+            seen.append({"connectors": connectors, **kwargs})
+            return real(connectors, **kwargs)
+
+        monkeypatch.setattr(graphs_module, "make_execute_sql", spy)
+        return seen
+
+    def test_no_skill_service_means_no_gate(self, sqlite_registry):
+        """未装技能层 → ``None``(不装配,而非装配成放行档)。"""
+        services = make_services(RecordingLLM([]), connectors=sqlite_registry)
+        assert services.skills is None
+        assert graphs_module._build_guards(services) is None
+
+    def test_skill_service_gets_a_guard_runner(self, sqlite_registry, tmp_path):
+        """接了技能层 → GuardRunner 建起来(选人与判定的门面)。"""
+        from trove.services.skills.guards import GuardRunner
+        from trove.services.skills.service import SkillService
+
+        services = make_services(RecordingLLM([]), connectors=sqlite_registry)
+        services.skills = SkillService(tmp_path)
+        assert isinstance(graphs_module._build_guards(services), GuardRunner)
+
+    def test_both_graphs_hand_it_to_execute_sql(
+        self, sqlite_registry, catalog, monkeypatch, tmp_path,
+    ):
+        from trove.services.skills.guards import GuardRunner
+        from trove.services.skills.service import SkillService
+
+        seen = self._capture(monkeypatch)
+        services = make_services(RecordingLLM([]), catalog, sqlite_registry)
+        services.skills = SkillService(tmp_path)
+        build(services)
+
+        nodes = [k for k in seen if k.get("guards") is not None]
+        assert len(nodes) == 2, f"reflection / fixed 两条图都该接到:{seen}"
+        for kwargs in nodes:
+            assert isinstance(kwargs["guards"], GuardRunner)
+
+
 class TestGenSQLSubgraph:
     async def test_single_valid_generation(self):
         sub = build_gen_sql_subgraph(make_services(RecordingLLM([VALID_SQL])))

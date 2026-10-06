@@ -439,6 +439,16 @@ class WorkflowState(BaseModel):
     #: 都不是拦截事件,混进去会污染归因。
     validator_hits: list[dict] = Field(default_factory=list)
 
+    #: org guard 档的逐条判定(SQL 域断言,执行前;见
+    #: trove/services/skills/guards.py)。与 ``validator_hits`` **分开**的
+    #: 理由与上面那条同源、再加一层:两者除域(结果 / SQL)不同之外,"命中"
+    #: 的语义也不同 —— guard 的 ``triggered`` 是**断言不成立**(意味着这条
+    #: SQL 本来要被执行),validator 的 ``verdict`` 是**结果违反口径**。合成
+    #: 一个列表就要在每个消费点按来源分叉,分叉漏一处就是把一类命中渲染成
+    #: 另一类的判词。字段由 execute_sql 写(命中与零命中都写),随会话/装配
+    #: 产物到前端与审计。
+    guard_hits: list[dict] = Field(default_factory=list)
+
     # agent 自检通过次数(gen_generate 写,每轮覆盖不累加;降级到经典子图时
     # 显式写 0 —— 那条路径交付的 SQL 没经过 check_result)。今天通过时 hits
     # 为空,零痕迹;置信度要用它当正面证据(设计 §5.4-2)。

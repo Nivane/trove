@@ -6,7 +6,11 @@
     (few_shots / rules / … / plan / skill_injections);
   - ``tools``:gen 阶段 ToolRegistry 的每个工具(name/level/roles/lazy/
     activated/calls);
-  - ``verdicts``:确定性判定(validator_hits / rule_hits / fast_path_hit)。
+  - ``verdicts``:确定性判定(validator_hits / guard_hits / rule_hits /
+    fast_path_hit)。guard_hits 是执行前 SQL 域断言(org guard 档)的判定,
+    与 validator_hits(结果域)分开列:两者域不同,读者要一眼看出"这条 SQL
+    在被执行前被谁拦过"。advisory 与 blocking 命中都在这里(后者还会走
+    error_feedback 打回生成)。
 
 数据全部是**既有产物**,不做二次计算:blocks 来自 ``assemble_context`` 的
 detail 报告(装配时已算过的同一份 token 计数)+ skill 注入文本的 token 数;
@@ -131,6 +135,9 @@ def build_report(state: Any) -> dict[str, Any]:
         "tools": _normalize_tools(getattr(state, "assembly_tools", None)),
         "verdicts": {
             "validator_hits": _as_list(getattr(state, "validator_hits", None)),
+            # org guard 的执行前判定(与 validator_hits 同形状、不同域):
+            # 命中与"判不了"(triggered=None)都收,判定物原样透出不改写。
+            "guard_hits": _as_list(getattr(state, "guard_hits", None)),
             "rule_hits": _as_list(getattr(state, "validation_hits", None)),
             "fast_path_hit": bool(getattr(state, "fast_path", False)),
         },

@@ -18,6 +18,7 @@ from trove.core.logging import get_logger
 from trove.core.metrics import (
     record_authz_deny,
     record_authz_table_warn,
+    record_guard_block,
     record_sql_budget_decision,
     record_sql_degraded,
     record_sql_kill,
@@ -27,6 +28,7 @@ from trove.services.authz.policy import principal_from_wire
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
+from trove.services.skills.guards import GuardRunner
 from trove.services.sql.budget import (
     BudgetDecision,
     BudgetService,
@@ -53,6 +55,11 @@ COMPILE_DRIFT_TAG = "[ERR:COMPILE_DRIFT]"
 # analyze_error 据它走确定性短路径(不烧 LLM)。
 NO_SQL_TAG = "[ERR:SQL_MISSING]"
 
+# 组织守卫(SQL 域断言,执行前)拦下的错误前缀:analyze_error 据它走**确定性**
+# 修正(零 LLM 诊断 —— 成因与修法都写在守卫的 reason/hint 里,模型没有可补充
+# 的信息)。文本在 ``_guard_message`` 里组装。
+ORG_GUARD_TAG = "[ERR:ORG_GUARD]"
+
 
 def make_execute_sql(
     connectors: ConnectorRegistry | None = None,
@@ -63,6 +70,7 @@ def make_execute_sql(
     authorizer: Authorizer | None = None,
     profiles: Any = None,
     terminator: Any = None,
+    guards: GuardRunner | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -95,6 +103,12 @@ def make_execute_sql(
             它),而 §10 明说不重试 kill。``None`` = **没试过**(证据里
             ``kill=""``),不是「不支持」也不是「失败」—— 那两种都是查过之后
             的结论。
+        guards: 组织守卫门(设计 §3a / guard 档)—— 授权门之后、执行之前的
+            SQL 域断言(零 LLM:只看 SQL 文本的结构,不碰数据库)。命中 blocking
+            的 SQL **不是终态拒绝**,而是可修正的生成缺陷(同编译照抄偏离):
+            带守卫的 reason/hint 打回生成方,预算耗尽才降级。``None`` = **未
+            装配强制点**(没有 SkillService 的嵌入场景),不判——与
+            ``authorizer`` 同一条纪律:无守卫路径逐字节不变。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -236,6 +250,39 @@ def make_execute_sql(
                     state.datasource or getattr(connectors, "default_name", "") or ""
                 )
 
+        # guard 门(组织守卫,设计 §3a / guard 档)—— 授权门之后、执行之前。
+        #
+        # guard 是 org 技能的一条**投递路**(确认门与 validator 档同样有效),
+        # 与 validator 档对称:一个在**结果**上下断言(执行后,validate 节点),
+        # 一个在 **SQL 文本**上下断言(执行前,这里)。判定零 LLM、零执行。
+        #
+        # blocking 命中**不是终态拒绝**(与授权门相反):改 SQL 能过守卫,改不掉
+        # "这个用户没有这张表的权限"。所以它走共享修正预算打回生成方 ——
+        # analyze_error 对 ORG_GUARD 走确定性修正(零 LLM),同一条 SQL 反复
+        # 重撞由版本链的"无进展"检测兜底终止(§3e / R4)。
+        #
+        # advisory 命中只落 ``state.guard_hits``(进附注/审计),不改变执行。
+        guard_extra: dict[str, Any] = {}
+        if guards is not None:
+            verdicts = guards.check(
+                state.sql, dialect=state.dialect or "", **state.skill_ctx(),
+            )
+            # **总是**写键,且判定物原样透出(命中 triggered=True / 未命中
+            # triggered=False / "判不了" triggered=None 都收 —— 同
+            # validator_hits 的形状)。不写键 = 上一轮的判词活到交付答案上,
+            # 渲染成一条针对它从未检查过的 SQL 的告警。
+            guard_extra["guard_hits"] = [v.as_hit() for v in verdicts]
+            blocked = [v for v in verdicts if v.blocking]
+            if blocked:
+                logger.info(
+                    "org guard blocked %r: %s",
+                    state.question[:80], ", ".join(v.name for v in blocked),
+                )
+                record_guard_block([v.name for v in blocked])
+                return _execution_failure(
+                    state, _guard_message(blocked, state.lang), max_retries,
+                ) | authz_extra | guard_extra
+
         # 指标用的数据源名:与血缘、终止、证据同一个解析(state.datasource → 默认源)。
         # 三处各解析一次,就会出现「指标记的是默认源、线索记的是另一个」这种对不上
         # 的账 —— 而这类账的排查成本随部署里的数据源数量上升。
@@ -291,6 +338,7 @@ def make_execute_sql(
                         "row_count": -1,
                         **authz_extra,
                         **budget_extra,
+                        **guard_extra,
                     }
                 if decision.over != "soft":
                     # 无法估算 + 本部署配置为拒绝(§8.3 C)。**不打回重生成**:
@@ -307,6 +355,7 @@ def make_execute_sql(
                         "row_count": -1,
                         **authz_extra,
                         **budget_extra,
+                        **guard_extra,
                     }
                 logger.info(
                     "budget soft cap hit for %r: est %d > soft cap %d",
@@ -320,7 +369,7 @@ def make_execute_sql(
                     "the query (add filters / aggregation, or a LIMIT) so it "
                     "returns a bounded result set.",
                     max_retries,
-                ) | authz_extra | budget_extra
+                ) | authz_extra | budget_extra | guard_extra
 
             limit_applied: int | None = None
             if decision.verdict == "degrade":
@@ -398,7 +447,7 @@ def make_execute_sql(
                         f"Query timed out after {timeout_ms}ms",
                     ),
                     max_retries,
-                ) | authz_extra | budget_extra
+                ) | authz_extra | budget_extra | guard_extra
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -413,7 +462,7 @@ def make_execute_sql(
                     continue
                 return _execution_failure(
                     state, tag_error(str(e), context="sql"), max_retries,
-                ) | authz_extra
+                ) | authz_extra | guard_extra
 
         # 血缘捕获:成功执行的查询记录为消费方(downstream)事实。
         # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
@@ -448,6 +497,7 @@ def make_execute_sql(
             "error_feedback": "",  # success clears previous feedback
             **authz_extra,
             **budget_extra,
+            **guard_extra,
         }
 
     return execute_sql
@@ -612,6 +662,35 @@ def _execution_failure(
         "rows": [],
         "row_count": -1,
     }
+
+
+def _guard_message(blocked: list, lang: str) -> str:
+    """blocking 命中 → 打回生成方的**确定性**修正指令(§3d:tag + 守卫名 +
+    reason + hint + TARGET)。
+
+    每条守卫自带 ``reason``(判词)与 ``hint``(修法,写入面强制 blocking 必填)
+    —— 生成方要的信息这里全有,模型没有可补充的,所以 analyze_error 对
+    ORG_GUARD 走零 LLM 路径(与编译照抄偏离同一处置)。
+
+    以 ``[ERR:ORG_GUARD]`` 开头是给 ``analyze_error`` 的分流标记;多守卫命中
+    时只打一次(标记语义是"这条错误属于哪一类",不是每条一行)。``TARGET``
+    段跟着守卫声明的回滚目标(默认 ``gen_retrieve``)。
+    """
+    lines = [
+        f"{ORG_GUARD_TAG} "
+        + L(
+            lang,
+            f"组织守卫拦下了这条 SQL(执行前断言,{len(blocked)} 条命中):",
+            "Org guards blocked this SQL (pre-execution assertions, "
+            f"{len(blocked)} hit):",
+        )
+    ]
+    for v in blocked:
+        lines.append(f"- guard={v.name}: {v.reason}")
+        if v.hint:
+            lines.append(f"  hint: {v.hint}")
+        lines.append(f"  TARGET: {v.target}")
+    return "\n".join(lines)
 
 
 def _compile_drift_failure(state: WorkflowState, max_retries: int) -> dict[str, Any]:

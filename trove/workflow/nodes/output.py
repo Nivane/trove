@@ -26,6 +26,7 @@ from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
 from trove.services.limits import get_result_limits
+from trove.services.skills.guards import format_guard_hit
 from trove.services.skills.validators import format_hit
 from trove.services.sql.format import format_sql
 from trove.services.viz.spark import render_ascii_bar, render_waterfall_ascii
@@ -274,6 +275,37 @@ def _validator_notice(state: WorkflowState) -> str:
         state.lang,
         f"> ⚠️ **口径提示**：{body}\n",
         f"> ⚠️ **Caliber note**: {body}\n",
+    )
+
+
+def _guard_notice(state: WorkflowState) -> str:
+    """org guard 的 advisory 命中,与口径提示同区置顶。
+
+    **只报 ``triggered is True`` 的 advisory**,三条都不报(与
+    ``_validator_notice`` 同一条窄口纪律):
+
+    - ``triggered is None``(判不了:SQL 解析失败等)—— 它说的是解析/环境
+      问题而非"这条 SQL 违反了哪条规范",高频挂出来会把真正有意义的告警
+      淹掉;它说的是**管理员**(守卫未覆盖)与质检统计。
+    - ``blocking`` —— 命中已被拦下重算;能走到 output 说明本轮已放行
+      (重算后的 SQL 不撞,该轮的 guard_hits 已在 execute_sql 被重写)或
+      预算耗尽走错误卡片(后者由错误卡片负责)。
+    - ``triggered is False``(满足规范)—— 无声。
+    """
+    hits = [
+        h for h in (state.guard_hits or [])
+        if h.get("severity") == "advisory" and h.get("triggered") is True
+    ]
+    if not hits:
+        return ""
+    # 与 ``_validator_notice`` 同一渲染纪律:判词是手写 YAML 的自由文本,
+    # 空名字/换行都由 ``format_guard_hit`` 收口(另一处同一渲染在
+    # ``execute_sql._guard_message`` 的 blocking join)。
+    body = "; ".join(format_guard_hit(h) for h in hits)
+    return L(
+        state.lang,
+        f"> ⚠️ **SQL 守卫提示**:{body}\n",
+        f"> ⚠️ **SQL guard note**: {body}\n",
     )
 
 
@@ -734,6 +766,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     vnotice = _validator_notice(state)
     if vnotice:
         parts.append(vnotice)
+
+    # 0c. SQL 守卫提示 — 同区、同一理由(org 为这条 SQL 声明的结构规范被
+    #     advisory 档明确触碰)。窄口同 0b,详见 _guard_notice。
+    gnotice = _guard_notice(state)
+    if gnotice:
+        parts.append(gnotice)
 
     # 1. Conclusion — LLM one-sentence direct answer (结论前置)
     if state.conclusion:

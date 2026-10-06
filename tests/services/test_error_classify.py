@@ -186,6 +186,32 @@ class TestTagging:
         assert "PLAN_CONTRADICTION" not in DETERMINISTIC_DEAD_END
         assert "SQL_MISSING" not in DETERMINISTIC_DEAD_END
 
+    def test_org_guard_is_a_fixable_generation_defect(self):
+        """org guard 拦截:可修正的生成缺陷(重写 SQL 即可),不是权限死胡同。
+
+        ``needs_analysis=False`` 是"analyze_error 对它零 LLM"那条纪律在错误类
+        上的声明 —— 守卫的 reason/hint 就是修正指令,没有可诊断的语义面。
+        """
+        guard = classify_error(
+            "[ERR:ORG_GUARD] 组织守卫拦下了这条 SQL", context="workflow",
+        )
+        assert guard.cls.id == "ORG_GUARD"
+        assert guard.cls.domain == "sql"
+        assert guard.cls.severity == "error"
+        assert guard.cls.retryable is True
+        assert guard.cls.recovery == RecoveryAction.FIX
+        assert guard.cls.needs_analysis is False
+        assert "ORG_GUARD" not in DETERMINISTIC_DEAD_END
+        assert guard.cls.user_msg == (
+            "SQL blocked by an org guard; regenerate with the hint."
+        )
+
+    def test_org_guard_wording_without_tag_is_not_hijacked(self):
+        """标签是唯一切换条件:没有 ``[ERR:ORG_GUARD]`` 前缀的普通措辞
+        (例如用户问句里出现"守卫")不得被误分类。"""
+        verdict = classify_error("no such table: guards", context="sql")
+        assert verdict.cls.id == "SQL_SCHEMA_MISSING"
+
 
 class TestValidateArguments:
     PARAMS = {

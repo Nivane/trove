@@ -127,6 +127,17 @@ if _HAVE_CLIENT:
         ["reason"],
         registry=_REGISTRY,
     )
+    # 组织守卫(SQL 域断言,执行前)的**拦截**计数,按守卫名。与 AUTHZ_DENY 分家:
+    # 两者都是"执行前拦下",但一个是权限(重写 SQL 无用),一个是组织口径
+    # (重写 SQL 就能过)—— 处置方向相反,合并读不出该动哪边。
+    # 名字**进标签**(与 MASKING_APPLIED 的字段名同一条基数理由:名字来自管理端
+    # 手写的 guard 块,不是用户输入);被拦的个体(用户/问句)不在这里,在审计面。
+    SQL_GUARD_BLOCKS = Counter(
+        "trove_sql_guard_blocks_total",
+        "Execution-time blocks by org SQL guards, by guard name.",
+        ["guard"],
+        registry=_REGISTRY,
+    )
     # warn 期(§8.2)的 A3 放行**另起一条**,不并进上面那条:放行不是拒绝,并进去
     # 会让运维读到的告警率里混进一半根本没被拦的查询。这条回答的是「**量**」——
     # 多频繁、在哪个数据源上,也就是「切 enforce 会打挂多少」的分母。
@@ -356,6 +367,26 @@ def record_authz_deny(reason: str) -> None:
         AUTHZ_DENY.labels(reason=reason).inc()
     except Exception as e:
         logger.debug("authz deny metric record failed: %s", e)
+
+
+def record_guard_block(names: list[str]) -> None:
+    """记一次**执行前组织守卫的拦截**(设计 §3a / §3d):每条命中的守卫一笔。
+
+    只记 ``blocking`` 命中(advisory 命中的读者是用户附注与 hits,不是告警面:
+    把"只报告"计进拦截率,运维拿这个数报警会打到空处 —— 与 ``record_authz_deny``
+    只记拒绝、warn 期放行另起一条同一条纪律)。
+
+    空名字兜底成 ``"unnamed"``:手写 SKILL.md 能绕过写入校验带进无名 check,
+    而空标签值会把"有名字但记丢了"与"本来就没名字"混成同一个序列(同
+    ``record_sql_kill`` 的值域纪律)。
+    """
+    if not _HAVE_CLIENT:
+        return
+    for name in names or []:
+        try:
+            SQL_GUARD_BLOCKS.labels(guard=name or "unnamed").inc()
+        except Exception as e:
+            logger.debug("sql guard block metric record failed: %s", e)
 
 
 def record_authz_table_warn(datasource: str) -> None:

@@ -202,10 +202,13 @@ class TestReflectionRunDropsAssembly:
         assert by_name["validate_sql"]["calls"] == 1  # 脚本里的那一轮工具调用
         assert by_name["validate_sql"]["lazy"] is False
 
-        # ── verdicts 节:三类判定直读 state ──
+        # ── verdicts 节:四类判定直读 state ──
         verdicts = report["verdicts"]
-        assert set(verdicts) == {"validator_hits", "rule_hits", "fast_path_hit"}
+        assert set(verdicts) == {
+            "validator_hits", "guard_hits", "rule_hits", "fast_path_hit",
+        }
         assert isinstance(verdicts["validator_hits"], list)
+        assert isinstance(verdicts["guard_hits"], list)
         assert isinstance(verdicts["rule_hits"], list)
         assert verdicts["fast_path_hit"] is False  # 无 KB 模板 → 未走快径
 

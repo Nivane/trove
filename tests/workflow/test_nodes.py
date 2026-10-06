@@ -5892,3 +5892,78 @@ async def test_output_no_validator_hits_is_unchanged():
     out = await output(make_state(validator_hits=[]))
     assert "口径提示" not in out["final_response"]
     assert "Caliber note" not in out["final_response"]
+
+
+# ── SQL 守卫附注(guard 档 advisory)────────────────────────
+
+
+async def test_output_renders_advisory_guard_note():
+    from trove.workflow.nodes.output import output
+
+    state = make_state(guard_hits=[{
+        "name": "prefer-limit", "severity": "advisory", "triggered": True,
+        "reason": "明细建议限量", "hint": "加 LIMIT", "target": "gen_retrieve",
+    }])
+    out = await output(state)
+    assert "SQL 守卫提示" in out["final_response"]
+    assert "prefer-limit" in out["final_response"]
+    assert "明细建议限量" in out["final_response"]
+
+
+async def test_output_guard_note_is_localized():
+    from trove.workflow.nodes.output import output
+
+    state = make_state(lang="en", guard_hits=[{
+        "name": "prefer-limit", "severity": "advisory", "triggered": True,
+        "reason": "prefer a LIMIT", "hint": "", "target": "gen_retrieve",
+    }])
+    out = await output(state)
+    assert "SQL guard note" in out["final_response"]
+    assert "prefer a LIMIT" in out["final_response"]
+
+
+async def test_output_hides_non_hitting_and_undecided_guard_verdicts():
+    """三条都不报(与 validator 附注同一条窄口):blocking(已被拦下重算)、
+    判不了(解析失败,说的是管理员不是用户)、通过(合规就是无声)。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(guard_hits=[
+        {"name": "blocked-one", "severity": "blocking", "triggered": True,
+         "reason": "blocking判词", "hint": "", "target": "gen_retrieve"},
+        {"name": "undecided", "severity": "advisory", "triggered": None,
+         "reason": "判不了（SQL 解析失败，无法提取结构特征）", "hint": "",
+         "target": "gen_retrieve", "none_reason": "unparseable_sql"},
+        {"name": "passing", "severity": "advisory", "triggered": False,
+         "reason": "合规判词", "hint": "", "target": "gen_retrieve"},
+    ])
+    resp = (await output(state))["final_response"]
+    assert "blocking判词" not in resp
+    assert "判不了" not in resp
+    assert "合规判词" not in resp
+    assert "SQL 守卫提示" not in resp
+
+
+async def test_output_no_guard_hits_is_unchanged():
+    """零守卫/旧 state:响应与不装守卫完全一致(加门不改路)。"""
+    from trove.workflow.nodes.output import output
+
+    assert (await output(make_state()))["final_response"] == \
+           (await output(make_state(guard_hits=[])))["final_response"]
+    out = await output(make_state(guard_hits=[]))
+    assert "守卫提示" not in out["final_response"]
+    assert "guard note" not in out["final_response"]
+
+
+async def test_output_guard_note_flattens_hostile_reason():
+    """守卫判词同样是手写 YAML 的自由文本,同一渲染纪律(见
+    ``test_output_validator_note_flattens_hostile_judgement``)。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(guard_hits=[{
+        "name": "", "severity": "advisory", "triggered": True,
+        "reason": "第一行\n第二行", "hint": "", "target": "gen_retrieve",
+    }])
+    resp = (await output(state))["final_response"]
+    assert "[]" not in resp
+    assert "\n第二行" not in resp
+    assert "第一行 第二行" in resp

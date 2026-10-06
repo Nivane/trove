@@ -413,6 +413,90 @@ async def test_skill_validator_fields_on_other_tier_is_error(tmp_path):
                for i in _checks(report, "skill.validator"))
 
 
+# ── guard 档(执行前 SQL 断言)──────────────────────────────
+
+
+async def test_skill_guard_bad_expression_is_error(tmp_path):
+    """guard 的 checks.expr 预解析失败(域外变量/拼错)→ 硬错误 ——
+    运行期才发现写错 = 守卫静默失效。"""
+    _make_skill(tmp_path, "no-star", {
+        "name": "no-star", "description": "d", "tier": "guard",
+        "status": "confirmed",
+        "guard": {"targets": ["sql"], "checks": [
+            {"name": "no-select-star", "severity": "advisory",
+             "expr": "select_start == 0", "reason": "禁裸查"},
+        ]},
+    })
+    report = await run_validate(project_root=tmp_path)
+    hits = _checks(report, "skill.guard")
+    assert hits and hits[0].severity == "error"
+    assert "select_start" in hits[0].message
+
+
+async def test_skill_guard_wrong_host_is_error(tmp_path):
+    """guard 声明宿主 validate:SQL 断言只在 execute_sql 节点跑。"""
+    _make_skill(tmp_path, "wrong-host", {
+        "name": "wrong-host", "description": "d", "tier": "guard",
+        "status": "confirmed", "triggers": {"node": "validate"},
+        "guard": {"targets": ["sql"], "checks": [
+            {"name": "no-select-star", "severity": "advisory",
+             "expr": "select_star == 0", "reason": "禁裸查"},
+        ]},
+    })
+    report = await run_validate(project_root=tmp_path)
+    hits = _checks(report, "skill.guard")
+    assert hits and hits[0].severity == "error"
+    assert "execute_sql" in hits[0].message
+
+
+async def test_skill_guard_missing_hints_for_blocking_is_error(tmp_path):
+    """blocking 缺双语 hint:拦了你但不告诉你怎么办 —— 写入面拒,干跑报。"""
+    _make_skill(tmp_path, "wall", {
+        "name": "wall", "description": "d", "tier": "guard",
+        "status": "confirmed",
+        "guard": {"targets": ["sql"], "checks": [
+            {"name": "no-select-star", "severity": "blocking",
+             "expr": "select_star == 0", "reason": "禁裸查"},
+        ]},
+    })
+    report = await run_validate(project_root=tmp_path)
+    hits = _checks(report, "skill.guard")
+    assert hits and hits[0].severity == "error"
+    assert "hint_zh and hint_en" in hits[0].message
+
+
+async def test_skill_guard_fields_on_other_tier_is_error(tmp_path):
+    """guard: 块出现在别的档位 = 永不生效的死配置(与 validator 字段同一条)。"""
+    _make_skill(tmp_path, "stray-guard", {
+        "name": "stray-guard", "description": "d", "tier": "required",
+        "status": "confirmed", "triggers": {"node": "gen_sql"},
+        "guard": {"targets": ["sql"], "checks": [
+            {"name": "no-select-star", "severity": "advisory",
+             "expr": "select_star == 0", "reason": "禁裸查"},
+        ]},
+    })
+    report = await run_validate(project_root=tmp_path)
+    assert any("guard" in i.message
+               for i in _checks(report, "skill.guard"))
+
+
+async def test_clean_guard_skill_passes_and_mounts_execute_sql(tmp_path):
+    """一条干净的 guard 技能:0 硬错误,挂点写明 execute_sql 执行前断言。"""
+    _make_skill(tmp_path, "sql-hygiene", {
+        "name": "sql-hygiene", "description": "SQL 结构规范",
+        "tier": "guard", "status": "confirmed",
+        "guard": {"targets": ["sql"], "checks": [
+            {"name": "no-select-star", "severity": "advisory",
+             "expr": "select_star == 0", "reason": "禁裸查"},
+        ]},
+    })
+    report = await run_validate(project_root=tmp_path)
+    assert _checks(report, "skill.guard") == []
+    preview = next(m for m in report.mounts if m.name == "sql-hygiene")
+    assert "execute_sql" in preview.mounts[0]
+    assert "guard_hits" in preview.mounts[0]
+
+
 async def test_skill_available_with_wrong_node_is_error(tmp_path):
     """available 档只在 gen_sql 广告 —— 写别的 node 永远取不到。"""
     _make_skill(tmp_path, "ad", {

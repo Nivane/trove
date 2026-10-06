@@ -1311,6 +1311,14 @@ class SessionManager:
             detail["execution_time_ms"] = delta.get("execution_time_ms", 0)
             detail["retry"] = retry
             detail["reason"] = reason
+            # org guard 的判定结果(执行前 SQL 域断言):命中与"判不了"都
+            # 只落在这里与装配清单 —— advisory 命中另有用户附注(output.py),
+            # blocking 命中走 error_feedback 打回生成(随后 analyze_error 步
+            # 会带着修正指令再来一轮)。未接 SkillService 的图不带该键,
+            # `or []` 让形状一致(总是列表);"有没有装"与"这一轮判了什么"
+            # 是两件事,后者才是这一步事件的读者要看的。
+            if "guard_hits" in delta:
+                detail["guard_hits"] = delta.get("guard_hits") or []
         elif node_name == "analyze_error":
             detail["error"] = reason
             detail["analysis"] = delta.get("error_analysis", "")
