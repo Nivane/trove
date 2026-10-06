@@ -672,6 +672,32 @@ def test_pending_validator_never_selected(tmp_path):
     assert specs == [] and not_selected == []
 
 
+def test_disabled_validator_never_selected(tmp_path):
+    """E6 颗粒停用:停用资产不进试跑候选集(与消费面同一份清单)。"""
+    svc = _svc(tmp_path)
+    _make_validator(svc, name="stopped")
+    svc.disable("stopped")
+    specs, not_selected = validator_specs_for(svc, "demo")
+    assert specs == [] and not_selected == []
+
+
+def test_disabled_guard_never_selected(tmp_path):
+    """guard 档同理(同一条投递路):停用后默认 spec 集合为空。"""
+    svc = _svc(tmp_path)
+    svc.create({
+        "name": "hushed", "description": "d", "tier": "guard",
+        "guard": {"targets": ["sql"], "checks": [{
+            "name": "c", "severity": "advisory", "expr": "select_star == 0",
+            "reason": "r"}]},
+        "body": "b",
+    })
+    svc.confirm("hushed")
+    assert [s["name"] for s in load_guard_tier(svc).specs] == ["hushed"]
+
+    svc.disable("hushed")
+    assert load_guard_tier(svc).specs == []
+
+
 def test_trigger_narrowing_is_reported(tmp_path):
     svc = _svc(tmp_path)
     _make_validator(svc, name="elsewhere", triggers={"datasource": "other"})

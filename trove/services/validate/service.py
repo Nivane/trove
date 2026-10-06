@@ -495,7 +495,12 @@ def _skill_mounts(entry: dict) -> tuple[list[str], list[str]]:
             f"{k}={v}" for k, v in narrowing.items()) + "(运行期按 ctx 匹配)")
     status = entry.get("status", "pending")
     if status != "confirmed":
-        notes.append(f"status={status} → 未确认,当前不投递(确认后才走上表挂点)")
+        if status == "disabled":
+            notes.append(
+                "status=disabled → 颗粒停用(管理员显式停用,上表挂点全部不投递;"
+                "enable 才恢复)")
+        else:
+            notes.append(f"status={status} → 未确认,当前不投递(确认后才走上表挂点)")
     return mounts, notes
 
 
@@ -691,19 +696,23 @@ def _read_presets(base: Path, source: str) -> tuple[dict[str, Preset], list[Issu
     return parsed, issues
 
 
-def _preset_skill_names(skills_root: Path) -> tuple[set[str], set[str], set[str]]:
-    """``(code, org_confirmed, org_other)`` —— 技能引用的解析面。
+def _preset_skill_names(
+    skills_root: Path,
+) -> tuple[set[str], set[str], set[str], dict[str, str]]:
+    """``(code, org_confirmed, org_other, org_status)`` —— 技能引用的解析面。
 
-    与 ``PresetService._skill_names`` 同一条判据:引用只认**生效**状态,
-    还在 pending 的 org skill 不算解析成功(preset 说"应当具备 X",而 X
-    还没过确认门,那是一句尚未成立的话)。
+    与 ``PresetService._skill_names`` 同一条判据:引用只认**生效**状态
+    (confirmed);pending 与 disabled(E6 颗粒停用)都不算解析成功 ——
+    preset 说"应当具备 X",而 X 没在投递,那是一句尚未成立的话。
+    ``org_status`` 只用于把错误消息里的状态名说准(pending 还是 disabled)。
     """
     svc = SkillService(skills_root)
     code = {str(e.get("name")) for e in svc.list_code_skills()}
     org = svc.list_org()
     confirmed = {str(e.get("name")) for e in org if e.get("status") == "confirmed"}
     other = {str(e.get("name")) for e in org if e.get("status") != "confirmed"}
-    return code, confirmed, other
+    status = {str(e.get("name")): str(e.get("status", "pending")) for e in org}
+    return code, confirmed, other, status
 
 
 def _skill_template_problem(entry: dict, name: str) -> str:
@@ -785,7 +794,7 @@ def _check_presets(
     builtin, builtin_issues = _read_presets(_builtin_root(), "builtin")
     issues += org_issues + builtin_issues
 
-    code, confirmed, other = _preset_skill_names(skills_root)
+    code, confirmed, other, org_status = _preset_skill_names(skills_root)
 
     # 数据源绑定面(给了 datasource 才解析;读不到就当判不了,静默 —— 这些
     # 面自身的错由对应的检查器去报,不在这里刷第二条)。
@@ -826,11 +835,19 @@ def _check_presets(
                 if entry in code or entry in confirmed:
                     continue
                 if entry in other:
-                    issues.append(_err(
-                        "preset.ref",
-                        f"技能引用 {entry!r} 存在但尚未确认(pending)"
-                        " —— 套用会报 unresolved,先确认该技能",
-                        target=name))
+                    st = org_status.get(entry, "pending")
+                    if st == "disabled":
+                        issues.append(_err(
+                            "preset.ref",
+                            f"技能引用 {entry!r} 已被颗粒停用(disabled)"
+                            " —— 套用会报 unresolved,先 enable 该技能",
+                            target=name))
+                    else:
+                        issues.append(_err(
+                            "preset.ref",
+                            f"技能引用 {entry!r} 存在但尚未确认(pending)"
+                            " —— 套用会报 unresolved,先确认该技能",
+                            target=name))
                     continue
                 issues.append(_err(
                     "preset.ref",

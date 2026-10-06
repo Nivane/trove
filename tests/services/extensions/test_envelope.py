@@ -342,6 +342,23 @@ def test_collect_assets_org_skill(tmp_path):
     assert org.mounts[0].effect == "takeover"
 
 
+def test_collect_assets_org_skill_disabled_state_passthrough(tmp_path):
+    """E6 颗粒停用:信封照列(治理声明面),state 原样透出 disabled ——
+    挂点照推导(它写的就是确认后的去向),摘除只发生在运行时装配清单。"""
+    d = tmp_path / ".trove" / "skills" / "muted"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: muted\ndescription: muted skill.\n"
+        "tier: required\nstatus: disabled\ntriggers: {node: gen_sql}\n---\n\n正文\n",
+        encoding="utf-8")
+    envs = collect_assets(tmp_path)
+    org = next(e for e in envs if e.source == "org")
+    assert org.name == "muted"
+    assert org.state == "disabled"
+    assert [(m.node, m.tier, m.effect) for m in org.mounts] == [
+        ("gen_sql", "required", "inject")]
+
+
 def test_collect_assets_decision_from_kb(tmp_path):
     import yaml
 

@@ -1,4 +1,4 @@
-"""扩展面服务(E 批):信封(E1)· 装前试跑(E3)· 影响面回放(E4)· 包与来源(E5)。
+"""扩展面服务(E 批):信封(E1)· 装前试跑(E3)· 影响面回放(E4)· 包与来源(E5)· 装配清单(E6)。
 
 本包内的模块只做「读现成资产 + 纯函数判定」——零 LLM、零网络;任何写路径
 (确认 / 停用 / 导入)都留在各自资产的服务里,不从这里绕过治理门。
@@ -59,18 +59,32 @@ from trove.services.extensions.sources import (
     collect_preset_envelopes,
     collect_skill_envelopes,
 )
+from trove.services.extensions.plan import (
+    GATED_KINDS,
+    LIVE_STATE,
+    AssemblyPlan,
+    PlanEntry,
+    build_plan,
+    expected_liveness,
+    plan_entries,
+    reconcile_plan,
+    runtime_liveness,
+)
 
 __all__ = [
     "DOMAIN_VERSIONS",
     "EFFECTS",
     "FILES_DIR",
+    "GATED_KINDS",
     "KINDS",
+    "LIVE_STATE",
     "MANIFEST_FILE",
     "PACK_SCHEMA",
     "PACK_STATUSES",
     "STATES",
     "TARGETS",
     "TIERS",
+    "AssemblyPlan",
     "Capabilities",
     "ExtensionEnvelope",
     "LoadedPack",
@@ -84,8 +98,10 @@ __all__ = [
     "PackSchemaTooNew",
     "PackTampered",
     "PackedFile",
+    "PlanEntry",
     "Provenance",
     "build_decision_envelope",
+    "build_plan",
     "build_preset_envelope",
     "build_skill_envelope",
     "clear_cache",
@@ -95,8 +111,12 @@ __all__ = [
     "collect_skill_envelopes",
     "derive_check_capabilities",
     "digest_files",
+    "expected_liveness",
     "kind_of",
+    "plan_entries",
     "read_pack",
+    "reconcile_plan",
+    "runtime_liveness",
     "sha256_hex",
     "write_pack",
 ]

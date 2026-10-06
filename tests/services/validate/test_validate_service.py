@@ -577,6 +577,22 @@ async def test_pending_skill_previews_mount_but_notes_gate(tmp_path):
     assert any("未确认" in n for n in preview.notes)
 
 
+async def test_disabled_skill_is_legal_and_notes_the_kill_switch(tmp_path):
+    """``status: disabled``(E6 颗粒停用)是闭集成员,不是错误;
+    挂点照预览,备注把方向说对:停用(enable 恢复)≠ 未确认(确认才生效)。"""
+    _make_skill(tmp_path, "stopped", {
+        "name": "stopped", "description": "d", "tier": "available",
+        "status": "disabled",
+    })
+    report = await run_validate(project_root=tmp_path)
+    assert _checks(report, "skill.status") == []
+    preview = next(m for m in report.mounts if m.name == "stopped")
+    assert preview.mounts == [
+        "gen_sql 可用技能广告(仅描述)+ load_skill 按需加载"]
+    assert any("disabled" in n and "enable" in n for n in preview.notes)
+    assert not any("未确认" in n for n in preview.notes)
+
+
 async def test_global_required_skill_previews_every_node(tmp_path):
     """未声明 triggers.node 的 required 技能 = 全局注入。"""
     _make_skill(tmp_path, "global", {
@@ -773,6 +789,21 @@ async def test_preset_code_skill_reference_resolves(tmp_path):
         "name": "refs", "description": "d", "skills": ["plan_query"]})
     report = await run_validate(project_root=tmp_path)
     assert [i for i in _preset_checks(report) if i.check == "preset.ref"] == []
+
+
+async def test_preset_reference_to_disabled_skill_names_the_disable(tmp_path):
+    """停用的技能在 preset 引用里同样解析不到 —— 但判词要点名是停用
+    (下一步是 enable),不是"尚未确认"(下一步是 confirm)。"""
+    _make_skill(tmp_path, "stopped", {
+        "name": "stopped", "description": "d", "tier": "required",
+        "status": "disabled",
+    })
+    _make_preset(tmp_path, "refs", {
+        "name": "refs", "description": "d", "skills": ["stopped"]})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.check == "preset.ref"]
+    assert errs and errs[0].severity == "error"
+    assert "disabled" in errs[0].message and "enable" in errs[0].message
 
 
 async def test_preset_skill_template_create_would_reject_is_error(tmp_path):
