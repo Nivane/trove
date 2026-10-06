@@ -118,3 +118,56 @@ async def test_repl_slash_command_runs(tmp_path, monkeypatch):
     assert cmd is not None
     out = await cmd.handler("")
     assert "trove validate" in out and "结论:" in out
+
+
+# ── 反作弊(--packs / --gold) ─────────────────────────────
+
+
+def test_cli_packs_hit_warns_but_exits_0(tmp_path, monkeypatch, capsys):
+    """命中反作弊只出警告:默认退出码 0,``--strict`` 才拦(绝不自动拒载)。"""
+    ds_dir = _project(tmp_path, monkeypatch, examples={"examples": [
+        {"question": "How many loans?", "sql": "SELECT COUNT(loan_id) FROM loan"},
+    ]})
+    (ds_dir / "gold.sql").write_text("SELECT COUNT(loan_id) FROM loan\n",
+                                     encoding="utf-8")
+    assert main_validate(["--datasource", "mini", "--packs"]) == 0
+    out = capsys.readouterr().out
+    assert "[kb.gold]" in out and "反作弊" in out
+    assert main_validate(["--datasource", "mini", "--packs", "--strict"]) == 1
+
+
+def test_cli_packs_json_exposes_gold_counts(tmp_path, monkeypatch, capsys):
+    import json
+
+    ds_dir = _project(tmp_path, monkeypatch, examples={"examples": [
+        {"question": "How many loans?", "sql": "SELECT COUNT(loan_id) FROM loan"},
+    ]})
+    (ds_dir / "gold.sql").write_text("SELECT COUNT(loan_id) FROM loan\n",
+                                     encoding="utf-8")
+    assert main_validate(["--datasource", "mini", "--packs", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["mini.gold"] == 1
+    assert data["counts"]["mini.gold_hits"] == 1
+
+
+def test_cli_packs_without_gold_reports_skipped(tmp_path, monkeypatch, capsys):
+    """没有 gold 集 → 如实报 skipped(且默认退出码仍是 0)。"""
+    _project(tmp_path, monkeypatch)
+    assert main_validate(["--datasource", "mini", "--packs"]) == 0
+    out = capsys.readouterr().out
+    assert "[kb.gold]" in out and "跳过" in out
+
+
+def test_cli_gold_flag_selects_explicit_file(tmp_path, monkeypatch, capsys):
+    import json
+
+    _project(tmp_path, monkeypatch, examples={"examples": [
+        {"question": "How many loans?", "sql": "SELECT COUNT(loan_id) FROM loan"},
+    ]})
+    gold = tmp_path / "my-gold.sql"
+    gold.write_text("SELECT COUNT(loan_id) FROM loan\n", encoding="utf-8")
+    assert main_validate(["--datasource", "mini", "--packs",
+                          "--gold", str(gold), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["mini.gold"] == 1
+    assert data["counts"]["mini.gold_hits"] == 1

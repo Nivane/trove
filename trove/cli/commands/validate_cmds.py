@@ -9,6 +9,8 @@
                                         # 装前试跑:本机语料(fixtures)对已确认
                                         # 资产做双态消融(零 LLM/零网络),退出码
                                         # 三分支见下
+    trove validate --packs              # + 反作弊:KB 示例 SQL vs 本地 gold 集
+    trove validate --packs --gold g.sql # gold 集显式指定(须只体检一个数据源)
 
 Exit codes: 0 clean · 1 hard errors (or any warning under ``--strict``; or,
 under ``--run``, a blocking change / assertion failure) · 2 usage — and,
@@ -63,6 +65,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-questions", action="store_true",
         help="试跑报告中保留问题原文(缺省只出哈希短码 —— 报告可能进 CI 日志)")
+    parser.add_argument(
+        "--packs", action="store_true",
+        help="反作弊检查:KB examples 的 SQL 与本地 gold 集(.trove/kb/<ds>/"
+             "gold.sql)的相似度;命中只出警告,绝不自动拒载/改写 KB;"
+             "缺省如实报 skipped")
+    parser.add_argument(
+        "--gold", default="",
+        help="gold 集文件(只在该次恰好体检一个数据源时可用;缺省用 "
+             ".trove/kb/<ds>/gold.sql)")
     return parser
 
 
@@ -74,6 +85,7 @@ def main_validate(argv: list[str]) -> int:
     try:
         report, dry = asyncio.run(run_validate_with_dryrun(
             args.datasource or "", project_root=Path.cwd(), live=args.live,
+            packs=args.packs, gold=args.gold,
             run=args.run, fixtures=args.fixtures, episodes=args.episodes,
             limit=args.limit, include_questions=args.include_questions))
     except KeyboardInterrupt:

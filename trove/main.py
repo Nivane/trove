@@ -999,7 +999,9 @@ def main_repl():
 
         sys.exit(main_preset(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extensions":
-        # 扩展资产信封:list / show —— 只读,零 LLM / 零网络。
+        # 扩展资产:信封 list / show(只读,零 LLM / 零网络)+ 资产包
+        # export / import(导入一律落 pending,确认门在 PresetService,
+        # 这里不另开一条写路径)。
         from trove.cli.commands.extensions_cmds import main_extensions
 
         sys.exit(main_extensions(sys.argv[2:]))

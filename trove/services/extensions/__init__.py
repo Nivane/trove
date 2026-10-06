@@ -7,7 +7,13 @@
 + **推导出的** capabilities(非作者声明)+ 节点级挂点 + 来源链 + 响亮列出的
 推导不出的引用。消费面:``trove validate``(envelopes 节)与
 ``trove extensions list|show``。
+
+本文件保持**最小**:只做 re-export,不放逻辑。资产包的形态与校验链在
+:mod:`trove.services.extensions.pack`;导出 / 导入的资产策略在
+``PresetService.export_pack / import_pack``。
 """
+
+from __future__ import annotations
 
 from trove.services.extensions.envelope import (
     DOMAIN_VERSIONS,
@@ -28,6 +34,25 @@ from trove.services.extensions.envelope import (
     derive_check_capabilities,
     digest_files,
 )
+from trove.services.extensions.pack import (
+    FILES_DIR,
+    MANIFEST_FILE,
+    PACK_SCHEMA,
+    PACK_STATUSES,
+    LoadedPack,
+    PackError,
+    PackInvalid,
+    PackItem,
+    PackManifest,
+    PackReport,
+    PackSchemaTooNew,
+    PackTampered,
+    PackedFile,
+    kind_of,
+    read_pack,
+    sha256_hex,
+    write_pack,
+)
 from trove.services.extensions.sources import (
     collect_assets,
     collect_decision_envelopes,
@@ -38,14 +63,27 @@ from trove.services.extensions.sources import (
 __all__ = [
     "DOMAIN_VERSIONS",
     "EFFECTS",
+    "FILES_DIR",
     "KINDS",
+    "MANIFEST_FILE",
+    "PACK_SCHEMA",
+    "PACK_STATUSES",
     "STATES",
     "TARGETS",
     "TIERS",
     "Capabilities",
     "ExtensionEnvelope",
+    "LoadedPack",
     "Mount",
     "MountCatalog",
+    "PackError",
+    "PackInvalid",
+    "PackItem",
+    "PackManifest",
+    "PackReport",
+    "PackSchemaTooNew",
+    "PackTampered",
+    "PackedFile",
     "Provenance",
     "build_decision_envelope",
     "build_preset_envelope",
@@ -57,4 +95,8 @@ __all__ = [
     "collect_skill_envelopes",
     "derive_check_capabilities",
     "digest_files",
+    "kind_of",
+    "read_pack",
+    "sha256_hex",
+    "write_pack",
 ]

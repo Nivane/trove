@@ -26,9 +26,12 @@ from trove.services.extensions.envelope import (
     build_preset_envelope,
     build_skill_envelope,
 )
-from trove.services.kb.service import KbService
-from trove.services.presets.service import PresetService
-from trove.services.skills.service import SkillService
+
+# 三个服务的 import 都在函数内:``PresetService`` 会 import
+# ``extensions.pack``(E5),触发本包 ``__init__`` —— 若这里在模块级反向
+# 回引 presets,环就成立(pack→__init__→sources→presets.service 半初始化)。
+# 与 ``MountCatalog.from_validate`` 的延迟导入同一条纪律:读服务在**调用时**
+# 才需要,不在**导入时**。
 
 
 def _code_manifest() -> Path:
@@ -41,6 +44,8 @@ def collect_skill_envelopes(
     project_root: Path, catalog: MountCatalog,
 ) -> list[ExtensionEnvelope]:
     """code + org skills。code 档的文件=随包分发的 manifest(来源链在此)。"""
+    from trove.services.skills.service import SkillService
+
     out: list[ExtensionEnvelope] = []
     manifest = _code_manifest()
     svc = SkillService(project_root / ".trove" / "skills")
@@ -66,6 +71,8 @@ def collect_skill_envelopes(
 
 def collect_decision_envelopes(project_root: Path) -> list[ExtensionEnvelope]:
     """每个数据源 KB 的 decisions.yml,逐规则一封。"""
+    from trove.services.kb.service import KbService
+
     kb_dir = project_root / ".trove" / "kb"
     if not kb_dir.is_dir():
         return []
@@ -92,6 +99,8 @@ def collect_preset_envelopes(project_root: Path) -> list[ExtensionEnvelope]:
     面,见其对 ``_builtin_root`` 的引用);``git_enabled=False`` 因为这里
     只读不写。
     """
+    from trove.services.presets.service import PresetService
+
     svc = PresetService(
         project_root / ".trove" / "presets", git_enabled=False)
     org, builtin = svc._sources()
