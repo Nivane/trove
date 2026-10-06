@@ -99,7 +99,7 @@ flowchart LR
     <ul>
       <li><strong>字段闭集校验</strong>——技能草稿的输入字段是闭集
       （<code>_CREATE_INPUT_FIELDS</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L107">service.py:107 <span class="ref-line">字段闭集</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L119">service.py:119 <span class="ref-line">字段闭集</span></a>），
       未知键响亮报错。此前 frontmatter 字段是「死常量」：未知键经 YAML 往返
       静默消失——作者以为写了，系统当没看见。</li>
       <li><strong>版本上界守卫</strong>——<code>decisions.yml</code> 声明版本，读到
@@ -133,7 +133,7 @@ flowchart LR
     <p>
       治理不能只靠事后审计。所有扩展面有一场<strong>零 LLM 的干跑校验</strong>：
       <code>trove validate</code>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L44">validate_cmds.py:44 <span class="ref-line">main_validate</span></a>）
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L80">validate_cmds.py:80 <span class="ref-line">main_validate</span></a>）
       把 KB、规则、技能全部试编译一遍，退出码就是判定：
       <strong>0 clean · 1 有硬错误（<code>--strict</code> 下警告也算）· 2 用法/环境错误</strong>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L9">validate_cmds.py:9 <span class="ref-line">退出码契约</span></a>。
@@ -150,15 +150,15 @@ flowchart LR
           <tr><td><code>--datasource demo</code></td><td>只体检一个数据源</td></tr>
           <tr><td><code>--json</code></td><td>机器可读整份报告（CI 消费）</td></tr>
           <tr><td><code>--strict</code></td><td>警告也视为失败（退出码 1）</td></tr>
-          <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong>——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L925">service.py:925 <span class="ref-line">run_validate</span></a>）</td></tr>
+          <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong>——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1367">service.py:1367 <span class="ref-line">run_validate</span></a>）</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
       同一套校验在 REPL 里是 <code>/validate [--live]</code>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L67">validate_cmds.py:67 <span class="ref-line">/validate</span></a>，不出退出码），
-      技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L492">service.py:492 <span class="ref-line">_check_skills</span></a>）——
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L123">validate_cmds.py:123 <span class="ref-line">/validate</span></a>，不出退出码），
+      技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L502">service.py:502 <span class="ref-line">_check_skills</span></a>）——
       包括 validator 型技能的断言规格（结果域变量的闭集校验，
       见<a href="decision-engine.html">判定内核</a>）。
     </p>
@@ -208,7 +208,7 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L278">runlog.py:278 <span class="ref-line">finish</span></a>），
       产出与 <code>&lt;run_id&gt;.log</code> 成对的结构化清单
       <code>&lt;run_id&gt;.assembly.json</code>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/assembly.py#L35">assembly.py:35 <span class="ref-line">ASSEMBLY_SUFFIX</span></a>）：
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/assembly.py#L39">assembly.py:39 <span class="ref-line">ASSEMBLY_SUFFIX</span></a>）：
     </p>
 
     <div class="table-wrap">
@@ -335,7 +335,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: ee49d21</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 24eb23b</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
