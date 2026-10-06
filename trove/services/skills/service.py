@@ -70,11 +70,12 @@ from trove.llm.injection import scan_injection
 from trove.prompts.skills import fence_org_skill, match_trigger
 from trove.prompts.skills import render_skills as _code_render
 from trove.services.kb.git_versioning import GitVersioning
+from trove.services.skills.guards import GUARD_HOST, GUARD_TARGETS
 from trove.services.skills.validators import SEVERITIES, VALIDATOR_HOST
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_TIERS = ("required", "available", "validator")
+_TIERS = ("required", "available", "validator", "guard")
 #: 本期**只**驱动 deterministic。``llm`` 档(Datus 式散文检查)是 P5 ——
 #: 本期在**写入面**就挡掉:允许配一份没人跑的配置,等于制造静默失效。
 #: runner 侧仍留一条兜底(手写 SKILL.md 能绕过 create),报"判不了"而不是跳过。
@@ -83,15 +84,25 @@ _VALIDATOR_MODES = ("deterministic",)
 # 上面 import 的 ``SEVERITIES``。两处各写一份的话,"写入放行、执行侧当未知"
 # 这条漂移会重新打开"配了却静默失效"那类事故。
 
-#: 本期**只**驱动 result。另两个都无处受理:
-#: - ``sql``:run_validators 吃的是结果集,没有"SQL 文本"这个可断言对象;
-#: - ``answer``:output 是图的终点、没有回退边,答案级检查只能 advisory(P5)。
-#: 同 mode —— 声明一个没人管的 target 等于静默失效,当场拒比静默保留好。
-_TARGETS = ("result",)
+#: 两个可断言的**域**,各对应一个档位、一个宿主与一个消费面。各档**自己的**
+#: 域闭集就下面两个常量:域与档位一一对应,不是可换乘的。
+#: - ``result``:结果集断言(validator 档)—— 只在 ``VALIDATOR_HOST`` 运行;
+#: - ``sql``:SQL 文本断言(guard 档)—— 只在 ``GUARD_HOST`` 运行,执行前。
+#: (``answer`` 不在列:output 是图的终点、没有回退边,答案级检查只能
+#: advisory,P5 再议。)同 mode —— 声明一个没人受理的 target 等于静默失效,
+#: 当场拒比静默保留好:validator 声明 ``sql``(或 guard 声明 ``result``)都
+#: 是"注定不运行"的死配置。
+_VALIDATOR_TARGETS = ("result",)
+_GUARD_DOMAIN_TARGETS = ("sql",)
 
 #: validator 档专属字段 —— 出现在别的档位上就是配置错误(不是宽容地忽略:
 #: 写下去也永远不会生效,当场拒比静默保留一份死配置好)。
 VALIDATOR_FIELDS = ("mode", "severity", "targets", "checks")
+#: guard 档专属字段:一个 ``guard:`` 块(内含 ``targets`` / 可选 ``target`` /
+#: ``checks`` 列表)。同 VALIDATOR_FIELDS 的纪律,只是 validator 的四字段平铺
+#: 在 frontmatter 顶层,guard 收在一个块里 —— 两边都有 ``targets``/``checks``
+#: 同名键,块把它们隔开,一份文件不可能同时被两个档位解释。
+GUARD_FIELDS = ("guard",)
 _STATUSES = ("pending", "confirmed", "rejected")
 
 FRONTMATTER_FIELDS = (
@@ -99,13 +110,15 @@ FRONTMATTER_FIELDS = (
     "source", "lang", "version", "created_at", "updated_at",
 )
 
-#: ``create`` 接受的输入键 = frontmatter 词表 + validator 四字段 + 正文。
+#: ``create`` 接受的输入键 = frontmatter 词表 + validator 四字段 + guard 块 +
+#: 正文。
 #: 校验**只在写入时**做:手写的存量文件(可能带未知键)必须照常可读可确认
 #: ——读路径宽容是这一层的另一半(见 ``read_skill``)。
 #: 此前 FRONTMATTER_FIELDS 只是个死常量、没有任何校验:未知键经 YAML 往返
 #: 被静默保留进 SKILL.md,写错了没人告诉你。
 _CREATE_INPUT_FIELDS = (
-    frozenset(FRONTMATTER_FIELDS) | frozenset(VALIDATOR_FIELDS) | {"body"}
+    frozenset(FRONTMATTER_FIELDS) | frozenset(VALIDATOR_FIELDS)
+    | frozenset(GUARD_FIELDS) | {"body"}
 )
 
 
@@ -220,13 +233,19 @@ class SkillService:
         # 读路径保持宽容:遗留文件没有该字段 → 读出 1;手写进非整数的同样
         # 按 1 解释,绝不抛。
         entry["version"] = self._normalized_version(meta)
-        # validator 专属字段**条件带上**:非 validator 档的返回形状保持不变
+        # validator / guard 专属字段**条件带上**:其余档位的返回形状保持不变
         # (既有调用方按 exact dict 断言的话,无条件加键会打碎它们)。
         if entry["tier"] == "validator":
             entry["mode"] = meta.get("mode", "deterministic")
             entry["severity"] = meta.get("severity", "advisory")
             entry["targets"] = meta.get("targets") or []
             entry["checks"] = meta.get("checks") or []
+        elif entry["tier"] == "guard":
+            # guard 块整体投影(内含 targets / 可选 target / checks),读路径
+            # 宽容:块缺失 → 空块,由 run_guards 落一条 missing_guard_block 的
+            # "判不了"(手写文件绕过 create 时在这里被看见,而不是静默无守卫)。
+            guard = meta.get("guard")
+            entry["guard"] = guard if isinstance(guard, dict) else {}
         entry["body"] = parsed["body"]
         return entry
 
@@ -322,8 +341,8 @@ class SkillService:
         if not isinstance(targets, list) or not targets:
             raise ValueError("targets must be a non-empty list")
         for t in targets:
-            if t not in _TARGETS:
-                raise ValueError(f"target must be one of {_TARGETS}")
+            if t not in _VALIDATOR_TARGETS:
+                raise ValueError(f"target must be one of {_VALIDATOR_TARGETS}")
         # 宿主节点:本期 targets 只有 result,而 result 断言只在 VALIDATOR_HOST
         # 运行 —— 写别的 node 是一条**永远不运行**的配置。写入时拒掉它,读取时
         # (validators_for + run_validators)对绕过写入的手写文件降级为"判不了":
@@ -340,6 +359,105 @@ class SkillService:
             )
         return {"mode": mode, "severity": severity, "targets": targets,
                 "checks": checks}
+
+    @staticmethod
+    def _validate_guard_spec(entry: dict) -> dict:
+        """guard 档的写入时校验 —— 与 ``_validate_validator_spec`` 逐条对称。
+
+        运行期才发现配置写错 = 守卫静默失效,而静默失效从外面看和"检查通过"
+        一模一样。表达式预解析是这里最重要的一条:``parse_condition(expr,
+        GUARD_VARIABLES)`` 对**域外标识符**报位置级错误 —— 把
+        ``select_start == 0``(拼错)从"永远判不了"变成一条带位置的 400。
+
+        ``severity=blocking`` 额外要求 ``reason`` 与双语 hint:命中时它们被
+        拼进 ``error_feedback`` 打回生成方 —— 缺任何一样都是"拦了你但不告诉你
+        怎么办"(reason 空则落回内核的通用判词 ``违反：{expr}``)。
+        """
+        from trove.services.decision.expr import DecisionExprError, parse_condition
+        from trove.services.skills.guards import GUARD_VARIABLES
+
+        guard = entry.get("guard") or {}
+        if not isinstance(guard, dict):
+            raise ValueError("guard must be a mapping")
+        targets = guard.get("targets") or []
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("guard.targets must be a non-empty list")
+        for t in targets:
+            if t not in _GUARD_DOMAIN_TARGETS:
+                raise ValueError(
+                    f"guard.target must be one of {_GUARD_DOMAIN_TARGETS}"
+                )
+        target = guard.get("target")
+        if target is not None and target not in GUARD_TARGETS:
+            raise ValueError(f"guard.target must be one of {GUARD_TARGETS}")
+        checks = guard.get("checks") or []
+        if not checks:
+            raise ValueError("guard.checks is required")
+        if not isinstance(checks, list):
+            raise ValueError("guard.checks must be a list")
+        for i, c in enumerate(checks):
+            if not isinstance(c, dict):
+                raise ValueError(f"guard.checks[{i}] must be a mapping")
+            name = str(c.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"guard.checks[{i}].name is required")
+            severity = c.get("severity") or "advisory"
+            if severity not in SEVERITIES:
+                raise ValueError(
+                    f"guard.checks[{i}].severity must be one of {SEVERITIES}"
+                )
+            expr = str(c.get("expr") or "").strip()
+            if not expr:
+                raise ValueError(f"guard.checks[{i}].expr is required")
+            try:
+                parse_condition(expr, GUARD_VARIABLES)
+            except DecisionExprError as exc:
+                raise ValueError(f"guard.checks[{i}].expr: {exc}") from exc
+            c_target = c.get("target")
+            if c_target is not None and c_target not in GUARD_TARGETS:
+                raise ValueError(
+                    f"guard.checks[{i}].target must be one of {GUARD_TARGETS}"
+                )
+            if severity == "blocking":
+                if not str(c.get("reason") or "").strip():
+                    raise ValueError(
+                        f"guard.checks[{i}].reason is required for "
+                        "severity=blocking"
+                    )
+                if not (str(c.get("hint_zh") or "").strip()
+                        and str(c.get("hint_en") or "").strip()):
+                    raise ValueError(
+                        f"guard.checks[{i}]: hint_zh and hint_en are required "
+                        "for severity=blocking"
+                    )
+        # 宿主节点:guard 的断言只在 GUARD_HOST 运行(执行前),写别的 node 是
+        # 一条**永远不运行**的配置 —— 与 validator 同一条不变量,两个入口
+        # (写入 400 / 运行期降级)都不留静默结局。
+        declared = _declared_node(entry.get("triggers") or {})
+        if declared is not None and declared != GUARD_HOST:
+            raise ValueError(
+                f"triggers.node must be {GUARD_HOST!r} (or omitted) for tier=guard: "
+                f"SQL assertions only run at the {GUARD_HOST} node"
+            )
+        normalized = dict(guard)
+        normalized["targets"] = targets
+        if target is not None:
+            normalized["target"] = target
+        return {"guard": normalized}
+
+    @staticmethod
+    def _reject_foreign_fields(entry: dict, tier: str) -> None:
+        """按档位拒掉**他档**专属字段(validator 四字段 / guard 块)。
+
+        一份文件只被一个档位解释:validator 的 ``checks`` 与 guard 的
+        ``guard.checks`` 同名不同义,同时出现只会让"哪个在跑"靠猜。
+        """
+        if tier != "validator":
+            for f in VALIDATOR_FIELDS:
+                if entry.get(f) is not None:
+                    raise ValueError(f"{f} is only valid for tier=validator")
+        if tier != "guard" and entry.get("guard") is not None:
+            raise ValueError("guard is only valid for tier=guard")
 
     def create(self, entry: dict, *, actor: str = "") -> dict:
         """Create an org skill as a *pending* draft. Returns the saved entry.
@@ -375,13 +493,16 @@ class SkillService:
         if (self.root / name / "SKILL.md").exists():
             raise ValueError(f"skill already exists: {name}")
 
+        # 先拒**他档**专属字段(validator 四字段 / guard 块),再做本档校验:
+        # 一份带 mode 的 guard、或带 guard 块的 validator,最准确的诊断是
+        # "这个字段不属于这个档",而不是把缺本档字段的报错摆在前面。
+        self._reject_foreign_fields(entry, tier)
         if tier == "validator":
-            validator_meta = self._validate_validator_spec(entry)
+            tier_meta = self._validate_validator_spec(entry)
+        elif tier == "guard":
+            tier_meta = self._validate_guard_spec(entry)
         else:
-            validator_meta = {}
-            for f in VALIDATOR_FIELDS:
-                if entry.get(f) is not None:
-                    raise ValueError(f"{f} is only valid for tier=validator")
+            tier_meta = {}
 
         from datetime import datetime, timezone
 
@@ -398,7 +519,7 @@ class SkillService:
             "status": "pending",
             "source": entry.get("source", "admin"),
             "lang": entry.get("lang", "en"),
-            **validator_meta,
+            **tier_meta,
             "version": 1,
             "created_at": now,
             "updated_at": now,
@@ -463,23 +584,35 @@ class SkillService:
           时回落到 ``违反：{expr}`` / ``violated: {expr}``(跟随 ``lang``)——
           同一条判词路,而表达式语法收字符串字面量,一棵**能解析**的表达式树
           同样能夹带散文。
+        - ``guard.checks[]``:**同一个投递面**(guard 的 ``reason`` / hint 命中
+          时拼进 ``error_feedback``、advisory 命中进用户屏幕附注),所以
+          ``expr`` / ``reason`` / ``hint_zh`` / ``hint_en`` 全部要扫。
         **投递面变了扫描面就得跟着变** —— validator 档新增了一条投递路,
         扫描面也必须多扫一处,否则"同一个缺口换个 tier 就绕过去"。
 
-        形状守卫与 ``run_validators`` 同一套:``checks`` 不是可迭代的、或元素
-        不是 mapping 的一律**跳过**。跳过的依据是"它到不了投递面" —— 运行期
-        以 ``malformed check (expected a mapping)`` 拒它,原文进不了判词;把
-        "畸形"记成一条命中是把两件事混成一件。手写 ``SKILL.md`` 正是绕开
-        ``create`` 的那条路,不守这里就等于让畸形配置在**确认**那一刻炸成 500。
+        形状守卫与 ``run_validators`` / ``run_guards`` 同一套:``checks`` 不是
+        可迭代的、或元素不是 mapping 的一律**跳过**。跳过的依据是"它到不了
+        投递面" —— 运行期以 ``malformed check (expected a mapping)`` 拒它,
+        原文进不了判词;把"畸形"记成一条命中是把两件事混成一件。手写
+        ``SKILL.md`` 正是绕开 ``create`` 的那条路,不守这里就等于让畸形配置在
+        **确认**那一刻炸成 500。
         """
         parts = [str(entry.get("description", "")), str(entry.get("body", ""))]
-        checks = entry.get("checks") or []
-        if isinstance(checks, Iterable):
+
+        def _scan_checks(checks: object, keys: tuple[str, ...]) -> None:
+            if not isinstance(checks, Iterable):
+                return
             for c in checks:
                 if not isinstance(c, dict):
                     continue
-                parts.append(str(c.get("expr") or ""))
-                parts.append(str(c.get("message") or ""))
+                for k in keys:
+                    parts.append(str(c.get(k) or ""))
+
+        _scan_checks(entry.get("checks") or [], ("expr", "message"))
+        guard = entry.get("guard")
+        if isinstance(guard, dict):
+            _scan_checks(guard.get("checks") or [],
+                         ("expr", "reason", "hint_zh", "hint_en"))
         return scan_injection("\n".join(parts))
 
     def scan_skill(self, name: str) -> list[str]:
@@ -532,7 +665,8 @@ class SkillService:
         return {"name": name, "status": "rejected"}
 
     def set_tier(self, name: str, tier: str, *, actor: str = "") -> dict:
-        """在 ``required`` ↔ ``available`` 之间搬;``validator`` 只能手写 SKILL.md。
+        """在 ``required`` ↔ ``available`` 之间搬;``validator`` / ``guard``
+        只能手写 SKILL.md。
 
         曾经这里分两个方向校验(升档跑 ``_validate_validator_spec``、降档查
         四字段残留),但两个方向**恒 400**,而且报的是指错地方的话:
@@ -556,6 +690,14 @@ class SkillService:
                 "current tier, so neither direction of this switch can validate "
                 f"them. Edit {self.skill_path(name)} and set tier plus those four "
                 "fields together in the frontmatter."
+            )
+        if "guard" in (tier, entry.get("tier")):
+            raise ValueError(
+                "tier=guard is set by hand in SKILL.md: its guard block is "
+                "projected onto the entry by the current tier, so neither "
+                "direction of this switch can validate it. Edit "
+                f"{self.skill_path(name)} and set tier plus the guard block "
+                "together in the frontmatter."
             )
         entry = self._rewrite_field(name, {"tier": tier})
         self._commit("tier", name, entry, actor=actor)
@@ -838,6 +980,36 @@ class SkillService:
             ) is not None:
                 continue
             # 副本:调用方要往条目上挂标记,``list_org`` 的条目不许被就地改。
+            e = dict(entry)
+            declared = _declared_node(triggers)
+            if declared is not None and declared != node:
+                e["host_mismatch"] = declared
+            out.append(e)
+        return out
+
+    def guards_for(self, node: str, **ctx: object) -> list[dict]:
+        """Confirmed ``guard``-tier org skills applying to ``node``.
+
+        ``validators_for`` 的 SQL 域对称物:同样是一条**投递路**(投给引擎
+        而不是模型),确认门同样有效;差别只在本期的宿主(``execute_sql``,
+        执行前)与投影字段(``guard`` 块)。``triggers.node`` 同样**不是筛子**
+        而是标记:写了别的 node 的文件永远不会运行,丢在选人这一步从外部面看
+        和"没写"一样 —— 改为挂 ``host_mismatch``,由 ``run_guards`` 落一条
+        ``triggered: None`` 的可观测记录。
+
+        总开关停用 → 空列表:断言是组织扩展的消费面之一,停用即一条都不跑。
+        """
+        if not self._org_enabled():
+            return []
+        out: list[dict] = []
+        for entry in self.list_org(confirmed_only=True):
+            if entry.get("tier") != "guard":
+                continue
+            triggers = entry.get("triggers") or {}
+            if self._trigger_mismatch(
+                triggers, node, ctx, skip_node=True,
+            ) is not None:
+                continue
             e = dict(entry)
             declared = _declared_node(triggers)
             if declared is not None and declared != node:

@@ -11,11 +11,18 @@ severity**(blocking 拦截 / advisory 只报告),一个 reason 装不下。
 True 是"没查却报平安",塌成 False 是"查不了却拦下正确结果" —— 两种都
 比不检查更坏。这与 ``validate.py`` 里 ``plan_validation.status =
 "untyped"`` 是同一条纪律:降级可以说,但不能不说。
+
+**判定内核由两个域共用**:本模块的结果域(``run_validators``,执行后)与
+guard 档的 SQL 域(``guards.py::run_guards``,执行前)—— 后者是前者的对称物。
+共用件是 ``run_checks``:首败即停该条、spec 之间互不影响、每条 None 必带
+reason 码、malformed spec 报 ``malformed_spec`` —— 四条不变量只写一遍,
+两个域原样继承。词表(VALIDATOR_VARIABLES ↔ GUARD_VARIABLES)与作用域
+(``build_scope`` ↔ ``extract_sql_features``)才是各域自己的事。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from trove.core.i18n import L
@@ -76,9 +83,10 @@ NONE_REASONS = (
 #:(截断 / 空结果 / 缺列 / 没声明列 / 非数值);配置侧原因(message 里已写明,
 #: 且本就带着配置键名)不走这里。
 #:
-#: **每个 ``_unknown_reason`` 会返回的码都必须在这里有一行** —— ``run_validators``
-#: 取译文那一步在 ``try`` 之外,少一个键就是 KeyError 冲出管线(不是降级)。
-#: ``test_unknown_reason_tracks_scope_degradation`` 逐个断言这件事。
+#: **每个 ``_unknown_reason`` 会返回的码都必须在这里有一行** —— 共用内核
+#: ``run_checks`` 取译文那一步在 ``try`` 之外,少一个键就是 KeyError 冲出
+#: 管线(不是降级)。``test_unknown_reason_tracks_scope_degradation`` 逐个
+#: 断言这件事。
 _UNKNOWN_TEXTS: dict[str, tuple[str, str]] = {
     "missing_column": ("判不了（结果里没有点名的列）",
                        "cannot evaluate (named column is not in the result)"),
@@ -208,41 +216,69 @@ def build_scope(
     return scope
 
 
-def run_validators(
-    specs: list[dict],
+# ── 判定内核:两个域共用 ──────────────────────────────────────
+#
+# validator 档(结果域,执行后)与 guard 档(SQL 域,执行前)是**对称的两个
+# 域**:词表不同(``VALIDATOR_VARIABLES`` ↔ ``GUARD_VARIABLES``)、作用域不同
+# (``build_scope`` ↔ ``extract_sql_features``)、"为什么判不了"的成因不同,
+# 但**判定纪律完全一样**。纪律写两遍必然漂移,而漂移的表现是同一个坑在一个
+# 域里堵住了、在另一个域里敞开着 —— 所以纪律只写一遍,在这里。
+
+
+def run_checks(
+    specs: list,
     *,
-    columns: list[str],
-    rows: list[list],
-    row_count: int | None = None,
+    variables: frozenset[str],
+    scope_for: Callable[[dict], dict[str, Any]],
+    unknown_reason: Callable[[dict], str],
+    unknown_texts: dict[str, tuple[str, str]],
+    label: str,
     lang: str = "zh",
+    pre_gate: Callable[[dict, str, str], dict[str, Any] | None] | None = None,
+    extra_hit: Callable[[Any, bool | None], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """跑一遍 ``mode: deterministic`` 的 validator,逐条给判定。
+    """跑一遍一组 spec,逐条给判定 —— **四条不变量在这里,不在调用方**。
 
-    ``mode: llm`` 的条目**不在这里驱动**(需要 LLM 网关,由调用方决定是否
-    启用),但**不会静默跳过** —— 它们落一条 ``verdict: None`` 并说明原因。
-    静默跳过会让"配了却没人管"看起来和"检查通过"一样。
+    1. **首败即停该条**:单条 spec 内第一个失败的 check 即止(与规则链同一
+       纪律:最具体的最先写),但 spec 之间互不影响 —— 每条都要出判定,
+       而不是只报第一条;
+    2. **每条 ``None`` 都带 ``reason`` 码**(见 ``NONE_REASONS``):None 比率是
+       这套机制唯一的质量信号,而自由文本数不出分布。"配了却判不了"的每一种
+       成因各有各的处置,混在一句话里运维只能靠猜。原因码只在 ``verdict is
+       None`` 时出现:判定过的 hit 没有"为什么";
+    3. **不许第三种结局(静默)**:一切"声明了但引擎不会执行"的配置,要么
+       写入时拒掉(400,见 ``SkillService._validate_validator_spec`` /
+       ``_validate_guard_spec``),要么在这里降级成 ``verdict: None`` 落进
+       hits —— 静默的"通过"和"没人管"从外面看一模一样;
+    4. **malformed spec 报 ``malformed_spec``**:非 mapping 的条目不是"跳过",
+       是一条可观测的"判不了"。
 
-    单条 validator 内**第一条失败即止**(与规则链同一纪律:最具体的最先写),
-    但不同 validator 之间互不影响 —— 每条都要出判定,而不是只报第一条。
+    调用方(两个域)提供**词表与作用域**,不提供纪律:
 
-    **不变量(四个入口同一条纪律)**:一切"声明了但引擎不会执行"的配置,
-    要么写入时拒掉(400,见 ``SkillService._validate_validator_spec``),要么
-    在这里降级成 ``verdict: None`` 落进 ``validator_hits`` —— 不许有第三种
-    结局(静默)。今天对齐到这条的有:未知 ``mode`` / 畸形 ``checks`` / 空
-    ``checks`` / 非宿主 ``triggers.node`` / 未知 ``severity``。
+    - ``variables``:表达式标识符闭集(域外名字是 parse 期错误,写时 400);
+    - ``scope_for(check)``:该 check 的求值作用域(域自有数据决定);
+    - ``unknown_reason(check)``:谓词算出 UNKNOWN 时**为什么**(域自有成因);
+    - ``unknown_texts``:原因码 → (zh, en) 兜底判词。**每个
+      ``unknown_reason`` 会返回的码都必须在这里有一行** —— 取译文那一步在
+      ``try`` **之外**,少一个键就是 KeyError 冲出管线,而不是降级
+      (``test_unknown_reason_tracks_scope_degradation`` 逐个钉住);
+    - ``label``:诊断文本里的档名(``validator`` / ``guard``)。这几条诊断
+      (宿主 / 畸形 checks)保持英文:它们逐字引用配置键名,更接近错误码;
+    - ``pre_gate(spec, name, severity)``:可选 —— 域特有门(如 validator 的
+      ``mode``),按序插在 severity 归一之后、``checks`` 形状检查之前;
+      返回 hit 即短路该条;
+    - ``extra_hit(spec, verdict)``:可选 —— 往 hit 上挂域特有键
+      (validator 的 ``mode``;guard 的 ``hint`` / ``target``)。
 
-    **每条 ``None`` 都带 ``reason``**(见 ``NONE_REASONS``):None 比率是这套
-    机制唯一的质量信号,而自由文本数不出分布。"配了却判不了"的每一种成因
-    各有各的处置 —— 配置写错(管理员改一行)、结果超出窗口或**这次查询本来
-    就没有结果**(两者都预期内,不用改配置)混在一句话里,运维只能靠猜。
-    原因码只在 ``verdict is None`` 时出现:判定过的 hit 没有"为什么"。
-
-    ``lang`` 作用于**兜底判词**(需要本地化的自由文本),它们有两类读者:
-    用户屏幕上的 advisory 附注,与管理端看到的 ``validator_hits``。逐字引用
-    配置键名的那几条诊断(mode / severity / host / 畸形 checks)保持英文 ——
-    它们更接近错误码。
+    ``lang`` 作用于**兜底判词**(违反文本与"判不了"文本):这两类自由文本有
+    两类读者 —— 用户屏幕上的 advisory 附注,与管理端看到的 hits —— 都跟着
+    这次对话的语言。逐字引用配置键名的诊断保持英文(处置在读的那个文件里)。
     """
     out: list[dict[str, Any]] = []
+
+    def _extra(spec: Any, verdict: bool | None) -> dict[str, Any]:
+        return extra_hit(spec, verdict) if extra_hit is not None else {}
+
     for spec in specs:
         if not isinstance(spec, dict):
             out.append({
@@ -250,65 +286,22 @@ def run_validators(
                 "verdict": None,
                 "reason": "malformed_spec",
                 "severity": "advisory",
-                "message": "malformed validator spec (expected a mapping) — this validator did not run",
-                "mode": "deterministic",
+                "message": (
+                    f"malformed {label} spec (expected a mapping) — "
+                    f"this {label} did not run"
+                ),
+                **_extra(spec, None),
             })
             continue
         name = str(spec.get("name", ""))
         # ``or`` 而不是 ``get(k, default)``:``severity:`` 写空(YAML null)拿到的是
         # 字符串 ``"None"``,那是个**未知**值,会把一条默认档的检查变成静默死档。
         severity = str(spec.get("severity") or "advisory")
-        mismatch = spec.get("host_mismatch")
-        if mismatch:
-            # ``validators_for`` 标记的"声明了非宿主 node"—— 结果断言只在
-            # ``VALIDATOR_HOST`` 跑,这份文件永远不会运行。把它丢在选人那一步,
-            # 从任何外部面(附注、``validator_hits``、``list_org``)看都和"没写"
-            # 一模一样,这正是本模块存在的理由所针对的那类事故。落一条带原因的
-            # "判不了":可观测,不进附注。
-            out.append({
-                "name": str(spec.get("name", "")),
-                "verdict": None,
-                "reason": "host_mismatch",
-                # 没运行的判词不能拦、也不能渲染 —— 用非阻断的默认档保证。
-                "severity": "advisory",
-                "message": (
-                    f"triggers.node '{mismatch}' is not the validator host "
-                    f"('{VALIDATOR_HOST}') — result assertions never run there, "
-                    "so this validator did not run"
-                ),
-                "mode": "deterministic",
-            })
-            continue
-        if severity not in SEVERITIES:
-            # 未知 severity 的 verdict 是**明确的 False**,却两头都接不住:
-            # ``validate.py`` 要 ``severity == "blocking"`` 才拦,``output.py`` 要
-            # ``"advisory"`` 才渲染 —— 一条确定违反了的风控口径就这样静默消失。
-            # 与 mode / 畸形 checks 同一处置:降级为"判不了",进 validator_hits
-            # (可观测)不进附注(不进用户屏幕)。
-            out.append({
-                "name": name,
-                "verdict": None,
-                "reason": "unknown_severity",
-                "severity": "advisory",
-                "message": f"unknown severity '{severity}' — this validator did not run",
-                "mode": "deterministic",
-            })
-            continue
-        mode = str(spec.get("mode") or "deterministic")
-        if mode != "deterministic":
-            # 本期只驱动 deterministic。**不 continue** —— 静默跳过等于
-            # "声明了却没人管":文件在、确认过、什么都没发生,从外面看和
-            # 检查通过一样。落一条 None(判不了),它不进用户附注(见
-            # output.py::_validator_notice),但进 validator_hits 可供质检统计。
-            out.append({
-                "name": str(spec.get("name", "")),
-                "verdict": None,
-                "reason": "unsupported_mode",
-                "severity": severity,      # 上面已归一 + 校验过,不再各读一次
-                "message": f"mode '{mode}' is not supported yet — this validator did not run",
-                "mode": mode,
-            })
-            continue
+        if pre_gate is not None:
+            early = pre_gate(spec, name, severity)
+            if early is not None:
+                out.append(early)
+                continue
         checks = spec.get("checks") or []
         if not isinstance(checks, Iterable):
             # 标量(``checks: 5`` / ``checks: yes``)是最省事的手写笔误,而手写
@@ -319,20 +312,22 @@ def run_validators(
                 "verdict": None,
                 "reason": "malformed_checks",
                 "severity": severity,
-                "message": "malformed checks (expected a list) — this validator did not run",
-                "mode": "deterministic",
+                "message": (
+                    f"malformed checks (expected a list) — this {label} did not run"
+                ),
+                **_extra(spec, None),
             })
             continue
         if not checks:
-            # 声明了却没有任何检查 = 判不了,不是通过。与上面 mode != deterministic
+            # 声明了却没有任何检查 = 判不了,不是通过。与"非宿主 / 未知 mode"
             # 同一条纪律:静默的"通过"和"没人管"从外面看一模一样。
             out.append({
                 "name": name,
                 "verdict": None,
                 "reason": "empty_checks",
                 "severity": severity,
-                "message": "no checks configured — this validator did not run",
-                "mode": "deterministic",
+                "message": f"no checks configured — this {label} did not run",
+                **_extra(spec, None),
             })
             continue
         verdict: bool | None = True
@@ -348,14 +343,14 @@ def run_validators(
             try:
                 expr = str(check.get("expr") or "")
                 fallback = str(check.get("message") or "")
-                node = parse_condition(expr, VALIDATOR_VARIABLES)
-                got = node.eval(build_scope(check or {}, columns, rows, row_count))
+                node = parse_condition(expr, variables)
+                got = node.eval(scope_for(check))
             except DecisionExprError as exc:
                 verdict, reason = None, "bad_expression"
                 message = f"bad expression: {exc}"
                 break
             except Exception as exc:  # 表达式 bug 不得让管线崩
-                logger.warning("validator %s check raised: %s", name, exc)
+                logger.warning("%s %s check raised: %s", label, name, exc)
                 verdict, reason = None, "check_error"
                 message = f"check error: {exc}"
                 break
@@ -364,15 +359,15 @@ def run_validators(
             # - ``违反：{expr}``(下一段)会**进用户屏幕** —— advisory 附注
             #   (``output.py::_validator_notice``)与阻塞档的 ``error_feedback``;
             # - ``判不了（…）``**不上屏**(``verdict is None`` 被 output.py 与
-            #   validate.py 双双排除),它去的是 ``validator_hits`` —— 运行日志、
-            #   会话详情、日后的质检统计,读它的是**看同一段对话的管理员**。
+            #   validate.py 双双排除),它去的是 hits —— 运行日志、会话详情、
+            #   日后的质检统计,读它的是**看同一段对话的管理员**。
             # 两处的读者都跟着这次对话的语言,所以都本地化。上面几条(mode /
             # severity / host / 畸形 checks)保持英文:它们逐字引用配置键名,
             # 更接近错误码,处置在读的那个文件里而不在这句话里。
             if got is UNKNOWN:
                 verdict = None
-                reason = _unknown_reason(check, columns, rows, row_count)
-                text = _UNKNOWN_TEXTS[reason]
+                reason = unknown_reason(check)
+                text = unknown_texts[reason]
                 message = fallback or L(lang, text[0], text[1])
                 break
             if got is not True:
@@ -386,10 +381,101 @@ def run_validators(
             "verdict": verdict,
             "severity": severity,
             "message": message,
-            "mode": "deterministic",
+            **_extra(spec, verdict),
         }
         if verdict is None:
             # 判不了才带原因码:判定过的 hit 没有"为什么"
             hit["reason"] = reason or "unknown_value"
         out.append(hit)
     return out
+
+
+def _validator_pre_gate(
+    spec: dict, name: str, severity: str,
+) -> dict[str, Any] | None:
+    """validator 的域特有门:非宿主 → 未知 severity → 非 deterministic。
+
+    三条都发生在逐条求值之前,都是"声明了但引擎不会执行"的降级记录 ——
+    读路径对手写文件宽容,但宽容的出口是**可观测的 ``verdict: None``**,
+    不是静默跳过。
+    """
+    mismatch = spec.get("host_mismatch")
+    if mismatch:
+        # ``validators_for`` 标记的"声明了非宿主 node"—— 结果断言只在
+        # ``VALIDATOR_HOST`` 跑,这份文件永远不会运行。把它丢在选人那一步,
+        # 从任何外部面(附注、``validator_hits``、``list_org``)看都和"没写"
+        # 一模一样,这正是本模块存在的理由所针对的那类事故。落一条带原因的
+        # "判不了":可观测,不进附注。
+        return {
+            "name": str(spec.get("name", "")),
+            "verdict": None,
+            "reason": "host_mismatch",
+            # 没运行的判词不能拦、也不能渲染 —— 用非阻断的默认档保证。
+            "severity": "advisory",
+            "message": (
+                f"triggers.node '{mismatch}' is not the validator host "
+                f"('{VALIDATOR_HOST}') — result assertions never run there, "
+                "so this validator did not run"
+            ),
+            "mode": "deterministic",
+        }
+    if severity not in SEVERITIES:
+        # 未知 severity 的 verdict 是**明确的 False**,却两头都接不住:
+        # ``validate.py`` 要 ``severity == "blocking"`` 才拦,``output.py`` 要
+        # ``"advisory"`` 才渲染 —— 一条确定违反了的风控口径就这样静默消失。
+        # 与 mode / 畸形 checks 同一处置:降级为"判不了",进 validator_hits
+        # (可观测)不进附注(不进用户屏幕)。
+        return {
+            "name": name,
+            "verdict": None,
+            "reason": "unknown_severity",
+            "severity": "advisory",
+            "message": f"unknown severity '{severity}' — this validator did not run",
+            "mode": "deterministic",
+        }
+    mode = str(spec.get("mode") or "deterministic")
+    if mode != "deterministic":
+        # 本期只驱动 deterministic。**不静默跳过** —— 静默跳过等于
+        # "声明了却没人管":文件在、确认过、什么都没发生,从外面看和
+        # 检查通过一样。落一条 None(判不了),它不进用户附注(见
+        # output.py::_validator_notice),但进 validator_hits 可供质检统计。
+        return {
+            "name": str(spec.get("name", "")),
+            "verdict": None,
+            "reason": "unsupported_mode",
+            "severity": severity,      # 上面已归一 + 校验过,不再各读一次
+            "message": f"mode '{mode}' is not supported yet — this validator did not run",
+            "mode": mode,
+        }
+    return None
+
+
+def run_validators(
+    specs: list[dict],
+    *,
+    columns: list[str],
+    rows: list[list],
+    row_count: int | None = None,
+    lang: str = "zh",
+) -> list[dict[str, Any]]:
+    """跑一遍 ``mode: deterministic`` 的 validator,逐条给判定。
+
+    ``mode: llm`` 的条目**不在这里驱动**(需要 LLM 网关,由调用方决定是否
+    启用),但**不会静默跳过** —— 它们落一条 ``verdict: None`` 并说明原因。
+
+    判定纪律(首败即停该条 / None 必带 reason 码 / 不许静默 / malformed
+    spec)全在共用的 ``run_checks`` 里;这里只给**结果域**的东西:词表
+    (``VALIDATOR_VARIABLES``)、作用域(``build_scope``)、成因
+    (``_unknown_reason``)与 validator 独有的 ``mode`` 门。
+    """
+    return run_checks(
+        specs,
+        variables=VALIDATOR_VARIABLES,
+        scope_for=lambda check: build_scope(check or {}, columns, rows, row_count),
+        unknown_reason=lambda check: _unknown_reason(check, columns, rows, row_count),
+        unknown_texts=_UNKNOWN_TEXTS,
+        label="validator",
+        lang=lang,
+        pre_gate=_validator_pre_gate,
+        extra_hit=lambda spec, verdict: {"mode": "deterministic"},
+    )

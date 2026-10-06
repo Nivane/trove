@@ -24,7 +24,7 @@ from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import append_skill_block, render_skills
 from trove.services.errors import DETERMINISTIC_DEAD_END, classify_error, ErrorClass
-from trove.workflow.nodes.execute_sql import COMPILE_DRIFT_TAG
+from trove.workflow.nodes.execute_sql import COMPILE_DRIFT_TAG, ORG_GUARD_TAG
 from trove.workflow.state import WorkflowState
 from trove.workflow.versions import (
     EXEC_FAILURE_SIG,
@@ -343,6 +343,114 @@ def _compile_drift_analysis(state: WorkflowState) -> dict[str, Any]:
     }
 
 
+def _guard_hits(state: WorkflowState) -> list[dict[str, Any]]:
+    """本轮**命中**的 blocking 守卫(§3d 的修正指令就按这三样读)。
+
+    只取 ``triggered is True`` 的:``None``(判不了)绝不拦也绝不进修正指令
+    —— 拿不准就拦下正确结果,比不检查更坏(与 ``validate`` 的 blocking
+    过滤同一条纪律)。
+    """
+    return [
+        h for h in (state.guard_hits or [])
+        if h.get("triggered") is True and h.get("severity") == "blocking"
+    ]
+
+
+def _org_guard_analysis(
+    state: WorkflowState, ladder: list[str],
+) -> dict[str, Any]:
+    """组织守卫拦截的确定性修正与回滚决策(§3d,**零 LLM 诊断**)。
+
+    守卫的 ``reason``(判词)与 ``hint``(修法)就是修正指令 —— 生成方要的
+    信息在拦截那一刻已经齐全,再烧一次诊断只会让模型把 hint 复述一遍
+    (与编译照抄偏离同一处置:成因确定,不请 LLM 猜)。
+
+    **与编译偏离的一处不同**:这里**照常累计无进展轮次**。偏离是"照抄没抄
+    对",修正对象明确;而守卫反复命中意味着自动修复到了边界(改不动或口径
+    本身不可满足),必须让版本链的"无进展"检测在 ``MAX_NO_PROGRESS_ROUNDS``
+    内终止(§3e / R4),而不是让同一条守卫烧满共享重试预算。回滚目标由守卫
+    声明(默认 ``gen_retrieve``),经 ``_resolve_rollback`` 归一到梯子 —— 同一
+    守卫连续命中时按梯子升档,爬到顶即优雅降级。``ladder`` 由图构建时注入
+    (``make_analyze_error`` 的 ``rollback_ladder``):升档语义必须与这张图
+    实际有的档位对齐,函数自己拿不到那个闭包。
+    """
+    raw_error = state.error_feedback or state.reason
+    hits = _guard_hits(state)
+    prev_errors = [v.get("error") for v in state.sql_versions]
+    same_failure = bool(raw_error) and raw_error in prev_errors
+    # 守卫命中发生在执行前(row_count == -1):与主流程同一套标签 —— 执行
+    # 成功前的任何失败都不算"有进展",除最首轮。
+    prev = state.sql_versions[-1] if state.sql_versions else None
+    progress = "invalid" if same_failure else ("first" if prev is None else "none")
+    no_progress = (
+        0 if progress in ("first", "improved")
+        else state.no_progress_rounds + 1
+    )
+    if no_progress >= MAX_NO_PROGRESS_ROUNDS:
+        # 同一条守卫反复命中:打回重生成已无意义,提前停止迭代省预算
+        # (与主流程同一文案与同一出口 —— 输出方走优雅降级路径)。
+        return {
+            "error": (
+                f"连续 {MAX_NO_PROGRESS_ROUNDS} 轮修复无进展"
+                f"（{progress}）,停止迭代,优雅降级"
+            ),
+            "last_progress": progress,
+            "no_progress_rounds": no_progress,
+        }
+    # 回滚目标:优先取守卫**声明**的那个(写入面校验过的闭集);守卫块缺席
+    # (手写文件 / 旧 state)时回落到 error_feedback 里的 TARGET 行,再回落
+    # 默认值。不解读文本里的 hint(那是自由文本,可能恰好含 "target:" 字样)。
+    declared = next((str(h.get("target") or "") for h in hits if h.get("target")), "")
+    parsed = declared or _extract_rollback_target(raw_error)
+    target = _resolve_rollback(
+        parsed, ladder, state.last_rollback_target, same_failure,
+    )
+    if target is None:
+        return {
+            "error": (
+                f"回退目标 {parsed or 'gen_sql'} 连续失败且无档可升，优雅降级"
+            ),
+        }
+    if hits:
+        lines = [
+            L(
+                state.lang,
+                "组织守卫拦下了这条 SQL（执行前断言）。按下列提示改正后重新生成"
+                "（不改动与提示无关的部分）：",
+                "Org guards blocked this SQL (pre-execution assertions). Fix the "
+                "items below and regenerate (leave the rest unchanged):",
+            )
+        ]
+        for h in hits:
+            reason = " ".join(str(h.get("reason") or "").split())
+            hint = " ".join(str(h.get("hint") or "").split())
+            lines.append(f"- guard={h.get('name') or 'unnamed'}: {reason}")
+            if hint:
+                lines.append(f"  hint: {hint}")
+    else:
+        # guard_hits 缺席(state 来自旧检查点 / 手写路径):error_feedback 里
+        # 已经带着完整的守卫判词与 hint(``execute_sql._guard_message``)——
+        # 直接转发,别把信息丢成一句"被守卫拦了"。
+        lines = [" ".join(str(raw_error or "").split())]
+    lines.append(f"TARGET: {target}")
+    analysis = "\n".join(lines)
+    return {
+        "error_analysis": analysis,
+        "rollback_target": target,
+        "last_rollback_target": target,
+        "fix_mode": "fixer",
+        "last_progress": progress,
+        "no_progress_rounds": no_progress,
+        "rejected_hypotheses": record_rejected_hypothesis(
+            state.rejected_hypotheses, state.sql, analysis,
+        ),
+        "sql_versions": record_version(
+            state.sql_versions, state.sql, EXEC_FAILURE_SIG, [],
+            round_n=len(state.sql_versions) + 1, error=raw_error,
+        ),
+    }
+
+
 def make_analyze_error(
     llm: LLMGateway,
     config: AgentConfig,
@@ -378,6 +486,19 @@ def make_analyze_error(
                 state.question[:80],
             )
             return _compile_drift_analysis(state)
+
+        # 组织守卫拦截(guard 档,确定性短路径,零 LLM):成因(reason)与修法
+        # (hint)都是管理端在守卫里写好的,模型没有可补充的信息(§3d)。放在
+        # 确定性预分类**之前**:ORG_GUARD 不进死胡同(它可修正),但也不许落进
+        # LLM 诊断 —— 那正是"烧一次 token 让模型复述 hint"。
+        # 与编译偏离不同,这里照常累计无进展轮次(§3e:同一条守卫反复命中必须
+        # 在有界轮次内终止,而不是烧满共享重试预算)。
+        if state.error_feedback and state.error_feedback.startswith(ORG_GUARD_TAG):
+            logger.info(
+                "analyze_error org-guard short-circuit (%s)",
+                state.question[:80],
+            )
+            return _org_guard_analysis(state, ladder)
 
         # 确定性预分类(零 LLM):死胡同类(权限/鉴权/内部 bug)直接 surface,
         # 打回重生成无意义,不再烧诊断 token;其余类打 [ERR:<id>] 进诊断
@@ -471,7 +592,11 @@ def make_analyze_error(
                 # 标记门:这些类的确定性修复只认**显式打标**的升级路径文本。
                 # 裸文本同属该类但语义未定(SQL_EMPTY 的词典面就是任何"零行"
                 # 文本——可能就是正确的空结果),仍交 LLM 诊断裁决。
-                if not re.match(r"\s*\[ERR:SQL_EMPTY\]", raw_error or ""):
+                # 标记按类 id 现拼(而不是为每个类写死一条正则):加进
+                # ``_TAG_ONLY_FIX`` 的类自动获得同一条纪律,不会漏配。
+                # (ORG_GUARD 不在这张表里:带标记的它在节点入口就确定性分流了,
+                # 见 ``_org_guard_analysis`` —— 到这里说明是裸文本,语义未定。)
+                if not re.match(rf"\s*\[ERR:{verdict.cls.id}\]", raw_error or ""):
                     det_fix = None
             if det_fix is not None:
                 # 确定性修复(非死胡同):修正指令完全确定,不烧 LLM 诊断。

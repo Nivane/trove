@@ -54,8 +54,10 @@ from trove.services.kb.live_lint import check_enums, check_undocumented_columns
 from trove.services.kb.service import KbService, _parse_file
 from trove.services.presets.models import Preset, parse_preset
 from trove.services.presets.service import _builtin_root
+from trove.services.skills.guards import GUARD_HOST
 from trove.services.skills.service import (
     FRONTMATTER_FIELDS,
+    GUARD_FIELDS,
     VALIDATOR_FIELDS,
     SkillService,
     _NAME_RE,
@@ -453,8 +455,9 @@ def _skill_mounts(entry: dict) -> tuple[list[str], list[str]]:
     """Where this skill lands at runtime — derived from the tiers' own rules.
 
     Mirrors ``render_skills`` (tier == required, node-matched full body),
-    ``available_skills_block`` (tier == available, gen_sql only) and
-    ``validators_for`` (tier == validator, host from ``targets``), reading the
+    ``available_skills_block`` (tier == available, gen_sql only),
+    ``validators_for`` (tier == validator, host from ``targets``) and
+    ``guards_for`` (tier == guard, host from the tier's own rule), reading the
     entry through the service's own reader.
     """
     tier = entry.get("tier", "available")
@@ -479,6 +482,10 @@ def _skill_mounts(entry: dict) -> tuple[list[str], list[str]]:
     elif tier == "validator":
         mounts.append(
             f"{VALIDATOR_HOST} 节点结果断言(零 LLM,命中进 validator_hits)")
+    elif tier == "guard":
+        mounts.append(
+            f"{GUARD_HOST} 节点执行前 SQL 断言(零 LLM,命中进 guard_hits;"
+            "blocking 打回生成,advisory 附注答案)")
     else:
         mounts.append(f"(无投递面:tier {tier!r} 非法)")
 
@@ -530,7 +537,7 @@ def _check_skills(
 
         # 未知键:读路径保持宽容(存量文件不能被锁死),**这里报出来** ——
         # 写路径 reject、读路径宽容、validate 报告,三层各司其职。
-        legal = set(FRONTMATTER_FIELDS) | set(VALIDATOR_FIELDS)
+        legal = set(FRONTMATTER_FIELDS) | set(VALIDATOR_FIELDS) | set(GUARD_FIELDS)
         unknown = sorted(k for k in meta if k not in legal)
         if unknown:
             issues.append(_warn(
@@ -588,15 +595,33 @@ def _check_skills(
                 svc._validate_validator_spec(entry)
             except ValueError as e:
                 issues.append(_err("skill.validator", str(e), target=target))
-        else:
+        elif tier == "guard":
+            # 与 validator 档同款:读路径宽容(绕过写入的手写文件运行时降级
+            # 为"判不了"),validate 报告 —— 写路径 reject、读路径宽容、
+            # validate 报告,三层各司其职。
+            try:
+                svc._validate_guard_spec(entry)
+            except ValueError as e:
+                issues.append(_err("skill.guard", str(e), target=target))
+
+        # 档位域字段的错位:键存在、但本档不读它 —— 写下去也不会运行。
+        if tier != "validator":
             stray = sorted(f for f in VALIDATOR_FIELDS if f in meta)
             if stray:
                 issues.append(_err(
                     "skill.validator",
                     f"{', '.join(stray)} 只在 tier=validator 生效"
                     "(写下去也不会运行)", target=target))
+        if tier != "guard":
+            stray = sorted(f for f in GUARD_FIELDS if f in meta)
+            if stray:
+                issues.append(_err(
+                    "skill.guard",
+                    f"{', '.join(stray)} 只在 tier=guard 生效"
+                    "(写下去也不会运行)", target=target))
 
-        if tier != "validator" and not str(entry.get("body") or "").strip():
+        if tier not in ("validator", "guard") and not str(
+                entry.get("body") or "").strip():
             issues.append(_err(
                 "skill.body", "正文为空 —— 注入的是空块", target=target))
 

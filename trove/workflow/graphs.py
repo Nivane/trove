@@ -1968,6 +1968,28 @@ def _build_authorizer(services: "GraphServices"):
     )
 
 
+def _build_guards(services: "GraphServices"):
+    """组织守卫门(设计 §3a / guard 档)。``None`` = 未装配,不判。
+
+    与 ``_build_authorizer`` 同一种「能力未接即跳过该档」的接法:没有
+    SkillService(嵌入场景 / 未装技能层)→ ``None``,execute_sql 里的
+    ``guards is not None`` 短路让无守卫路径逐字节不变。
+
+    与 authz 的分工:authz 是**硬边界**(不会改的权限事实,拒绝即终态),
+    guard 是**组织口径**(管理端写的方法论,重生成可以过)—— 二者判定与
+    出口都不同,唯一的共同点是位置(都在执行前)。
+
+    org 扩展总开关(``agent.extensions.org_extensions_enabled``)不在这里读:
+    它由 ``SkillService.guards_for`` 每问现读(与 validator 档同一处开关),
+    停用时返回空列表 —— 在装配期读一次会把这个开关钉成"重启才生效"。
+    """
+    from trove.services.skills.guards import GuardRunner
+
+    if services.skills is None:
+        return None
+    return GuardRunner(services.skills)
+
+
 def _build_profile(services: "GraphServices"):
     """执行画像的表级事实(设计 §6)。``None`` = 未装配,不查。
 
@@ -2112,7 +2134,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
     # 语义层/配置一并传入:共识失败的反馈文本里带结果值,而那条路走的是
     # analyze_error(validate 的成功分支才到 masking,这条路不经过)。预览值
     # 在 join 前脱敏 —— 见 nodes/select.py 模块注释与 nodes/masking.py 的
@@ -2328,7 +2350,7 @@ def _build_fixed(
         services, subgraph, agentic=agentic, budget=budget, profiles=profile))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
     g.add_node("validate", make_validate_rules(
         max_retries=MAX_REFLECT_RETRIES, skills=services.skills))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察

@@ -149,6 +149,18 @@ CLASSES: dict[str, ErrorClass] = {
                 "emit one complete read-only SELECT from the plan."
             ),
         ),
+        ErrorClass(
+            # 组织守卫拦截(guard 档,执行前 SQL 域断言):**可修正的生成缺陷**
+            # —— 守卫的 reason/hint 就是修正指令,重写 SQL 即可,不是权限死胡同
+            # (对比 SQL_PERMISSION 是 fatal)。needs_analysis=False:analyze_error
+            # 对 ORG_GUARD 按标记走零 LLM 确定性修正(§3d),这个字段是那条
+            # 纪律在错误类上的声明。
+            "ORG_GUARD", "sql", "error", retryable=True,
+            recovery=RecoveryAction.FIX, needs_analysis=False,
+            user_msg=(
+                "SQL blocked by an org guard; regenerate with the hint."
+            ),
+        ),
         # ── SQL 结果 ──────────────────────────────────────
         ErrorClass(
             "SQL_TIMEOUT", "sql", "error", retryable=True,

@@ -80,8 +80,11 @@ class TestBuildReport:
     def test_verdicts_section(self):
         v = build_report(self._state()).get("verdicts")
         assert v is not None
-        assert set(v) == {"validator_hits", "rule_hits", "fast_path_hit"}
+        assert set(v) == {
+            "validator_hits", "guard_hits", "rule_hits", "fast_path_hit",
+        }
         assert v["validator_hits"][0]["name"] == "v1"
+        assert v["guard_hits"] == []  # 本 state 未跑过 guard(缺失降级为空)
         assert v["rule_hits"][0]["name"] == "F1_shape"
         assert v["fast_path_hit"] is False
 
@@ -92,7 +95,8 @@ class TestBuildReport:
         assert report["blocks"] == []
         assert report["tools"] == []
         assert report["verdicts"] == {
-            "validator_hits": [], "rule_hits": [], "fast_path_hit": False,
+            "validator_hits": [], "guard_hits": [],
+            "rule_hits": [], "fast_path_hit": False,
         }
 
     def test_junk_entries_normalized_not_leaked(self):
