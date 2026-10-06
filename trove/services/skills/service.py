@@ -49,12 +49,30 @@ Governance (P2 — effect / rollback / disable):
   records). ``version`` is a **revision counter**: any content change
   (confirm / body rewrite / tier change / rollback) increments it, so the
   audit history reads as a monotonically growing series.
-- **Disable**: ``agent.extensions.org_extensions_enabled`` (default true) is
-  a single master switch for *this org surface only* — injection, the
-  ``load_skill`` advertisement, on-demand loading and validator assertions
-  all short-circuit when it is off. Code skills (``trove/prompts/skills/``),
+- **Disable**: two scopes, one mechanism.
+  ``agent.extensions.org_extensions_enabled`` (default true) is a single
+  master switch for *this org surface only* — injection, the ``load_skill``
+  advertisement, on-demand loading and validator assertions all
+  short-circuit when it is off. Code skills (``trove/prompts/skills/``),
   the KB and few-shots are untouched; the admin write/list surface stays
   usable (the switch stops **consumption**, not management).
+
+  Per-asset disable (E6) writes ``status: disabled`` into the skill's own
+  file — the same ``status`` field and the same ``_rewrite_status`` single
+  write point as pending/confirmed/rejected, so it enters git like every
+  other governance change ("状态必须有痕"). Every consumption face reads
+  skills through ``list_org(confirmed_only=True)``, so the one filter is
+  the whole mechanism: injection (``render_skills``), advertisement
+  (``available_descriptions``), assertion execution (``validators_for`` /
+  ``guards_for``) and the envelope/dry-run enumerations all go dark
+  together. Re-activation is an explicit admin action (``enable``) —
+  ``confirm`` stays the draft gate and refuses a disabled skill, so the
+  transition graph has exactly one edge in each direction.
+
+  Transition graph: ``disable`` accepts only confirmed → disabled;
+  ``enable`` accepts only disabled → confirmed. Anything else is an
+  explicit error (a wrong-state call is a caller bug, not a no-op to
+  swallow — the caller believes something happened that did not).
 """
 
 from __future__ import annotations
@@ -103,7 +121,12 @@ VALIDATOR_FIELDS = ("mode", "severity", "targets", "checks")
 #: 在 frontmatter 顶层,guard 收在一个块里 —— 两边都有 ``targets``/``checks``
 #: 同名键,块把它们隔开,一份文件不可能同时被两个档位解释。
 GUARD_FIELDS = ("guard",)
-_STATUSES = ("pending", "confirmed", "rejected")
+#: 生效状态闭集。``disabled``(E6)与其余三个同住一个 status 字段、同一个
+#: ``_rewrite_status`` 写入点 —— 停用是**状态值**不是新字段,consumption
+#: 面因此天然共享 ``list_org(confirmed_only=True)`` 这一处过滤(N8)。
+#: ``rejected`` 不出现在盘上(reject 删目录);它留在词表里是因为手写文件
+#: 可以带进来,validate 需要据此报「永远不会成为 confirmed」。
+_STATUSES = ("pending", "confirmed", "rejected", "disabled")
 
 FRONTMATTER_FIELDS = (
     "name", "description", "triggers", "tier", "status",
@@ -250,7 +273,16 @@ class SkillService:
         return entry
 
     def list_org(self, confirmed_only: bool = False) -> list[dict]:
-        """List org skills (sorted by name); invalid files surface with error."""
+        """List org skills (sorted by name); invalid files surface with error.
+
+        ``confirmed_only=True`` is the **single choke point** every
+        consumption face goes through (injection / advertisement /
+        validator+guard execution / envelope & dry-run enumeration): the
+        one ``status != "confirmed"`` filter below is what makes a
+        ``disabled`` asset go dark everywhere at once (N8). The admin list
+        (``confirmed_only=False``) keeps showing disabled assets — the
+        switch stops consumption, not management.
+        """
         if not self.root.exists():
             return []
         out: list[dict] = []
@@ -636,10 +668,21 @@ class SkillService:
         return entry
 
     def confirm(self, name: str, *, actor: str = "") -> dict:
-        """Admin confirmation: pending draft → confirmed (enters retrieval)."""
+        """Admin confirmation: pending draft → confirmed (enters retrieval).
+
+        A **disabled** skill is refused: disable is an admin action with its
+        own reverse (``enable``), and letting ``confirm`` double as a second
+        re-activation path would make "who turned this back on" ambiguous in
+        the audit log (the commit would read ``skills: confirm x``).
+        """
         entry = self._load_meta(name)
         if entry is None:
             raise KeyError(f"skill not found: {name}")
+        if entry.get("status") == "disabled":
+            raise ValueError(
+                f"skill {name!r} is disabled — use enable() to re-activate it "
+                "(confirm is the draft gate, not the disable switch)"
+            )
         # 落盘是这里**最后一个会抛**的步骤:先扫、后写。原先写的是
         # ``self._with_scan(self._rewrite_status(...))`` —— 参数先求值,扫描
         # 一抛 ``status: confirmed`` 就已经在盘上了:管理员看到 500 以为确认
@@ -663,6 +706,54 @@ class SkillService:
         # 删除也进审计史:目录作用域的 add -A 只记录这个 skill 的删除。
         self._commit("reject", name, None, deleted=True, actor=actor)
         return {"name": name, "status": "rejected"}
+
+    # ── Per-asset disable / enable (E6) ───────────────────
+
+    def _require_status(self, name: str, expected: str, action: str) -> dict:
+        """读 entry + 校验当前状态 —— disable/enable 共用的前置。
+
+        ``KeyError``(不存在)/ ``ValueError``(状态不对)与其余写路径同一
+        错误风格:调用方按 404 / 400 映射。状态不对**显式报错、不幂等吞掉**:
+        停用与复用是两个动作,各写一条 git 提交 —— 把「已经停用了」当成
+        成功会让审计史少一条本该存在的痕迹。
+        """
+        entry = self._load_meta(name)
+        if entry is None:
+            raise KeyError(f"skill not found: {name}")
+        status = entry.get("status", "pending")
+        if status != expected:
+            raise ValueError(
+                f"skill {name!r} is {status}, not {expected} — "
+                f"{action} only applies to a {expected} skill"
+            )
+        return entry
+
+    def disable(self, name: str, *, actor: str = "") -> dict:
+        """Admin disable: **only** confirmed → disabled. 颗粒停用。
+
+        停用写文件(复用 ``_rewrite_status`` 单点)+ 进 git:状态必须有痕,
+        谁在哪个提交停用了哪条资产在 ``git log`` 里可查。运行时热停用
+        (不落盘)刻意不做 —— 治理动作不落盘等于两处事实源。
+
+        只接受 confirmed:停用一条还没生效的草稿(pending)没有语义 ——
+        它本来就不投递;而「停用没生效的东西」从管理端看像是生效了。
+        """
+        self._require_status(name, "confirmed", "disable")
+        entry = self._rewrite_status(name, "disabled")
+        self._commit("disable", name, entry, actor=actor)
+        return entry
+
+    def enable(self, name: str, *, actor: str = "") -> dict:
+        """Admin enable: **only** disabled → confirmed(审慎的显式动作)。
+
+        恢复到 confirmed(而不是 pending):停用是「暂停投递」,不是
+        「撤回确认」—— 重新启用不该再走一遍确认门,但必须是管理员的显式
+        动作(自动路径绝不写 disabled/enable)。
+        """
+        self._require_status(name, "disabled", "enable")
+        entry = self._rewrite_status(name, "confirmed")
+        self._commit("enable", name, entry, actor=actor)
+        return entry
 
     def set_tier(self, name: str, tier: str, *, actor: str = "") -> dict:
         """在 ``required`` ↔ ``available`` 之间搬;``validator`` / ``guard``
@@ -879,6 +970,15 @@ class SkillService:
         if entry is None:
             return f"Skill not found: {name}"
         if entry.get("status") != "confirmed":
+            # 过滤点是这一个 ``status != confirmed``(与 ``list_org`` 同一
+            # 判据);disabled 只是**判词**不同 —— 「还没确认」与「已被停用」
+            # 对管理员是两个不同的下一步(确认 vs 启用),对取用方都是
+            # 「取不到」。判词说错方向比不说更坏。
+            if entry.get("status") == "disabled":
+                return (
+                    f"Skill '{name}' has been disabled by an administrator — "
+                    "an admin must enable it before it can be used."
+                )
             return (
                 f"Skill '{name}' is not confirmed yet — an admin must confirm "
                 "it before it can be used."

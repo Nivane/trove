@@ -11,6 +11,12 @@ Governance (P2): every write path auto-commits through ``GitVersioning``
 (same class the KB uses), so ``/history`` + ``/rollback`` come free — the
 git log *is* the change audit trail, and a rollback is a new commit (the
 skill's ``version`` revision counter moves forward, never backward).
+
+Per-asset disable (E6): ``/disable`` writes ``status: disabled`` (the same
+single ``_rewrite_status`` point as every other status), ``/enable``
+restores it to ``confirmed``. Both are admin-only, audited, committed —
+and neither is the master switch (``agent.extensions.org_extensions_enabled``,
+which stops the whole org surface).
 """
 
 from __future__ import annotations
@@ -138,6 +144,9 @@ async def confirm_skill(
             _skills(request).confirm, name, actor=_actor(user))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    except ValueError as e:
+        # 停用的 skill 拒绝 confirm(E6):错误方向是「去 enable」,不是 500。
+        raise HTTPException(status_code=400, detail=str(e))
     await _audit(request, "skill.confirm", user, 200, {
         "name": name, "injection_hits": entry.get("injection_hits") or [],
     })
@@ -159,6 +168,52 @@ async def reject_skill(
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
     await _audit(request, "skill.reject", user, 200, {"name": name})
     return {"name": name, "status": result["status"]}
+
+
+@router.post("/admin/skills/{name}/disable")
+async def disable_skill(
+    name: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """颗粒停用一条已确认的 skill(写 ``status: disabled``,进 git)。
+
+    与总开关(``agent.extensions.org_extensions_enabled``,停整层)不是
+    一回事:这一条只停一个资产,四个消费面(注入 / 广告 / validator+guard
+    执行 / 信封与试跑枚举)同步断 —— 单点过滤的必然结果。恢复走
+    ``enable``;``confirm`` 不兼作启用(审计史里「谁重新打开的」要读得出来)。
+    """
+    try:
+        entry = await asyncio.to_thread(
+            _skills(request).disable, name, actor=_actor(user))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "skill.disable", user, 200, {"name": name})
+    return {"name": name, "status": entry["status"]}
+
+
+@router.post("/admin/skills/{name}/enable")
+async def enable_skill(
+    name: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """恢复一条已停用的 skill(``disabled → confirmed``,admin 显式动作)。
+
+    只接受 ``disabled``:对从未停用的资产「启用」是一次什么都没做的成功,
+    而调用方会以为发生了状态变更 —— 显式 400 比静默 no-op 诚实。
+    """
+    try:
+        entry = await asyncio.to_thread(
+            _skills(request).enable, name, actor=_actor(user))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "skill.enable", user, 200, {"name": name})
+    return {"name": name, "status": entry["status"]}
 
 
 @router.post("/admin/skills/{name}/tier")
