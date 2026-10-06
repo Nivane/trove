@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -919,6 +920,288 @@ def _check_presets(
     return issues, mounts, counts
 
 
+# ── 一致性对账(parity,D6) ─────────────────────────────────
+#
+# 前三件对账的都是**同一真理的两份副本**:一份声明(常量/表),一份运行期
+# 事实(调用点/求值器/磁盘)。这种副本不可能靠"小心"保持同步 —— 只能靠
+# 扫描互相钉住。三者当前在干净树上双向零漂移;漂移一处即一条 error。
+#
+# 第四件(GUARD_VARIABLES ↔ extract_sql_features)由 E2 落进 guard 档,
+# 它的两份副本都在那一档里,扫描器随 guard 一起走。
+
+
+def parity_skill_nodes(pkg_root: Path | None = None) -> list[Issue]:
+    """``SKILL_NODES`` ↔ 全包 ``render_skills(...)`` 调用点(AST 级源扫描)。
+
+    两个方向都是 error:名单有、运行时没有 = 该节点的 required 技能永不被
+    渲染(死配置);运行时调用点有、名单没有 = validate 的判定面比运行时
+    窄 —— 后者更阴险,一份声明了该节点的技能会被判"节点不存在"。
+    """
+    nodes, hosts = skill_node_call_sites(pkg_root)
+    issues: list[Issue] = []
+    missing = sorted(set(SKILL_NODES) - nodes)
+    extra = sorted(nodes - set(SKILL_NODES))
+    if missing:
+        issues.append(_err(
+            "parity.skill_nodes",
+            f"SKILL_NODES 已声明但全包找不到渲染调用点: {', '.join(missing)}"
+            " —— 该节点上 required 技能永不被注入"))
+    if extra:
+        issues.append(_err(
+            "parity.skill_nodes",
+            f"运行时存在渲染调用点但 SKILL_NODES 未列: {', '.join(extra)}"
+            " —— validate 的判定面比运行时窄"))
+    if hosts != {"VALIDATOR_HOST"}:
+        issues.append(_err(
+            "parity.skill_nodes",
+            "validators_for 的宿主标识意外: "
+            f"{', '.join(sorted(hosts)) or '(无调用点)'}"
+            " —— 必须恰好是 VALIDATOR_HOST 这一个常量"))
+    return issues
+
+
+def parity_decision_functions(expr_path: Path | None = None) -> list[Issue]:
+    """``FUNCTIONS`` 表 ↔ ``Call.eval`` 实现,双向(AST,零 LLM)。
+
+    表里有、实现里没有 = 解析器接受这个函数、求值期落进兜底(静默错值);
+    实现里有、表里没有 = 写得出但 lint 拒收(不可达分支)。名字双向钉死;
+    arity 保持在 FUNCTIONS 一处,由 lint 的编译门在实际表达式上判。
+    """
+    import ast
+
+    if expr_path is None:
+        from trove.services.decision import expr as expr_mod
+
+        expr_path = Path(expr_mod.__file__)
+    tree = ast.parse(Path(expr_path).read_text(encoding="utf-8"))
+
+    declared: set[str] = set()
+    for node in ast.walk(tree):
+        target = None
+        value = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            target, value = node.targets[0].id, node.value
+        if target == "FUNCTIONS" and isinstance(value, ast.Dict):
+            for k in value.keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    declared.add(k.value)
+
+    impls: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and node.name == "Call"):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Compare):
+                continue
+            left = sub.left
+            if not (isinstance(left, ast.Attribute) and left.attr == "name"
+                    and isinstance(left.value, ast.Name)
+                    and left.value.id == "self"):
+                continue
+            for op, comp in zip(sub.ops, sub.comparators):
+                if isinstance(op, ast.Eq) and isinstance(comp, ast.Constant) \
+                        and isinstance(comp.value, str):
+                    impls.add(comp.value)
+
+    issues: list[Issue] = []
+    for name in sorted(declared - impls):
+        issues.append(_err(
+            "parity.decision_functions",
+            f"FUNCTIONS 声明了 {name!r} 但 Call.eval 无实现"
+            " —— 解析接受、求值落空"))
+    for name in sorted(impls - declared):
+        issues.append(_err(
+            "parity.decision_functions",
+            f"Call.eval 实现了 {name!r} 但 FUNCTIONS 未声明"
+            " —— 永远写不出的死分支"))
+    if not declared and not impls:
+        issues.append(_err(
+            "parity.decision_functions",
+            f"两份副本都扫成空集({expr_path})—— 扫描器失明比漂移更糟"))
+    return issues
+
+
+#: ``render(f"skills/{name}/system")`` —— code skill 模板名的**动态**引用
+#: 形状(``trove/prompts/skills/__init__.py`` 的 render_skills 循环)。
+#: 磁盘名不含具体技能名,靠 manifest 的 code skill 名单展开。匹配对象是
+#: f-string 的**字面量骨架**(FormattedValue 替换成 ``{}``),不是 unparse
+#: 文本 —— unparse 会带 ``f'...'`` 前后缀,正则反被包装干扰。
+_DYNAMIC_SKILLS_RE = re.compile(r"^skills/\{\}/system$")
+
+
+def _fstring_skeleton(node: Any) -> str | None:
+    """JoinedStr → 字面量骨架(FormattedValue → ``{}``);混入非字面量返回 None。"""
+    import ast
+
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    out = []
+    for v in node.values:
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+            out.append(v.value)
+        elif isinstance(v, ast.FormattedValue):
+            out.append("{}")
+        else:
+            return None
+    return "".join(out)
+
+
+def parity_templates(
+    *,
+    prompts_root: Path | None = None,
+    code_roots: list[Path] | None = None,
+    skill_names: list[str] | None = None,
+) -> list[Issue]:
+    """磁盘模板 ↔ 代码引用,双向(全部扫描,零 LLM)。
+
+    方向 A(引用→磁盘):``trove.prompts`` 的 ``render`` 以**字面量**点名
+    的模板必须在磁盘存在任意一个语言版本 —— 不在 = 调用必然 ``ValueError``。
+    方向 B(磁盘→引用):磁盘上每个 ``<name>.<lang>.j2`` 的 ``name`` 必须
+    被某处引用:字面量 render 调用、代码里任何等值字符串(覆盖
+    attribution 的 ``prompt_name`` 三元式这类间接点名)、或 skills 动态
+    模式的名单展开。无人提及 = 死模板(随包分发、永不渲染)。
+
+    扫描面默认是 ``trove`` 包自身 —— 模板随包分发,渲染者也住在包里;
+    ``code_roots``/``prompts_root``/``skill_names`` 可注入,供测试造漂移。
+    """
+    import ast
+
+    import trove
+
+    pkg = Path(trove.__file__).parent
+    prompts_root = Path(prompts_root) if prompts_root is not None else pkg / "prompts"
+    code_roots = [Path(p) for p in code_roots] if code_roots is not None else [pkg]
+    if skill_names is None:
+        skill_names = sorted(
+            str(e.get("name")) for e in SkillService(Path("")).list_code_skills())
+
+    issues: list[Issue] = []
+
+    disk: dict[str, set[str]] = {}
+    for f in sorted(prompts_root.rglob("*.j2")):
+        stem = f.relative_to(prompts_root).with_suffix("").as_posix()
+        lang = ""
+        for cand in (".en", ".zh"):
+            if stem.endswith(cand):
+                lang = cand[1:]
+                break
+        if not lang:
+            issues.append(_err(
+                "parity.templates",
+                f"模板文件名不符合 <name>.<lang>.j2 约定: {f.name}"
+                " —— 加载器永远找不到它"))
+            continue
+        disk.setdefault(stem[: -len(lang) - 1], set()).add(lang)
+
+    refs: dict[str, str] = {}   # 模板名 → 引用处 "file:line"
+    literals: set[str] = set()
+    dynamic_skills = False
+    for py in [p for r in code_roots for p in sorted(r.rglob("*.py"))]:
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        imports_render = any(
+            isinstance(n, ast.ImportFrom)
+            and (n.module or "").startswith("trove.prompts")
+            and any(a.name == "render" for a in n.names)
+            for n in ast.walk(tree))
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                literals.add(n.value)
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            is_render = (
+                isinstance(f, ast.Name) and f.id == "render" and imports_render
+            ) or (
+                isinstance(f, ast.Attribute) and f.attr == "render"
+                and isinstance(f.value, ast.Name) and f.value.id == "prompts")
+            if not is_render or not n.args:
+                continue
+            a0 = n.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                refs.setdefault(a0.value, f"{py.name}:{n.lineno}")
+            else:
+                skeleton = _fstring_skeleton(a0)
+                if skeleton is not None and _DYNAMIC_SKILLS_RE.match(skeleton):
+                    dynamic_skills = True
+
+    for name, where in sorted(refs.items()):
+        if name not in disk:
+            issues.append(_err(
+                "parity.templates",
+                f"引用了不存在的模板 {name!r}({where})"
+                " —— 该调用在运行期必然报模板未找到",
+                target=name))
+
+    for name in sorted(disk):
+        if name in refs or name in literals:
+            continue
+        if dynamic_skills and name.startswith("skills/") \
+                and name.endswith("/system") \
+                and name[len("skills/"):-len("/system")] in skill_names:
+            continue
+        issues.append(_err(
+            "parity.templates",
+            f"磁盘模板 {name!r}({','.join(sorted(disk[name]))})无人引用"
+            " —— 随包分发但永不渲染;若为动态拼名引用,请补动态模式或名单",
+            target=name))
+
+    if dynamic_skills:
+        for sname in skill_names:
+            if f"skills/{sname}/system" not in disk:
+                issues.append(_err(
+                    "parity.templates",
+                    f"code skill {sname!r} 缺 system 模板"
+                    " —— render_skills 运行期必然报模板未找到",
+                    target=sname))
+    return issues
+
+
+@lru_cache(maxsize=1)
+def _check_parity() -> tuple[Issue, ...]:
+    """三份副本对账合一(全部是包内事实,与项目根无关)。
+
+    进程内 memo:扫描面是**已安装的包代码**,在进程生命周期内不变
+    (CLI 一次性进程 / serve 长驻进程都不会在脚下换包)。测试要归零用
+    ``_check_parity.cache_clear()``。
+    """
+    issues: list[Issue] = []
+    issues += parity_skill_nodes()
+    issues += parity_decision_functions()
+    issues += parity_templates()
+    return tuple(issues)
+
+
+def _check_envelopes(
+    root: Path, datasource: str = "",
+) -> tuple[list[dict[str, Any]], list[Issue], int]:
+    """资产信封:collect → report.envelopes;unresolved 逐条落 error。
+
+    ``unresolved`` 是推导不出的引用(capabilities 视角的"算不出来"),
+    响亮等级与死配置同级 —— 一条算不出能力的资产,在信封消费面上等于
+    不存在。``datasource`` 过滤只作用于 issues(与 KB 检查同一约定);
+    展示面始终全量,信封是项目级事实。
+    """
+    from trove.services.extensions import collect_assets
+
+    envs = collect_assets(root)
+    issues: list[Issue] = []
+    for env in envs:
+        ds = env.source.split(":", 1)[1] if env.source.startswith("kb:") else ""
+        for u in env.unresolved:
+            issues.append(_err(
+                "envelope.unresolved", u, target=env.name, datasource=ds))
+    if datasource:
+        issues = [i for i in issues
+                  if not i.datasource or i.datasource == datasource]
+    return [e.to_dict() for e in envs], issues, len(envs)
+
+
 # ── entry point ──────────────────────────────────────────
 
 
@@ -1015,5 +1298,23 @@ async def run_validate(
     except Exception as e:  # noqa: BLE001
         logger.exception("validate: preset 检查失败")
         report.issues.append(_err("validate.internal", f"preset 检查异常: {e}"))
+
+    try:
+        # 一致性对账(D6):声明副本 ↔ 运行期副本,三对。与项目内容无关,
+        # 纯包内事实 —— 但漂移一天不查,validate 的判定就窄一天。
+        report.issues += list(_check_parity())
+    except Exception as e:  # noqa: BLE001
+        logger.exception("validate: 一致性对账失败")
+        report.issues.append(_err("validate.internal", f"一致性对账异常: {e}"))
+
+    try:
+        # 信封(E1):每条扩展资产的编译产物,capabilities 为推导物。
+        envelopes, issues, n = _check_envelopes(root, datasource)
+        report.envelopes = envelopes
+        report.issues += issues
+        report.counts["envelopes"] = n
+    except Exception as e:  # noqa: BLE001
+        logger.exception("validate: 信封推导失败")
+        report.issues.append(_err("validate.internal", f"信封推导异常: {e}"))
 
     return report

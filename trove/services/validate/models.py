@@ -77,6 +77,10 @@ class ValidateReport:
     counts: dict[str, int] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
     mounts: list[MountPreview] = field(default_factory=list)
+    #: 信封(E1):每条资产的编译产物 —— capabilities 是**推导物**,
+    #: unresolved 已同步落成 issues(响亮),这里保留结构供 --json 消费。
+    #: 序列化后的 dict(ExtensionEnvelope.to_dict),additive:旧消费方零改。
+    envelopes: list[dict[str, Any]] = field(default_factory=list)
     live: bool = False
 
     # ── verdict ───────────────────────────────────────────
@@ -113,6 +117,7 @@ class ValidateReport:
             "counts": dict(self.counts),
             "live": self.live,
             "mounts": [m.to_dict() for m in self.mounts],
+            "envelopes": list(self.envelopes),
             "issues": [i.to_dict() for i in self.issues],
         }
 
@@ -146,6 +151,27 @@ class ValidateReport:
                     lines.append(f"      → {point}")
                 for note in m.notes:
                     lines.append(f"      ! {note}")
+
+        if self.envelopes:
+            lines.append("")
+            lines.append("信封(capabilities 为推导物,非作者声明)")
+            for e in self.envelopes:
+                caps = e.get("capabilities") or {}
+                head = (f"  [{e.get('kind')}] {e.get('name')}"
+                        f"  source={e.get('source')}  state={e.get('state')}")
+                lines.append(head)
+                mounts = e.get("mounts") or []
+                if mounts:
+                    lines.append("      ⤷ " + ", ".join(
+                        f"{m['node']}({m['tier']}/{m['effect']})"
+                        for m in mounts))
+                lines.append(
+                    "      caps: vars={vars} effects={effects} targets={targets}".format(
+                        vars=",".join(caps.get("variables") or []) or "—",
+                        effects=",".join(caps.get("effects") or []) or "—",
+                        targets=",".join(caps.get("targets") or []) or "—"))
+                for u in e.get("unresolved") or []:
+                    lines.append(f"      ! {u}")
 
         for label, issues in (("ERROR", self.errors), ("WARN", self.warnings)):
             lines.append("")

@@ -612,7 +612,7 @@ async def test_json_shape_is_stable(tmp_path):
     data = report.to_dict()
     assert set(data) == {
         "ok", "errors", "warnings", "project_root", "datasources",
-        "counts", "live", "mounts", "issues"}
+        "counts", "live", "mounts", "envelopes", "issues"}
     assert data["ok"] is True and data["errors"] == 0
     assert json.loads(json.dumps(data, ensure_ascii=False)) == data
     assert "结论:" in report.render()
@@ -774,3 +774,40 @@ async def test_preset_mount_preview_and_counts(tmp_path):
     assert "decision_drafts.yml" in targets
     assert report.counts["presets"] >= 1
     assert report.counts["preset_items"] >= 3
+
+
+# ── 信封面(E1) ──────────────────────────────────────────
+
+
+async def test_report_carries_envelopes(tmp_path):
+    """信封是报告的 additive 节:每资产一封,counts 同步。"""
+    _make_kb(tmp_path, decisions=_RULE)
+    _make_skill(tmp_path, "loan-caliber", {
+        "name": "loan-caliber", "description": "How to read loan amounts.",
+        "triggers": {"node": "query_sketch"}, "tier": "required",
+        "status": "confirmed",
+    })
+    report = await run_validate("mini", project_root=tmp_path)
+    assert report.envelopes
+    assert report.counts["envelopes"] == len(report.envelopes)
+    kinds = {e["kind"] for e in report.envelopes}
+    assert {"skill", "decision", "preset"} <= kinds
+    skill = next(e for e in report.envelopes if e["name"] == "loan-caliber")
+    assert skill["state"] == "confirmed"
+    assert skill["mounts"][0]["node"] == "query_sketch"
+    assert "信封" in report.render()
+    assert "envelopes" in report.to_dict()
+
+
+async def test_envelope_unresolved_is_hard_error(tmp_path):
+    """推导不出的引用 → envelope.unresolved error —— 死配置不许静默。"""
+    _make_kb(tmp_path)
+    skills = tmp_path / ".trove" / "skills" / "broken"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("没有 frontmatter 的正文\n",
+                                     encoding="utf-8")
+    report = await run_validate("mini", project_root=tmp_path)
+    hits = [i for i in report.issues if i.check == "envelope.unresolved"]
+    assert hits and hits[0].severity == "error"
+    assert hits[0].target == "broken"
+    assert report.exit_code() == 1

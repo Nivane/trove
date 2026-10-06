@@ -31,6 +31,7 @@ from trove.cli.commands.trace_cmds import register_trace_commands
 from trove.cli.commands.facts_cmds import register_facts_commands
 from trove.cli.commands.validate_cmds import register_validate_commands
 from trove.cli.commands.preset_cmds import register_preset_commands
+from trove.cli.commands.extensions_cmds import register_extensions_commands
 
 from trove.core.logging import get_logger
 from trove.core.i18n import L
@@ -105,6 +106,7 @@ class TroveREPL:
         register_facts_commands(self._slash_registry, self._context)
         register_validate_commands(self._slash_registry, self._context)
         register_preset_commands(self._slash_registry, self._context)
+        register_extensions_commands(self._slash_registry, self._context)
 
         # prompt_toolkit session with history
         self._prompt_session = PromptSession(

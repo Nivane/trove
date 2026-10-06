@@ -998,6 +998,11 @@ def main_repl():
         from trove.cli.commands.preset_cmds import main_preset
 
         sys.exit(main_preset(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "extensions":
+        # 扩展资产信封:list / show —— 只读,零 LLM / 零网络。
+        from trove.cli.commands.extensions_cmds import main_extensions
+
+        sys.exit(main_extensions(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
         async def _run_maint():
             from trove.cli.maintenance_cmds import main_maintenance
