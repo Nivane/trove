@@ -159,6 +159,85 @@ class TestSkillAuditTrail:
         assert await api_app.state.auth.list_audit(action="skill.confirm") == []
 
 
+class TestDisableEnable:
+    """E6 颗粒停用:POST /admin/skills/{name}/disable|enable。
+
+    与总开关(PUT config)不是一回事:这一条只停一个资产,写盘进 git;
+    状态机审慎——只接受合法转移,其余显式 400(不幂等吞掉)。
+    """
+
+    async def test_round_trip_writes_and_restores(self, api_app, tmp_path, client):
+        svc = _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        await client.post("/v1/admin/skills/recon-caliber/confirm")
+
+        r = await client.post("/v1/admin/skills/recon-caliber/disable")
+        assert r.status_code == 200
+        assert r.json() == {"name": "recon-caliber", "status": "disabled"}
+        assert svc.read_skill("recon-caliber")["status"] == "disabled"
+
+        r = await client.post("/v1/admin/skills/recon-caliber/enable")
+        assert r.status_code == 200
+        assert r.json() == {"name": "recon-caliber", "status": "confirmed"}
+        assert svc.read_skill("recon-caliber")["status"] == "confirmed"
+
+    async def test_illegal_transitions_are_400(self, api_app, tmp_path, client):
+        """pending 不能停 / 生效不能 enable —— 显式报错,不静默 no-op。"""
+        _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+
+        r = await client.post("/v1/admin/skills/recon-caliber/disable")
+        assert r.status_code == 400
+        assert "pending, not confirmed" in r.json()["detail"]
+
+        await client.post("/v1/admin/skills/recon-caliber/confirm")
+        r = await client.post("/v1/admin/skills/recon-caliber/enable")
+        assert r.status_code == 400
+        assert "confirmed, not disabled" in r.json()["detail"]
+
+        # 停用后 confirm 不兼作恢复入口(唯一的恢复路是 enable)
+        await client.post("/v1/admin/skills/recon-caliber/disable")
+        r = await client.post("/v1/admin/skills/recon-caliber/confirm")
+        assert r.status_code == 400
+        assert "use enable" in r.json()["detail"]
+
+    async def test_missing_skill_is_404(self, api_app, tmp_path, client):
+        _install_skills(api_app, tmp_path)
+        for action in ("disable", "enable"):
+            r = await client.post(f"/v1/admin/skills/ghost/{action}")
+            assert r.status_code == 404
+
+    async def test_audited_and_visible_in_admin_list(self, api_app, tmp_path, client):
+        _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        await client.post("/v1/admin/skills/recon-caliber/confirm")
+        await client.post("/v1/admin/skills/recon-caliber/disable")
+
+        audit = await api_app.state.auth.list_audit(action="skill.disable")
+        assert len(audit) == 1
+        assert audit[0]["details"] == {"name": "recon-caliber"}
+        # 停用资产在管理端列表里可见(status 透出)—— 停的是消费不是管理
+        r = await client.get("/v1/admin/skills/org")
+        org = [s for s in r.json()["skills"] if s["name"] == "recon-caliber"]
+        assert [s["status"] for s in org] == ["disabled"]
+
+    async def test_failed_transition_writes_no_audit(self, api_app, tmp_path, client):
+        _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        r = await client.post("/v1/admin/skills/recon-caliber/disable")  # 400
+        assert r.status_code == 400
+        assert await api_app.state.auth.list_audit(action="skill.disable") == []
+
+    async def test_disable_enable_require_admin(
+            self, api_app, tmp_path, user_client, anon_client):
+        """停用/恢复是治理动作:沿用既有 admin 门(与其余 skills 写路由一致)。"""
+        _install_skills(api_app, tmp_path)
+        r = await user_client.post("/v1/admin/skills/recon-caliber/disable")
+        assert r.status_code == 403
+        r = await anon_client.post("/v1/admin/skills/recon-caliber/enable")
+        assert r.status_code in (401, 403)
+
+
 async def test_llm_draft_endpoint(api_app, tmp_path, client):
     """LLM 草稿端点:mock 网关产出正文 → pending 待确认。"""
     svc = SkillService(root=tmp_path / "proj" / ".trove" / "skills", llm=api_app.state.llm_gateway)
