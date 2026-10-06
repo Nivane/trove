@@ -1,12 +1,12 @@
-"""Extensions — 扩展资产的**信封面**(设计稿《一切接缝皆契约》支柱一/E1)。
+"""扩展面服务(E 批):信封(E1)· 装前试跑(E3)· 影响面回放(E4)· 包与来源(E5)。
 
-「扩展」在 trove 里此前没有名字:每种资产(skill/规则/preset/…)有自己的
-文件契约与读取路径。信封把它们统一成一个编译产物:kind/name/source/state
+本包内的模块只做「读现成资产 + 纯函数判定」——零 LLM、零网络;任何写路径
+(确认 / 停用 / 导入)都留在各自资产的服务里,不从这里绕过治理门。
+
+信封:把此前没有名字的「扩展」统一成一个编译产物 —— kind/name/source/state
 + **推导出的** capabilities(非作者声明)+ 节点级挂点 + 来源链 + 响亮列出的
 推导不出的引用。消费面:``trove validate``(envelopes 节)与
 ``trove extensions list|show``。
-
-零 LLM、零网络;纯读。
 """
 
 from trove.services.extensions.envelope import (

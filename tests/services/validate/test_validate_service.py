@@ -811,3 +811,82 @@ async def test_envelope_unresolved_is_hard_error(tmp_path):
     assert hits and hits[0].severity == "error"
     assert hits[0].target == "broken"
     assert report.exit_code() == 1
+# ── 装前试跑节(--run,E3)──────────────────────────────────
+
+_FIXTURES_YAML = """\
+items:
+  - question: "How many loans?"
+    sql: "SELECT COUNT(*) AS loan_count FROM loan"
+    dialect: sqlite
+    columns: [loan_count]
+    rows:
+      - [3]
+    verdict: pass
+"""
+
+
+def _make_fixtures(tmp_path: Path, text: str = _FIXTURES_YAML,
+                   datasource: str = "mini") -> Path:
+    p = tmp_path / ".trove" / "kb" / datasource / "fixtures.yml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+async def test_run_section_off_is_byte_identical(tmp_path):
+    """不带 --run:与 run_validate 同一份报告(dict 逐字段相等)。"""
+    from trove.services.validate import run_validate_with_dryrun
+
+    _make_kb(tmp_path)
+    report, dry = await run_validate_with_dryrun("mini", project_root=tmp_path)
+    assert dry is None
+    plain = await run_validate("mini", project_root=tmp_path)
+    assert report.to_dict() == plain.to_dict()
+
+
+async def test_run_section_on_keeps_static_report_and_adds_dry(tmp_path):
+    from trove.services.validate import run_validate_with_dryrun
+
+    _make_kb(tmp_path)
+    _make_fixtures(tmp_path)
+    report, dry = await run_validate_with_dryrun("mini", project_root=tmp_path, run=True)
+    assert report.ok and dry is not None
+    assert dry.datasource == "mini"
+    assert dry.covered == 1                       # validator 档判过
+    assert any(".trove/kb/mini/fixtures.yml" in s for s in dry.sources)
+
+
+async def test_combined_exit_code_takes_the_stricter_side(tmp_path):
+    """静态干净 + 试跑无法进行(缺语料)→ 2,不许被静态的 0 盖过去。"""
+    from trove.services.validate import combined_exit_code, run_validate_with_dryrun
+
+    _make_kb(tmp_path)                            # 无 fixtures → 语料为空
+    report, dry = await run_validate_with_dryrun("mini", project_root=tmp_path, run=True)
+    assert report.exit_code() == 0 and dry.exit_code == 2
+    assert combined_exit_code(report, dry) == 2
+    assert combined_exit_code(report, None) == 0  # 不跑试跑时语义与从前一致
+
+
+async def test_combined_exit_code_keeps_static_error(tmp_path):
+    """静态红 + 试跑干净 → 仍是 1(更严的一支),strict 照旧生效。"""
+    from trove.services.validate import combined_exit_code, run_validate_with_dryrun
+
+    _make_kb(tmp_path, semantics=None)            # 缺语义模型 = 硬错误
+    _make_fixtures(tmp_path)
+    report, dry = await run_validate_with_dryrun("mini", project_root=tmp_path, run=True)
+    assert report.exit_code() == 1 and dry.exit_code == 0
+    assert combined_exit_code(report, dry) == 1
+    assert combined_exit_code(report, dry, strict=True) == 1
+
+
+async def test_run_section_passes_flags_through(tmp_path):
+    from trove.services.validate import run_validate_with_dryrun
+
+    _make_kb(tmp_path)
+    _make_fixtures(tmp_path)
+    _, dry = await run_validate_with_dryrun(
+        "mini", project_root=tmp_path, run=True, limit=0,
+        include_questions=True)
+    # limit=0:fixtures 全被截 → 语料空 → 无法试跑;原文开关透传
+    assert dry is not None and dry.exit_code == 2
+    assert dry.include_questions is True
