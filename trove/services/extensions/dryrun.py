@@ -50,7 +50,7 @@ fixtures.yml 格式(``.trove/kb/<ds>/fixtures.yml``)::
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -353,24 +353,56 @@ async def gather_corpus(
 # ── 判定(双态消融)────────────────────────────────────────
 
 
-def _hit_verdict(hit: Any) -> bool | None:
-    """hit 的判定值 —— 兼容 validator 的 ``verdict`` 与 guard 的 ``triggered``。
+def _hit_get(hit: Any, *names: str) -> Any:
+    """读 hit 的一个字段 —— **mapping 与对象两种形状都认**。
 
-    guard 档与 validator 共享判定内核,hit 形状以 ``verdict`` 为准
-    (True 通过 / False 违反 / None 判不了);``triggered`` 是守卫侧的另一种
-    称呼,两个键都读、只认布尔值 —— 这是试跑与 E2 的接缝,不是长期分叉。
-    都不是布尔 → ``None``(判不了),绝不当成「通过」。
+    判定内核的 validator 侧交的是 dict(E2 的 guard 侧 ``run_guards`` 交的是
+    ``GuardVerdict`` dataclass),两者是同一套内核的两种序列化形态。只认
+    mapping 的读法会把每一条真实守卫判定读成"判不了"(None)—— 那既不是
+    "通过"也不是"违反",而是**每次都没判**,而报告上它看起来只是"没有差异"。
+    这里按名字逐个取:mapping 走键,对象走属性;取不到才给 None。
     """
-    if not isinstance(hit, dict):
+    if isinstance(hit, Mapping):
+        for name in names:
+            if name in hit:
+                return hit[name]
         return None
-    for key in ("verdict", "triggered"):
-        value = hit.get(key)
-        if isinstance(value, bool):
-            return value
+    for name in names:
+        if hasattr(hit, name):
+            return getattr(hit, name)
     return None
 
 
-def _state_of_hits(hits: list[dict]) -> str:
+def _hit_readable(hit: Any) -> bool:
+    """这份 hit 是不是我们认识的形状(否则按"认不出"兜底,不假装判过)。"""
+    return isinstance(hit, Mapping) or hasattr(hit, "name")
+
+
+def _hit_verdict(hit: Any) -> bool | None:
+    """hit 的判定值 —— 三值,且**两个域各自的极性都要读对**。
+
+    - **validator 内核**的 hit:``verdict`` = True 通过 / False 违反 / None 判不了;
+    - **guard 档**的 hit(``GuardVerdict`` / ``as_hit()``):``triggered`` =
+      True **命中**(= 违反)· False 合规 · None 判不了 —— 与 ``verdict``
+      **极性相反**(守卫作者写的是"合规的 SQL 长什么样",表达式不成立才是
+      命中;见 guards.py 的极性说明与 ``execute_sql`` 的 blocking 门)。
+
+    两个键都读、只认布尔值,极性按各自的域翻译 —— 这是试跑与 E2 的接缝。
+    都不是布尔 → ``None``(判不了),绝不当成「通过」;形状认不出(既不是
+    mapping 也没有名字)同样 → ``None``。
+    """
+    if not _hit_readable(hit):
+        return None
+    value = _hit_get(hit, "verdict")
+    if isinstance(value, bool):
+        return value
+    triggered = _hit_get(hit, "triggered")
+    if isinstance(triggered, bool):
+        return not triggered
+    return None
+
+
+def _state_of_hits(hits: list) -> str:
     """一档判定在一条语料上的三态:violated > unjudged > pass。
 
     severity 不参与这一层 —— 拦不拦是 ``_violation_names`` 的事;这里回答的
@@ -383,40 +415,54 @@ def _state_of_hits(hits: list[dict]) -> str:
     return "pass"
 
 
-def _violation_names(hits: list[dict], *, blocking: bool) -> tuple[str, ...]:
+def _violation_names(hits: Sequence[Any], *, blocking: bool) -> tuple[str, ...]:
     """``hits`` 里明确违反(``verdict is False``)的资产名,按 severity 过滤。"""
     out: list[str] = []
     for h in hits:
-        if not isinstance(h, dict) or _hit_verdict(h) is not False:
+        if _hit_verdict(h) is not False:
             continue
-        severity = str(h.get("severity") or "advisory")
+        severity = str(_hit_get(h, "severity") or "advisory")
         if (severity == "blocking") == blocking:
-            out.append(str(h.get("name") or "").strip() or "(未命名)")
+            out.append(str(_hit_get(h, "name") or "").strip() or "(未命名)")
     return tuple(out)
 
 
-def _slim_hits(hits: list[dict]) -> tuple[dict, ...]:
-    """报告里逐 hit 的证据(只保留判定面字段;不落 SQL/会话数据)。"""
-    out: list[dict] = []
-    for h in hits:
-        if not isinstance(h, dict):
-            out.append({"name": "", "verdict": None})
-            continue
-        slim: dict[str, Any] = {
-            "name": str(h.get("name") or ""),
-            "verdict": _hit_verdict(h),
-            "severity": str(h.get("severity") or "advisory"),
-            "message": str(h.get("message") or ""),
-        }
-        if h.get("reason"):
-            slim["reason"] = str(h["reason"])
-        out.append(slim)
-    return tuple(out)
+def _slim_hit(h: Any) -> dict:
+    """一条 hit 的证据(只保留判定面字段;不落 SQL/会话数据)。"""
+    if not _hit_readable(h):
+        return {"name": "", "verdict": None}
+    slim: dict[str, Any] = {
+        "name": str(_hit_get(h, "name") or ""),
+        "verdict": _hit_verdict(h),
+        "severity": str(_hit_get(h, "severity") or "advisory"),
+        # 判词:内核侧叫 ``message``(validator),守卫侧叫 ``reason``(GuardVerdict
+        # 把作者写的 reason 放这里)—— 同一件事的两个名字。
+        "message": str(_hit_get(h, "message", "reason") or ""),
+    }
+    if slim["verdict"] is None:
+        # 判不了才带机器码:判定过的 hit 没有"为什么"。内核侧把码放在
+        # ``reason``,守卫侧放在 ``none_reason``(GuardVerdict 里 ``reason``
+        # 让给了作者写的判词)—— 两列,同一件事。
+        code = _hit_get(h, "none_reason")
+        if code is None and isinstance(h, Mapping):
+            code = h.get("reason")
+        if code:
+            slim["reason"] = str(code)
+    return slim
+
+
+def _slim_hits(hits: Sequence[Any]) -> tuple[dict, ...]:
+    return tuple(_slim_hit(h) for h in hits)
 
 
 @dataclass(frozen=True)
 class Judgment:
-    """一条 (语料 × 档) 的判定 —— 双态消融的原始产物。"""
+    """一条 (语料 × 档) 的判定 —— 双态消融的原始产物。
+
+    ``pre`` / ``post`` 两列就是两态:默认的 E3 形状是「不装 / 装现状」,
+    E4 的影响面回放把它参数化成「现状 / 现状+候选」—— **同一套判定机制**,
+    只是 ``pre_specs`` 从空集换成了现状装配(见 ``judge_validator``）。
+    """
 
     state: str                      # covered | skipped | errored
     reason: str = ""
@@ -425,10 +471,11 @@ class Judgment:
     pre_blocked_by: tuple[str, ...] = ()
     post_blocked_by: tuple[str, ...] = ()
     post_flagged_by: tuple[str, ...] = ()
+    pre_hits: tuple[dict, ...] = ()     # 装前那遍的逐 hit 证据(E4 的差分取证)
     post_hits: tuple[dict, ...] = ()
 
 
-def _assemble(pre_hits: list[dict], post_hits: list[dict]) -> Judgment:
+def _assemble(pre_hits: list, post_hits: list) -> Judgment:
     """两遍判定结果 → Judgment(装/不装的差就摆在 pre/post 两列上)。"""
     return Judgment(
         state="covered",
@@ -437,17 +484,22 @@ def _assemble(pre_hits: list[dict], post_hits: list[dict]) -> Judgment:
         pre_blocked_by=_violation_names(pre_hits, blocking=True),
         post_blocked_by=_violation_names(post_hits, blocking=True),
         post_flagged_by=_violation_names(post_hits, blocking=False),
+        pre_hits=_slim_hits(pre_hits),
         post_hits=_slim_hits(post_hits),
     )
 
 
 def judge_validator(
-    specs: Sequence[dict], item: CorpusItem, *, lang: str = "zh",
+    specs: Sequence[dict], item: CorpusItem, *,
+    pre_specs: Sequence[dict] = (), lang: str = "zh",
 ) -> Judgment:
-    """validator 档的单条判定 —— 不装([])与装(specs)两遍,零 LLM。
+    """validator 档的单条判定 —— 不装(pre_specs)与装(specs)两遍,零 LLM。
 
     判定直接吃 fixtures 的 rows/columns(纯内存,不执行 SQL);没有结果行的
     语料(episodes)如实计 ``skipped``,绝不假装判过。
+
+    ``pre_specs`` 缺省是空集(= E3 的「不装」态);E4 给现状装配,同一行代码
+    就变成「现状 → 现状+候选」的差分 —— 判定机制一行不改。
     """
     if not item.has_result:
         return Judgment(state="skipped", reason="no_result_rows")
@@ -455,7 +507,8 @@ def judge_validator(
     rows = [list(r) for r in (item.rows or [])]
     try:
         pre_hits = run_validators(
-            [], columns=columns, rows=rows, row_count=len(rows), lang=lang,
+            list(pre_specs), columns=columns, rows=rows, row_count=len(rows),
+            lang=lang,
         )
         post_hits = run_validators(
             list(specs), columns=columns, rows=rows, row_count=len(rows), lang=lang,
@@ -467,13 +520,18 @@ def judge_validator(
 
 
 def judge_guard(
-    runner: GuardRunner, specs: Sequence[dict], item: CorpusItem, *, lang: str = "zh",
+    runner: GuardRunner, specs: Sequence[dict], item: CorpusItem, *,
+    pre_specs: Sequence[dict] = (), lang: str = "zh",
 ) -> Judgment:
-    """guard 档的单条判定(SQL 域,执行前)—— 同一套双态消融,换 scope。"""
+    """guard 档的单条判定(SQL 域,执行前)—— 同一套双态消融,换 scope。
+
+    ``pre_specs`` 同 ``judge_validator``:缺省空集(E3),E4 传现状守卫集。
+    """
     if not item.sql:
         return Judgment(state="skipped", reason="no_sql")
     try:
-        pre_hits = list(runner([], sql=item.sql, dialect=item.dialect, lang=lang))
+        pre_hits = list(runner(
+            list(pre_specs), sql=item.sql, dialect=item.dialect, lang=lang))
         post_hits = list(
             runner(list(specs), sql=item.sql, dialect=item.dialect, lang=lang)
         )
@@ -572,6 +630,59 @@ def validator_specs_for(
         if e.get("tier") == "validator"
     }
     return specs, sorted(all_validator - selected)
+
+
+@dataclass
+class Assembly:
+    """一次「装了什么资产」的装配清单 —— 双态消融的**注入点**。
+
+    试跑(E3)与影响面回放(E4)是同一台机器:两边都在问「同一语料在两套装配
+    下判定的差是什么」。差别只在两态的取值 ——
+
+    - E3:``before = Assembly()``(空集)· ``after = Assembly.current(...)``;
+    - E4:``before = Assembly.current(...)`` · ``after = before + 候选``。
+
+    因此装配被提成一个对象:判定机制不认识"候选包"或"现状"这些概念,它只
+    需要两个 ``Assembly``。测试要换 fake 装配(零 LLM/零网络的假资产)时,
+    直接构造一个塞给 ``run_dryrun``/``run_impact`` 即可,不必伪造文件树。
+    """
+
+    validator: list[dict] = field(default_factory=list)
+    guard: list[dict] = field(default_factory=list)
+    not_selected: list[str] = field(default_factory=list)   # trigger 收窄挡掉的
+    guard_tier: GuardTier | None = None                     # 可用性 + runner
+
+    @property
+    def guard_available(self) -> bool:
+        return self.guard_tier is not None and self.guard_tier.available
+
+    @property
+    def guard_runner(self) -> GuardRunner | None:
+        return self.guard_tier.runner if self.guard_tier is not None else None
+
+    @classmethod
+    def current(
+        cls, skills: SkillService, datasource: str,
+        *, guard_runner: GuardRunner | None = None,
+        guard_specs: Sequence[dict] | None = None,
+    ) -> Assembly:
+        """现状装配(已确认资产)—— 与运行时的选人同路(``validators_for`` /
+        ``guards`` 接缝),不是另一份读法。"""
+        specs, not_selected = validator_specs_for(skills, datasource)
+        tier = load_guard_tier(skills, runner=guard_runner, specs=guard_specs)
+        return cls(
+            validator=list(specs),
+            guard=list(tier.specs),
+            not_selected=not_selected,
+            guard_tier=tier,
+        )
+
+    def names(self) -> dict[str, list[str]]:
+        """报告用的资产名清单(逐档,按出现顺序;渲染面只读这个)。"""
+        return {
+            "validator": [str(s.get("name") or "") for s in self.validator],
+            "guard": [str(s.get("name") or "") for s in self.guard],
+        }
 
 
 # ── 报告 ─────────────────────────────────────────────────
@@ -856,6 +967,7 @@ async def run_dryrun(
     guard_runner: GuardRunner | None = None,
     guard_specs: Sequence[dict] | None = None,
     episode_store: Any | None = None,
+    assembly: Assembly | None = None,
     lang: str = "zh",
 ) -> DryRunReport:
     """装前试跑:语料层(fixtures + episodes)+ 双态消融 + 三分支退出码。
@@ -863,6 +975,10 @@ async def run_dryrun(
     ``run_validate`` 的姿态在这里同样成立 —— **never raises for a bad
     configuration**:语料缺失/格式错/资产读不出都落进 ``errors``(退出码 2),
     不让一次坏输入把命令炸成 traceback(试跑正是最需要它的时刻)。
+
+    ``assembly`` 是"装什么"(缺省 = 现状装配):E3 的 after 态就是它;注入
+    另一个 ``Assembly`` 不会改变判定机制 —— E4 的影响面回放正是拿两个装配
+    跑同一台机器。
     """
     root = Path(project_root) if project_root is not None else Path.cwd()
     home = Path(home_dir) if home_dir is not None else resolve_home()
@@ -894,7 +1010,9 @@ async def run_dryrun(
         root / ".trove" / "skills", git_enabled=False)
 
     # ── 候选资产集:validator(运行时同路)+ guard(E2 接缝)──
-    specs, not_selected = validator_specs_for(skills, datasource)
+    assembly = assembly or Assembly.current(
+        skills, datasource, guard_runner=guard_runner, guard_specs=guard_specs)
+    specs, not_selected = assembly.validator, assembly.not_selected
     if not specs:
         report.notes.append(
             "候选 validator 资产为空(无已确认的 validator 档;总开关关闭或"
@@ -905,7 +1023,7 @@ async def run_dryrun(
             "未入选的 validator 档资产(trigger 收窄:lang/role/complexity/…): "
             + ", ".join(not_selected)
         )
-    guard = load_guard_tier(skills, runner=guard_runner, specs=guard_specs)
+    guard = assembly.guard_tier or GuardTier(available=False, reason="not_resolved")
     if guard.reason == "guards_module_import_failed":
         # 模块在但导入失败 = 坏合流,不是「还没到」——响亮进错误(退出码 2)
         report.errors.append(f"guards 模块导入失败（{guard.detail}）")
@@ -916,9 +1034,9 @@ async def run_dryrun(
         question = item.question if include_questions else ""
         for tier in TIERS:
             if tier == "validator":
-                judgment = judge_validator(specs, item, lang=lang)
+                judgment = judge_validator(assembly.validator, item, lang=lang)
             elif guard_fn is not None:
-                judgment = judge_guard(guard_fn, guard.specs, item, lang=lang)
+                judgment = judge_guard(guard_fn, assembly.guard, item, lang=lang)
             else:
                 judgment = Judgment(
                     state="skipped",
