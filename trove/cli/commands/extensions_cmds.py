@@ -3,6 +3,7 @@
     trove extensions list                      # 全部资产一封一行(来源/状态/挂点/能力)
     trove extensions list --kind skill         # 只看一类
     trove extensions show no-neg               # 一封的完整体检(挂点 + 推导能力 + 来源链)
+    trove extensions plan                      # 运行时实际装配清单(disabled 摘除)+ 对账
     trove extensions export my-pack ./my-pack-dir         # 打一个包(只读收集)
     trove extensions import ./my-pack-dir                 # 校验 → 逐条落 pending
     trove extensions import ./my-pack-dir --force         # 同名资产覆盖为 pending 形态
@@ -17,9 +18,15 @@ import_pack``)的**导入落点一律是 pending**:技能 status 归一、决策
 ``decision_drafts.yml``、预设原样落盘但本身不被消费 —— 导入永远等价于
 "多了一批待审草稿",绝不绕过管理员确认门。
 
+``plan``(``services/extensions/plan.py``)是**运行时装配清单**:信封 × state
+的投影 —— 只有 confirmed 的资产按其挂点展开,disabled(E6 颗粒停用)整封
+摘除;并把信封静态视图与运行时读路径(**服务自己的读函数**)对账,差集
+非空即漂移。``list`` 是资产目录(全量、含未生效),``plan`` 是"现在到底有
+哪些资产会动" —— 与 ``trove validate --impact``(装上会改变什么)互为镜像。
+
 Exit codes: 0 干净 · 1 show 未命中 / 有拒载(冲突/无效,或包级失败:被篡改、
-缺文件、``pack_schema`` 过新)· 2 usage。服务在 ``trove/services/extensions/``
-与 ``trove/services/presets/`` —— 本模块只是入口。
+缺文件、``pack_schema`` 过新)/ plan 对账漂移 · 2 usage。服务在
+``trove/services/extensions/`` 与 ``trove/services/presets/`` —— 本模块只是入口。
 """
 
 from __future__ import annotations
@@ -53,6 +60,10 @@ def _parser() -> argparse.ArgumentParser:
     p_show.add_argument("--kind", default="", choices=("",) + KINDS,
                         help="同名跨类时收窄")
     p_show.add_argument("--json", action="store_true", help="机器可读输出")
+
+    p_plan = sub.add_parser(
+        "plan", help="运行时实际装配清单(信封 × state;disabled 摘除)+ 对账")
+    p_plan.add_argument("--json", action="store_true", help="机器可读输出")
 
     p_export = sub.add_parser(
         "export", help="把组织资产(skills/decisions/presets)原样打成包")
@@ -180,6 +191,22 @@ def main_extensions(argv: list[str]) -> int:
 
     if args.action in ("export", "import"):
         return _main_pack(args)
+
+    if args.action == "plan":
+        from trove.services.extensions import build_plan
+
+        try:
+            plan = build_plan(Path.cwd())
+        except Exception as exc:  # noqa: BLE001 — 装配失败按一条错误退出
+            print(f"装配清单失败: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(plan.render())
+        # 对账漂移 → 退出码 1:静默的成功码会让 CI 把「两份副本已经对不上」
+        # 当成「一致」。
+        return plan.exit_code
 
     try:
         envs = _collect(getattr(args, "kind", ""))
