@@ -936,7 +936,7 @@ async def test_run_section_on_keeps_static_report_and_adds_dry(tmp_path):
     report, dry = await run_validate_with_dryrun("mini", project_root=tmp_path, run=True)
     assert report.ok and dry is not None
     assert dry.datasource == "mini"
-    assert dry.covered == 1                       # validator 档判过
+    assert dry.covered == 2                       # 两档各判过(guard 走真实 run_guards)
     assert any(".trove/kb/mini/fixtures.yml" in s for s in dry.sources)
 
 

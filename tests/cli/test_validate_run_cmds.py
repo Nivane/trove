@@ -112,7 +112,7 @@ def test_run_clean_exit_0(tmp_path, monkeypatch, capsys):
     assert main_validate(["--run", "--datasource", "mini"]) == 0
     out = capsys.readouterr().out
     assert "装前" in out and "装后" in out and "退出码 0" in out
-    assert "guards_module_absent" in out          # guard 档如实报「还没有」
+    assert "guard 可用" in out                    # guard 档随 E2 接通(真实 run_guards)
 
 
 def test_run_broken_install_exit_1_names_asset(tmp_path, monkeypatch, capsys):
@@ -141,7 +141,7 @@ def test_run_json_metrics_feed_eval_gate(tmp_path, monkeypatch, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["exit_code"] == 0 and data["ok"] is True
     assert set(data["metrics"]) >= {"coverage", "blocking_fail_rate", "n_judged"}
-    assert data["dryrun"]["counts"]["covered"] == 1
+    assert data["dryrun"]["counts"]["covered"] == 2  # validator + guard 两档各判过
 
     score = tmp_path / "scorecard.json"
     score.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")

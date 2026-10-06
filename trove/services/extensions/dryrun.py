@@ -81,9 +81,9 @@ VERDICTS = ("pass", "violated", "unjudged")
 SKIP_REASONS = (
     "no_result_rows",               # validator 档:语料没有结果行(episodes / 只写 SQL 的 fixture)
     "no_sql",                       # guard 档:语料没有 SQL
-    "guards_module_absent",         # guard 档:E2(车道 A)尚未合流,整档不可用
-    "guard_runner_missing",         # guards 模块在,但没有 run_guards —— 半合流的树
-    "guards_module_import_failed",  # guards 模块在但导入就炸 —— 坏合流(同时进 errors)
+    "guards_module_absent",         # guard 档:树里没有 guards 模块(降级树),整档不可用
+    "guard_runner_missing",         # guards 模块在,但没有 run_guards —— 坏树
+    "guards_module_import_failed",  # guards 模块在但导入就炸 —— 坏树(同时进 errors)
 )
 
 #: ``state == "errored"`` 的原因码:判定**跑过但炸了** —— 一律退出码 2。
@@ -749,7 +749,7 @@ class DryRunReport:
 
     def render(self) -> str:
         lines = [
-            "trove validate --run — 装前试跑（零 LLM；语料层先行，guard 档等 E2 合流）",
+            "trove validate --run — 装前试跑（零 LLM；validator 结果域 + guard SQL 域双档消融）",
             f"数据源: {self.datasource or '（未点名）'}"
             f" | 项目根: {self.project_root}"
             f" | home: {self.home}",

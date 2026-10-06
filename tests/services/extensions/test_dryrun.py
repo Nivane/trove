@@ -1,9 +1,9 @@
 """装前试跑(E3)—— 语料层 + 双态消融,零 LLM 硬门。
 
 分节对应交付面:fixtures 解析(格式错响亮拒掉)/ episodes 适配(没有结果行
-就如实 skipped)/ 双态消融(装与不装之差)/ guard 档接缝(E2 未合流时整档
-skipped,不假绿)/ 退出码三分支(0 无回归 · 1 有拦截变更或断言失败 ·
-2 无法试跑 —— 绝不静默 0)。
+就如实 skipped)/ 双态消融(装与不装之差)/ guard 档接缝(E2 接通后走真实
+``run_guards``;降级树缺席时整档 skipped,不假绿)/ 退出码三分支(0 无回归 ·
+1 有拦截变更或断言失败 · 2 无法试跑 —— 绝不静默 0)。
 
 ``_llm_forbidden`` 把「零 LLM」钉成机制:试跑路径上任何一次 LLM 调用都会
 让测试直接炸 —— 这不是纪律(靠人记得),是电路(靠 fixture 断)。
@@ -849,13 +849,11 @@ async def test_run_end_to_end_clean_exit_0(tmp_path):
         datasource="demo", project_root=tmp_path, home_dir=tmp_path,
         fixtures=str(_write(tmp_path, _GOOD_YAML)), skills=svc)
     assert report.errors == []
-    assert report.covered == 1                       # validator 档判过
-    assert report.skipped == 1                       # guard 档:E2 未合流,如实跳过
-    assert [r.reason for r in report.rows if r.state == "skipped"] == [
-        "guards_module_absent"]
+    assert report.covered == 2                       # 两档都判过(guard 走真实 run_guards)
+    assert report.skipped == 0
     assert report.exit_code == 0
     assert report.tiers["validator"]["specs"] == ["nonneg"]
-    assert report.tiers["guard"]["available"] is False
+    assert report.tiers["guard"]["available"] is True
 
 
 @pytest.mark.asyncio
@@ -907,9 +905,14 @@ async def test_run_no_datasource_exit_2(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_episodes_only_all_skipped_exit_2(tmp_path):
-    """episodes 只有 SQL:validator 档 skipped;guard 未合流也 skipped
-    —— 一条没真跑过 → 2,不是 0(诚实边界的关键用例)。"""
+async def test_run_episodes_only_all_skipped_exit_2(tmp_path, monkeypatch):
+    """episodes 只有 SQL,且树里没有 guards 模块(降级树):两档都判不了
+    —— 一条没真跑过 → 2,不是 0(诚实边界的关键用例)。
+
+    E2 合流后 guard 档能真判 episodes 的 SQL,「全跳过」场景只在降级树
+    出现,故这里把探测钉到缺席态(本树的真实形状见下条)。"""
+    monkeypatch.setattr(dr, "_probe_guards_module",
+                        lambda: (None, "guards_module_absent", ""))
     store = _FakeEpisodes(rows=[{"question": "How many loans?",
                                  "sql": "SELECT 1"}])
     report = await run_dryrun(
@@ -922,6 +925,22 @@ async def test_run_episodes_only_all_skipped_exit_2(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_episodes_judged_by_real_guard_tier(tmp_path):
+    """E2 接通后的真实形状:episodes 的 SQL 被真实 ``run_guards`` 判过 ——
+    validator 档仍如实 skipped(无结果行),guard 档 covered(候选守卫集
+    为空 → 无触发)。这条钉住接缝翻转:本树里 SQL-only 语料对 guard 档是
+    **真判过**,全跳过只在降级树出现。"""
+    store = _FakeEpisodes(rows=[{"question": "How many loans?",
+                                 "sql": "SELECT 1"}])
+    report = await run_dryrun(
+        datasource="demo", project_root=tmp_path, home_dir=tmp_path,
+        episodes=True, episode_store=store)
+    assert report.tiers["guard"]["available"] is True
+    assert report.covered == 1 and report.skipped == 1
+    assert report.exit_code == 0
+
+
+@pytest.mark.asyncio
 async def test_run_empty_corpus_exit_2_not_0(tmp_path):
     report = await run_dryrun(
         datasource="demo", project_root=tmp_path, home_dir=tmp_path)  # 无 fixtures
@@ -930,7 +949,7 @@ async def test_run_empty_corpus_exit_2_not_0(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_guard_available_via_injection(tmp_path):
-    """guard 档接通后的形状(E2 合流时由此接管):两档都 covered。"""
+    """guard 档显式注入的形状(与真实探测同一条装载路径):两档都 covered。"""
     runner, calls = _guard_runner(payload=[
         {"name": "no-cartesian", "verdict": True, "severity": "advisory"}])
     svc = _svc(tmp_path)
