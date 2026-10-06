@@ -998,6 +998,12 @@ def main_repl():
         from trove.cli.commands.preset_cmds import main_preset
 
         sys.exit(main_preset(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "extensions":
+        # 扩展资产包:export / import —— 导入全部落 pending(确认门在
+        # PresetService,这里不另开一条写路径)。
+        from trove.cli.commands.extensions_cmds import main_extensions
+
+        sys.exit(main_extensions(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
         async def _run_maint():
             from trove.cli.maintenance_cmds import main_maintenance

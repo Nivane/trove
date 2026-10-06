@@ -5,6 +5,8 @@
     trove validate --json               # 机器可读(CI 消费)
     trove validate --strict             # 警告也算失败(退出码 1)
     trove validate --live               # 额外连数据源:枚举缺口 + 真方言编译
+    trove validate --packs              # + 反作弊:KB 示例 SQL vs 本地 gold 集
+    trove validate --packs --gold g.sql # gold 集显式指定(须只体检一个数据源)
 
 Exit codes: 0 clean · 1 hard errors (or any warning under ``--strict``) ·
 2 usage. The service lives in ``trove/services/validate/`` — this module is
@@ -38,6 +40,15 @@ def _parser() -> argparse.ArgumentParser:
         "--live", action="store_true",
         help="额外连接数据源:枚举缺口探测 + 用真实方言编译决策规则"
              "(缺省关闭,不联网)")
+    parser.add_argument(
+        "--packs", action="store_true",
+        help="反作弊检查:KB examples 的 SQL 与本地 gold 集(.trove/kb/<ds>/"
+             "gold.sql)的相似度;命中只出警告,绝不自动拒载/改写 KB;"
+             "缺省如实报 skipped")
+    parser.add_argument(
+        "--gold", default="",
+        help="gold 集文件(只在该次恰好体检一个数据源时可用;缺省用 "
+             ".trove/kb/<ds>/gold.sql)")
     return parser
 
 
@@ -48,7 +59,8 @@ def main_validate(argv: list[str]) -> int:
 
     try:
         report = asyncio.run(run_validate(
-            args.datasource or "", project_root=Path.cwd(), live=args.live))
+            args.datasource or "", project_root=Path.cwd(), live=args.live,
+            packs=args.packs, gold=args.gold))
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130

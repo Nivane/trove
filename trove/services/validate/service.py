@@ -21,11 +21,13 @@ connects to a datasource, and it is opt-in).
 
 from __future__ import annotations
 
+import difflib
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 import yaml
 
 from trove.core.logging import get_logger
@@ -919,6 +921,138 @@ def _check_presets(
     return issues, mounts, counts
 
 
+# ── 反作弊:KB 示例 vs 本地 gold 集(``--packs`` 打开) ───────
+#
+# KB 的反作弊红线是"不许手动把 gold SQL 塞进 examples.yml"。红线是政策,
+# 这个检查器是它的**可执行化发现器**:同一道题的示例 SQL 与 gold 集高度相似
+# 就是字节层面的证据。它**只出警告 + provenance**,绝不自动拒载、绝不改写
+# KB(手动塞的 gold 不可自动修;而且相似度有假阳性 —— 两条 SQL 长得像不等于
+# 就是抄来的,裁定权在人)。
+#
+# 缺省如实报 skipped:没有 gold 集 = **未检查**,而"未检查"绝不能与"检查过
+# 且干净"长得一样(仓库里那条"宁可报 unresolved,也不静默成功"的同一条取向)。
+
+#: 相似度阈值(0-1)。定在 0.95:规范化之后**同一件事的改写**(空白/大小写/
+#: 别名差异)落 1.0,而"同表同列的另一种聚合"(``SUM`` vs ``MAX``)只差三个
+#: 字符、能到 0.93 —— 那种是**相关**不是**相同**,报出来只会稀释真命中。
+#: 高分是要人核对,不是自动定罪;阈值因此向"少误报"一侧取。
+_GOLD_SIM_THRESHOLD = 0.95
+
+
+def _normalize_sql(sql: str) -> str:
+    """SQL → 可比较的规范串(sqlglot 重新生成;失败降级为空白归一 + 小写)。
+
+    规范化是这条检查唯一"看得准"的办法:逐字符比对连大小写/别名差异都过不
+    去,而重排空白之后的比较才对应"这两条 SQL 是不是同一件事"。降级路径
+    宁可放宽(漏报)也不收紧(误报) —— 反作弊命中是要人工裁定的警告。
+    """
+    text = " ".join(str(sql or "").split())
+    if not text:
+        return ""
+    for dialect in (None, "mysql"):
+        try:
+            expr = sqlglot.parse_one(text, dialect=dialect,
+                                     error_level=sqlglot.ErrorLevel.RAISE)
+            return expr.sql(normalize=True)
+        except Exception:  # noqa: BLE001 —— 解析不了就走降级,不拦检查
+            continue
+    return text.lower().rstrip(";")
+
+
+def _gold_statements(text: str) -> list[str]:
+    """gold.sql 文本 → 一条条语句(sqlglot 切分;失败降级按分号切)。"""
+    try:
+        parts = [e.sql() for e in sqlglot.parse(text) if e is not None]
+        if parts:
+            return parts
+    except Exception:  # noqa: BLE001
+        pass
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("--")]
+    return [p.strip() for p in "\n".join(lines).split(";") if p.strip()]
+
+
+def _best_gold_match(sql: str, gold: list[str]) -> tuple[float, int]:
+    """(最佳相似度, 命中的 gold 序号)。``gold`` 须已规范化。"""
+    norm = _normalize_sql(sql)
+    if not norm:
+        return 0.0, -1
+    best, idx = 0.0, -1
+    for i, g in enumerate(gold):
+        ratio = difflib.SequenceMatcher(None, norm, g).ratio()
+        if ratio > best:
+            best, idx = ratio, i
+    return best, idx
+
+
+def _check_packs(names: list[str], kb: KbService, *,
+                 gold: str = "") -> tuple[list[Issue], dict[str, int]]:
+    """反作弊检查:KB examples 的 SQL 与本地 gold 集的相似度。
+
+    gold 集来源(首版):``.trove/kb/<ds>/gold.sql``,或 ``gold`` 显式参数
+    (只在该次校验恰好一个数据源时可用 —— 一份文件对不上多个源)。缺省
+    **如实报 skipped**,并说明"未检查 ≠ 干净"。
+
+    命中 = warning(``kb.gold``)+ provenance:哪条示例、命中哪个文件、第几条
+    语句、相似度多少。**绝不自动拒载、绝不改写 KB**。条目计数
+    ``{ds}.gold`` = gold 语句数(有它 = 这条数据源真的查过了)。
+    """
+    issues: list[Issue] = []
+    counts: dict[str, int] = {}
+    if gold and len(names) != 1:
+        issues.append(_warn(
+            "kb.gold",
+            f"--gold 只在该次校验恰好一个数据源时可用(当前 {len(names)} 个)"
+            " —— 反作弊检查跳过"))
+        return issues, counts
+    for name in names:
+        ds_dir = kb.kb_dir / name
+        if not ds_dir.is_dir():
+            continue
+        path = Path(gold) if gold else ds_dir / "gold.sql"
+        if not path.is_file():
+            issues.append(_warn(
+                "kb.gold",
+                f"本地 gold 集缺省({path})—— 反作弊检查跳过"
+                "(未检查 ≠ 干净:补 gold.sql 或用 --gold 再判)",
+                datasource=name))
+            continue
+        try:
+            gold_sql = [_normalize_sql(s)
+                        for s in _gold_statements(path.read_text(encoding="utf-8"))]
+        except Exception as e:  # noqa: BLE001
+            issues.append(_warn("kb.gold", f"gold 集读取失败: {e}",
+                                datasource=name))
+            continue
+        gold_sql = [s for s in gold_sql if s]
+        if not gold_sql:
+            issues.append(_warn("kb.gold",
+                                f"gold 集为空({path})—— 检查跳过",
+                                datasource=name))
+            continue
+        _, examples, _, _ = _collect_entries(ds_dir)
+        counts[f"{name}.gold"] = len(gold_sql)
+        hits = 0
+        for ex in examples:
+            sql = str(ex.get("sql") or "")
+            if not sql.strip():
+                continue
+            ratio, idx = _best_gold_match(sql, gold_sql)
+            if ratio < _GOLD_SIM_THRESHOLD:
+                continue
+            hits += 1
+            question = str(ex.get("question") or ex.get("id") or "?")
+            issues.append(_warn(
+                "kb.gold",
+                f"示例 {question!r} 的 SQL 与本地 gold 集高度相似"
+                f"(相似度 {ratio:.3f} ≥ {_GOLD_SIM_THRESHOLD};命中 {path} 第 "
+                f"{idx + 1} 条)—— 疑似把 gold 手塞进 KB(反作弊红线)。相似度"
+                "有假阳性,请人工核对;此检查不自动拒载,也不改写 KB",
+                target=str(ex.get("id") or question), datasource=name))
+        if hits:
+            counts[f"{name}.gold_hits"] = hits
+    return issues, counts
+
+
 # ── entry point ──────────────────────────────────────────
 
 
@@ -927,6 +1061,8 @@ async def run_validate(
     *,
     project_root: str | Path | None = None,
     live: bool = False,
+    packs: bool = False,
+    gold: str = "",
 ) -> ValidateReport:
     """Run every check; never raises for a bad *configuration*.
 
@@ -935,6 +1071,11 @@ async def run_validate(
     and always run). A checker itself crashing is reported as an internal
     error rather than swallowed — a dry run that dies on one bad file would
     be useless exactly when it is needed most.
+
+    ``packs=True`` additionally runs the anti-cheat finder (KB example SQL vs
+    a local gold set, ``gold`` overriding the per-datasource ``gold.sql``
+    default); it is opt-in because it needs a gold file that most deployments
+    do not keep in the repo.
     """
     root = Path(project_root) if project_root is not None else Path.cwd()
     report = ValidateReport(project_root=str(root), live=live)
@@ -1015,5 +1156,15 @@ async def run_validate(
     except Exception as e:  # noqa: BLE001
         logger.exception("validate: preset 检查失败")
         report.issues.append(_err("validate.internal", f"preset 检查异常: {e}"))
+
+    if packs:
+        try:
+            issues, counts = _check_packs(names, kb, gold=gold)
+            report.issues += issues
+            report.counts.update(counts)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("validate: 反作弊(gold)检查失败")
+            report.issues.append(_err(
+                "validate.internal", f"反作弊检查异常: {e}"))
 
     return report

@@ -57,6 +57,7 @@ preset 说"这个数据源应当具备 X 方法论",而 X 还没过确认门,那
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -68,16 +69,33 @@ from trove.services.decision.rules import (
     RuleError,
     lint_rule,
     parse_rule,
+    rule_to_dict,
+)
+from trove.services.extensions.pack import (
+    PackError,
+    PackReport,
+    git_rev_for,
+    kind_of,
+    read_pack,
+    write_pack,
 )
 from trove.services.kb.git_versioning import GitVersioning
 from trove.services.presets.models import (
     Preset,
     STATUSES,
     ApplyReport,
+    PresetError,
     brief,
     parse_preset,
     preset_to_dict,
     reject_unknown,
+)
+from trove.services.skills.service import (
+    FRONTMATTER_FIELDS,
+    VALIDATOR_FIELDS,
+    SkillService,
+    _NAME_RE,
+    _TIERS,
 )
 
 logger = get_logger(__name__)
@@ -523,6 +541,430 @@ class PresetService:
         d = self.root / name
         files = [p for p in sorted(d.glob("*")) if p.is_file()]
         return self.git.commit_files(files, message, trailers=trailers)
+
+    # ── 包:导出 / 导入(扩展资产包,实施稿 E5) ─────────────
+    #
+    # 一个"包"= 目录 + ``manifest.yml``(形态与校验链在
+    # :mod:`trove.services.extensions.pack`)。这里只放**资产策略**:收什么、
+    # 怎么落、冲撞怎么办。
+    #
+    # ## 冲撞策略(保守版,报告里逐条可读)
+    #
+    # - **默认拒载点名**:目标已有同名资产(org skill / org preset / 同 id
+    #   的在效规则 / 同 id 的 pending 草稿),该资产**一个字节不写**,报告里
+    #   点名并说明为什么;其余资产照常导入(全都是 pending,不产生任何"生效")。
+    # - **``--force``(import_pack(force=True))覆盖为 pending 形态**:同名
+    #   技能 / 预设用包内版本覆盖;pending 决策草稿先驳回(rejected 留痕)
+    #   再落包内版本。覆盖**绝不**产出生效状态 —— 技能 status 一律归一为
+    #   pending。
+    # - **两条永不动的线**:①``decisions.yml`` 里的**生效规则**永不被包覆盖
+    #   (force 也不行:生效规则只能走管理端人工处置、可审计);②幂等:目标与
+    #   包内内容逐字节一致 → ``skipped``(重放同一个包不该报冲突)。
+    # - 包级失败(缺文件 / 被篡改 / ``pack_schema`` 过新)**整个拒载**,一条
+    #   资产都不落(异常在 read_pack 里抛出,调用方拿到异常即"什么都没发生")。
+    #
+    # ## 为什么导入不是"复制文件就完了"
+    #
+    # import 的落点与 ``apply`` 共用同一道确认门:技能经 frontmatter 的
+    # ``status`` 归一(**唯一**的字节改动),决策经 ``decision_drafts.yml``
+    # (结构性不在执行面),预设原样落盘(preset 本身不被消费,``apply`` 时
+    # 仍只落 pending)。因此"导入"永远等价于"多了一批待审草稿",而不是"多
+    # 了一批生效配置"。
+
+    def export_pack(self, name: str, dest: str | Path, *,
+                    origin: str = "local") -> PackReport:
+        """把**组织**资产(skills / decisions / presets)原样打成一个包。
+
+        只读:不改动、不解析任何源资产 —— 导出物 = 文件原样(逐字节),
+        往返保真因此是这条链上可断言的性质,而不是尽力而为。
+
+        收集范围(**只收新数据源接进来要人工配的那些**):
+
+        - ``.trove/skills/<name>/SKILL.md`` + ``SKILL.<lang>.md`` 覆盖文件;
+        - ``.trove/kb/<ds>/decisions.yml``(只含**生效**规则文档;草稿
+          ``decision_drafts.yml`` 是待审状态不是资产,不进包);
+        - ``.trove/presets/<name>/preset.yml``。
+
+        内置 / 代码资产(``trove/presets``、``trove/prompts/skills``)**不进包**
+        —— 它们随代码分发,打包只会制造第二份会漂移的事实源。会话数据
+        (episodes、user facts 等)永不进包(实施稿 §3j 红线)。
+        """
+        rows = self._collect_org_assets()
+        if not rows:
+            raise PackError(
+                "无可导出的组织资产(.trove/skills、.trove/kb/*/decisions.yml、"
+                ".trove/presets 都是空的)—— 拒绝生成空包")
+        files = {rel: data for _, _, rel, data in rows}
+        report = PackReport(action="export", pack=name, dest=str(dest),
+                            origin=origin)
+        # 逐**资产**产一条账(技能的多个文件合成一条),而不是逐文件 —— 人有
+        # 兴趣的是"这个技能进包了没",文件数是细节。
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for section, item, rel, _ in rows:
+            grouped.setdefault((section, item), []).append(rel)
+        manifest = write_pack(dest, name=name, files=files, origin=origin,
+                              git_rev=git_rev_for(self._pack_git_root()))
+        for (section, item), rels in grouped.items():
+            report.add(section, item, "exported",
+                       f"{len(rels)} 文件: {', '.join(rels)}")
+        report.git_rev = manifest.git_rev
+        return report
+
+    async def import_pack(self, src: str | Path, *, force: bool = False,
+                          actor: str = "") -> PackReport:
+        """校验一个包并把它**逐条落 pending**(不绕确认门)。
+
+        校验链(每一步失败都是明确的拒绝,不是降级):manifest 结构 →
+        ``pack_schema`` 版本门 → 逐文件 sha256(**点名报哪个文件被改**)→
+        形状校验(技能 frontmatter / 预设契约 / 规则可解析)。
+
+        - **包级失败**(缺文件 / 被篡改 / 版本过新 / 不是包)→ 抛
+          :class:`~trove.services.extensions.pack.PackError`,**一条资产都不落**
+          —— 半导入的包在接收方看起来和完整导入一样,那正是要避免的结局。
+        - **条目级失败**(某条技能内容过不了写入面 / 某条规则解析不了)→
+          该条 ``invalid`` 拒载,其余照常落。
+        - manifest 未列出的多余文件 → ``skipped`` 报告(手放进来的文件不是
+          包的一部分,不是错误,但要说出来)。
+
+        落点(**全部 pending**):技能 = 文件原样 + ``status:`` 行归一为
+        pending(唯一字节改动;源文件本已 pending 时逐字节相同);决策 = 落
+        ``decision_drafts.yml`` 草稿(执行面结构上读不到);预设 = 文件原样
+        写入 ``.trove/presets/<name>/preset.yml``(preset 本身不被消费,
+        ``apply`` 时仍只落 pending 草稿)。
+        """
+        if self.kb is None or self.skills is None or self._drafts is None:
+            raise PackError(
+                "导入需要 KB 与技能服务同时接线(CLI 会装配好;裸 PresetService "
+                "落不了草稿)")
+        loaded = read_pack(src)          # 结构 / 版本门 / sha256 皆在此拒载
+        report = PackReport(action="import", pack=loaded.manifest.name,
+                            dest=str(src), origin=loaded.manifest.origin,
+                            git_rev=loaded.manifest.git_rev)
+        for rel in loaded.extra:
+            report.add("pack", rel, "skipped",
+                       "未在 manifest 中列出 —— 不会导入(手动放进包里的文件"
+                       "不是包的一部分)")
+
+        buckets: dict[str, dict[str, Any]] = {"skills": {}, "decisions": {},
+                                              "presets": {}}
+        for rel in sorted(loaded.files):
+            kind = kind_of(rel)
+            if kind is None:
+                report.add("pack", rel, "invalid",
+                           "路径不属于任何已知资产种类(skills/decisions/"
+                           "presets)—— 拒载该文件")
+                continue
+            parts = rel.split("/")
+            if kind == "skills":
+                buckets["skills"].setdefault(parts[1], {})[parts[2]] = \
+                    loaded.files[rel]
+            else:
+                buckets[kind][parts[1]] = loaded.files[rel]
+
+        for name in sorted(buckets["skills"]):
+            self._import_skill(name, buckets["skills"][name], report,
+                               force=force)
+        for datasource in sorted(buckets["decisions"]):
+            await self._import_decisions(datasource,
+                                         buckets["decisions"][datasource],
+                                         report, force=force, actor=actor)
+        for name in sorted(buckets["presets"]):
+            self._import_preset(name, buckets["presets"][name], report,
+                                force=force)
+        return report
+
+    # ── 导出 / 导入的内部件 ───────────────────────────────
+
+    def _pack_git_root(self) -> Path:
+        """挑一个根报 ``git_rev``:任一已接线资产根都指向同一个仓库。
+
+        优先 ``.trove/``(skills / kb / presets 的共同父目录),退回 preset
+        根自身(三个服务都没接线时的兜底 —— rev 缺失是空的,不是错的)。
+        """
+        for r in (getattr(self.skills, "root", None),
+                  getattr(self.kb, "kb_dir", None), self.root):
+            if r is None:
+                continue
+            candidate = Path(r).parent
+            return candidate if candidate.name == ".trove" else Path(r)
+        return self.root
+
+    def _collect_org_assets(self) -> list[tuple[str, str, str, bytes]]:
+        """组织资产清单 → ``(section, item, 逻辑路径, 字节)`` 逐条。
+
+        **只读**,顺序确定(每段按名字排序):导出物因此可复现。
+        """
+        out: list[tuple[str, str, str, bytes]] = []
+        skills_root = getattr(self.skills, "root", None)
+        if skills_root is not None and Path(skills_root).is_dir():
+            for d in sorted(Path(skills_root).iterdir()):
+                if not d.is_dir() or not (d / "SKILL.md").is_file():
+                    continue
+                for f in [d / "SKILL.md", *sorted(d.glob("SKILL.*.md"))]:
+                    if f.is_file():
+                        out.append(("skills", d.name,
+                                    f"skills/{d.name}/{f.name}", f.read_bytes()))
+        kb_dir = getattr(self.kb, "kb_dir", None)
+        if kb_dir is not None and Path(kb_dir).is_dir():
+            for d in sorted(Path(kb_dir).iterdir()):
+                p = d / "decisions.yml"
+                if d.is_dir() and p.is_file():
+                    out.append(("decisions", d.name,
+                                f"kb/{d.name}/decisions.yml", p.read_bytes()))
+        if self.root.is_dir():
+            for d in sorted(self.root.iterdir()):
+                p = d / "preset.yml"
+                if d.is_dir() and p.is_file():
+                    out.append(("presets", d.name,
+                                f"presets/{d.name}/preset.yml", p.read_bytes()))
+        return out
+
+    def _import_skill(self, name: str, entries: dict[str, bytes],
+                      report: PackReport, *, force: bool) -> None:
+        """一个技能的全部文件(SKILL.md + 覆盖文件)→ 落 pending 或点名拒载。"""
+        raw = entries.get("SKILL.md")
+        if raw is None:
+            report.add("skills", name, "invalid",
+                       "包内缺 SKILL.md —— 拒载该技能(覆盖文件无处挂靠)")
+            return
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            report.add("skills", name, "invalid", f"SKILL.md 不是 UTF-8: {exc}")
+            return
+        parsed = SkillService._parse_skill(text)
+        problem = _skill_problem(name, parsed)
+        if problem:
+            report.add("skills", name, "invalid",
+                       f"过不了写入面的形状校验: {problem}(文件未写)")
+            return
+
+        landed = dict(entries)
+        landed["SKILL.md"], normalized = _pending_skill_bytes(raw, text)
+        meta = parsed.get("meta") or {}
+        legal = frozenset(FRONTMATTER_FIELDS) | frozenset(VALIDATOR_FIELDS)
+        stray = sorted(str(k) for k in meta if k not in legal)
+        note = ("status 已归一为 pending" if normalized
+                else "status 原本即 pending,逐字节原样")
+        if stray:
+            note += (f";含非规范 frontmatter 键 {', '.join(stray)}"
+                     "(读路径忽略,trove validate 会点名)")
+
+        target_dir = Path(self.skills.skill_dir(name))
+        existed = (target_dir / "SKILL.md").is_file()
+        leftover: list[str] = []
+        if existed:
+            same = all((target_dir / fname).is_file()
+                       and (target_dir / fname).read_bytes() == data
+                       for fname, data in landed.items())
+            if same:
+                report.add("skills", name, "skipped",
+                           "目标已有逐字节一致的技能(幂等重放)—— 未改动任何文件")
+                return
+            if not force:
+                report.add("skills", name, "conflict",
+                           f"同名 org skill 已存在({target_dir})—— 拒载,"
+                           "未写任何文件(确认后用 --force 以 pending 形态覆盖)")
+                return
+            leftover = sorted(p.name for p in target_dir.iterdir()
+                              if p.is_file() and p.name not in landed)
+
+        for fname in sorted(landed):
+            target = target_dir / fname
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(landed[fname])
+        extra = (f";目标目录原有 {len(leftover)} 个不在包内的文件未删除: "
+                 f"{', '.join(leftover)}" if leftover else "")
+        if existed:
+            report.add("skills", name, "overwritten",
+                       f"已用包内版本覆盖({note}){extra} —— 未确认前不投递")
+        else:
+            report.add("skills", name, "imported",
+                       f"已落 pending 草稿({len(landed)} 文件,{note}) —— "
+                       "确认后才进入投递面")
+
+    async def _import_decisions(self, datasource: str, raw: bytes,
+                                report: PackReport, *, force: bool,
+                                actor: str) -> None:
+        """一个 datasource 的 decisions.yml → 逐规则落 pending 草稿。"""
+        try:
+            data = yaml.safe_load(raw.decode("utf-8")) or {}
+        except (yaml.YAMLError, UnicodeDecodeError) as exc:
+            report.add("decisions", datasource, "invalid",
+                       f"decisions.yml 读取失败: {exc}")
+            return
+        rules_raw = data.get("rules") if isinstance(data, dict) else None
+        if not isinstance(rules_raw, list):
+            report.add("decisions", datasource, "invalid",
+                       "decisions.yml 形状不对(顶层须含 rules 列表)")
+            return
+        target_dir = Path(self.kb.decisions_path(datasource)).parent
+        ds_note = ("" if target_dir.is_dir() else
+                   "(目标还没有该数据源的 KB 目录;草稿已落,等待 /kb init)")
+        for i, rr in enumerate(rules_raw):
+            if not isinstance(rr, dict):
+                report.add("decisions", f"{datasource}/rules[{i}]", "invalid",
+                           "规则不是映射 —— 拒载该条")
+                continue
+            rid = str(rr.get("id") or f"rules[{i}]")
+            label = f"{datasource}/{rid}"
+            try:
+                rule = parse_rule(rr)
+            except RuleError as exc:
+                report.add("decisions", label, "invalid", f"规则解析失败: {exc}")
+                continue
+            note = (f"来自扩展包 {report.pack}(origin={report.origin or '?'})"
+                    " —— 确认前不在 decisions.yml,调度面结构上读不到")
+            try:
+                result = self._drafts.add(datasource, rule,
+                                          source=f"pack:{report.pack}",
+                                          note=note)
+            except RuleError as exc:
+                report.add("decisions", label, "invalid", f"草稿不能落盘: {exc}")
+                continue
+            status = result.get("status")
+            if status == "created":
+                report.add("decisions", label, "imported",
+                           "已落 pending 草稿(decision_drafts.yml)"
+                           f"{ds_note} —— 逐条确认后才写入生效")
+            elif status == "present":
+                report.add("decisions", label, "conflict",
+                           f"该 id 已在 {datasource!r} 的 decisions.yml 中(生效"
+                           "规则永不被包覆盖,--force 也不行;要改请走管理端"
+                           "人工处置)")
+            elif status == "exists":
+                existing = result.get("draft") or {}
+                if existing.get("rule") == rule_to_dict(rule):
+                    report.add("decisions", label, "skipped",
+                               "同 id 的 pending 草稿内容一致(幂等重放)")
+                elif not force:
+                    report.add("decisions", label, "conflict",
+                               "同 id 的 pending 草稿内容不同 —— 拒载"
+                               "(确认后用 --force 替换为包内版本)")
+                else:
+                    try:
+                        await self._drafts.reject(datasource,
+                                                  str(existing.get("id")),
+                                                  actor=actor)
+                        again = self._drafts.add(
+                            datasource, rule,
+                            source=f"pack:{report.pack}", note=note)
+                    except (RuleError, KeyError) as exc:
+                        report.add("decisions", label, "invalid",
+                                   f"替换草稿失败: {exc}")
+                        continue
+                    if again.get("status") == "created":
+                        report.add("decisions", label, "overwritten",
+                                   "原 pending 草稿已驳回(rejected 留痕),包内"
+                                   "版本已落 pending" + ds_note)
+                    else:
+                        report.add("decisions", label, "conflict",
+                                   f"替换后仍未能落草稿"
+                                   f"(status={again.get('status')})")
+
+    def _import_preset(self, name: str, raw: bytes, report: PackReport, *,
+                       force: bool) -> None:
+        """一个 preset.yml → 校验形状后原样写入 ``.trove/presets/<name>/``。"""
+        try:
+            data = yaml.safe_load(raw.decode("utf-8")) or {}
+        except (yaml.YAMLError, UnicodeDecodeError) as exc:
+            report.add("presets", name, "invalid", f"preset.yml 读取失败: {exc}")
+            return
+        try:
+            parse_preset(data, source="pack", name_hint=name,
+                         path=self.root / name / "preset.yml")
+        except PresetError as exc:
+            report.add("presets", name, "invalid", f"preset 不合法: {exc}")
+            return
+        target = self.root / name / "preset.yml"
+        inert = "preset 本身不被消费,apply 时仍只落 pending 草稿"
+        if target.is_file():
+            if target.read_bytes() == raw:
+                report.add("presets", name, "skipped",
+                           "目标已有逐字节一致的 preset(幂等重放)")
+                return
+            if not force:
+                report.add("presets", name, "conflict",
+                           f"同名 org preset 已存在({target})—— 拒载,未写"
+                           "任何文件(确认后用 --force 覆盖)")
+                return
+            target.write_bytes(raw)
+            report.add("presets", name, "overwritten",
+                       f"已用包内版本覆盖(逐字节原样)—— {inert}")
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        report.add("presets", name, "imported",
+                   f"已写入 {target}(逐字节原样)—— {inert}")
+
+
+def _skill_problem(name: str, parsed: dict) -> str:
+    """技能内容过不过写入面(``SkillService.create``)那套形状校验。
+
+    解析与 validator 规格校验直接复用 ``SkillService`` 自己的实现
+    (``_parse_skill`` / ``_validate_validator_spec``):导入面与写入面判同
+    一套规则,不另造一份迟早漂移的复刻。返回空串 = 过。
+    """
+    if not isinstance(parsed, dict) or "meta" not in parsed:
+        return str((parsed or {}).get("error") or "frontmatter 解析失败")
+    meta = parsed.get("meta")
+    if not isinstance(meta, dict):
+        return "frontmatter 不是映射"
+    declared = meta.get("name")
+    if declared is not None and str(declared) != name:
+        return (f"frontmatter name {declared!r} 与目录名 {name!r} 不一致"
+                "(按目录名索引,两个名字会让身份二义)")
+    if not _NAME_RE.match(name):
+        return f"目录名 {name!r} 不是规范名(^[a-z0-9][a-z0-9-]*$)"
+    if not str(meta.get("description") or "").strip():
+        return "description 必填"
+    if not str(parsed.get("body") or "").strip():
+        return "正文为空 —— 注入的会是一个空块"
+    tier = meta.get("tier", "available")
+    if tier not in _TIERS:
+        return f"tier {tier!r} 不在 {_TIERS} —— 没有任何投递面会取用它"
+    if tier == "validator":
+        entry = {k: meta.get(k) for k in VALIDATOR_FIELDS}
+        try:
+            SkillService._validate_validator_spec(entry)
+        except ValueError as exc:
+            return f"validator 规格不合法: {exc}"
+    else:
+        stray = sorted(f for f in VALIDATOR_FIELDS if meta.get(f) is not None)
+        if stray:
+            return (f"{', '.join(stray)} 只在 tier=validator 生效"
+                    "(写下去也不会运行)")
+    return ""
+
+
+def _pending_skill_bytes(raw: bytes, text: str) -> tuple[bytes, bool]:
+    """SKILL.md 字节 → ``(落盘字节, 是否归一化了 status)``。
+
+    导入的**唯一**写入面改动:frontmatter 里 ``status`` 非 pending 时把那
+    一行改成 ``pending``(红线:导入不绕确认门)。其余字节逐字节原样 ——
+    往返保真因此可断言:源包已是 pending 的资产导入后与源文件逐字节相同。
+
+    只重写那一行(而不是解析后重新序列化整个 frontmatter):重序列化会
+    重排键、重引字符串,一次"导入"能顺带改掉几十行无关注释 —— 一个本可以
+    逐字节证明保真的操作就变成了"看起来差不多"。
+    """
+    parsed = SkillService._parse_skill(text)
+    meta = parsed.get("meta") if isinstance(parsed, dict) else None
+    if not isinstance(meta, dict):
+        return raw, False
+    if str(meta.get("status") or "pending") == "pending":
+        return raw, False
+    lines = text.split("\n")
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"),
+               None)
+    if end is None:
+        return raw, False
+    for i in range(1, end):
+        if re.match(r"^status\s*:", lines[i]):
+            lines[i] = "status: pending"
+            return "\n".join(lines).encode("utf-8"), True
+    lines.insert(end, "status: pending")
+    return "\n".join(lines).encode("utf-8"), True
 
 
 def _flatten(value: Any) -> list[str]:
