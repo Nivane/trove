@@ -12,6 +12,7 @@ from trove.services.validate.service import (
     combined_exit_code,
     run_validate,
     run_validate_with_dryrun,
+    run_validate_with_impact,
     skill_node_call_sites,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "combined_exit_code",
     "run_validate",
     "run_validate_with_dryrun",
+    "run_validate_with_impact",
     "skill_node_call_sites",
 ]

@@ -1540,16 +1540,57 @@ async def run_validate_with_dryrun(
     return report, dry
 
 
+async def run_validate_with_impact(
+    datasource: str = "",
+    *,
+    project_root: str | Path | None = None,
+    live: bool = False,
+    packs: bool = False,
+    gold: str = "",
+    impact: str = "",
+    fixtures: str = "auto",
+    episodes: bool = False,
+    limit: int | None = None,
+    include_questions: bool = False,
+) -> tuple[ValidateReport, Any]:
+    """静态体检 + 可选影响面回放(``--impact``)→ ``(静态报告, 回放报告 | None)``。
+
+    与 ``run_validate_with_dryrun`` 是同一条姿态(静态面是加法不是替换;
+    回放自身的坏输入不抛异常,落成回放报告里的 ``errors`` → 退出码 2)。
+    差别只在问的问题:试跑问「装上之后会不会拦住这些语料」,回放问
+    「**换上新包之后**判定会怎么变」—— 两态从「不装/装现状」变成
+    「现状/现状+候选」。``impact`` 为空串时与 ``run_validate`` 逐字节一致。
+    """
+    report = await run_validate(datasource, project_root=project_root, live=live,
+                                packs=packs, gold=gold)
+    if not impact:
+        return report, None
+    from trove.services.extensions.dryrun import DEFAULT_LIMIT
+    from trove.services.extensions.impact import run_impact
+
+    imp = await run_impact(
+        target=impact,
+        datasource=datasource or "",
+        project_root=project_root,
+        fixtures=fixtures,
+        episodes=episodes,
+        limit=DEFAULT_LIMIT if limit is None else limit,
+        include_questions=include_questions,
+    )
+    return report, imp
+
+
 def combined_exit_code(
-    report: ValidateReport, dry: Any | None, *, strict: bool = False,
+    report: ValidateReport, second: Any | None, *, strict: bool = False,
 ) -> int:
     """合并退出码:取更严的一支(2 > 1 > 0)。
 
-    静态干净但试跑无法进行 → **2**:结论是「这次没验成」,不许被静态的 0
-    盖过去(试跑绝不静默 0 是同一条纪律的另一面)。``dry=None`` 时与
-    ``ValidateReport.exit_code`` 完全一致。
+    静态干净但试跑/回放无法进行 → **2**:结论是「这次没验成」,不许被静态的
+    0 盖过去(试跑绝不静默 0 是同一条纪律的另一面)。``second=None`` 时与
+    ``ValidateReport.exit_code`` 完全一致;两支报告只需各自有 ``exit_code``
+    (试跑报告与影响面报告都有,语义也一致)。
     """
     code = report.exit_code(strict=strict)
-    if dry is not None:
-        code = max(code, dry.exit_code)
+    if second is not None:
+        code = max(code, second.exit_code)
     return code
