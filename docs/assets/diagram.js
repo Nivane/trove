@@ -16,11 +16,30 @@
  *      切成「以上为图源码」——页面不会出现一块白板，也不假装图还在。
  *   5. 一页多图互不牵连：逐张 try/catch，一张图的语法错不会把同页其他图
  *      也拖成源码形态。
+ *
+ * 读源码要用下面的 readSource，不能用 pre.textContent：<pre> 里的内容是
+ * HTML，标签里的 `<br/>` 会被解析成一个真正的 <br> 元素——textContent 把它
+ * 当标签丢掉，两行文字并成一行且不留空格（「第一行第二行」）。逐子节点读，
+ * 遇到 <br> 元素还原成 `<br/>` 文本，mermaid 才能按作者写的断行渲染。
  */
+function readSource(pre) {
+  let out = "";
+  for (const node of pre.childNodes) {
+    if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "BR") {
+      out += "<br/>";
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      out += node.nodeValue;
+    } else {
+      out += node.textContent; // 其他元素保持 textContent 的旧行为
+    }
+  }
+  return out;
+}
+
 const sources = new Map();
 for (const fig of document.querySelectorAll("figure.diagram")) {
   const pre = fig.querySelector(".diagram-canvas pre.mermaid");
-  if (pre) sources.set(fig, pre.textContent);
+  if (pre) sources.set(fig, readSource(pre));
 }
 
 if (sources.size) {

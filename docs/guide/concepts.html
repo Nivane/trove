@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 产品概念：语义模型如何定义可答边界、硬/软 MISS 的分级逃生梯、两条确定性快径、知识库五件套与人工确认门禁。">
+<meta name="description" content="Trove 产品概念：数据决策智能体的一条链路（问数 · 分析 · 决策 · 行动）——语义模型如何定义可答边界、硬/软 MISS 的分级逃生梯、两条确定性快径、知识库五件套、技能四档扩展与人工确认门禁。">
 <title>产品概念 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -28,13 +28,99 @@
       </div>
       <h1>产品概念</h1>
       <p class="lede">
-        这一页解释 Trove 与「Text2SQL」的差别在哪：它不把问题直接翻译成 SQL，
-        而是先判断<strong>这个问题能不能答、按谁的口径答</strong>，然后才生成。
+        Trove 是<strong>数据决策智能体</strong>：问数 · 分析 · 决策 · 行动，一条对话链路。
+        这一页先画出这条链路的全貌，再回到「问数」这一段最核心的概念——
+        它不把问题直接翻译成 SQL，而是先判断<strong>这个问题能不能答、按谁的口径答</strong>，然后才生成。
         理解这套概念之后，后面所有页面的设计取舍都会变得理所当然。
       </p>
     </div>
 
     <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="chain">一条链路：问数 · 分析 · 决策 · 行动</h2>
+
+    <p>
+      问数回答「是多少」；分析回答「为什么变了」；决策回答「该不该警觉」；行动把一次触发
+      冻结成<strong>一份等人拍板的提案</strong>，并在事后验收效果。四段不必全配齐——
+      不声明判定规则、不配行动模板，问数与分析照样工作——但四段共用同一条纪律：
+      <strong>数字由确定性引擎算出来，模型只写解读</strong>，每个数字都带着可复算的证据。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    Q["问数 · 是多少<br/>语义编译 + 生成与校验"] --> A["分析 · 为什么变了<br/>确定性分解 + 噪声带"]
+    A --> D["决策 · 该不该警觉<br/>判定规则 · 零 LLM"]
+    D --> ACT["行动 · 接下来做什么<br/>提案 → 审批 → 外送"]
+    ACT -. "效果验收 · 同一套噪声带" .-> D
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四段链路：只有最后一小截在系统外——批准之前任何东西不会离开系统，送出之后按与判定同一套噪声带回头验收。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <h3 id="chain-analysis">分析：把「为什么」确定性地拆开</h3>
+
+    <p>
+      问「为什么……」「什么导致……」时不走生成 SQL，而是确定性分解：先按贡献最大的维度把总变化
+      拆开（贡献分解 / 比率 shift-share），再沿指标表达式下钻成驱动器树。每个数字都由可复算的
+      查询算出来、进证据，模型只把结果写成一句人话。「变了多少才算变了」由稳健 z 与历史同粒度块的
+      <strong>噪声带</strong>回答——超出噪声带 / 落在带内 / 判不了，三态如实；判不了绝不冒充「没变化」。
+      器械细节见 <a href="../engineering/decomposition.html">分解数学与驱动器树</a> 与
+      <a href="../engineering/statistics.html">统计与噪声带</a>，界面读法见
+      <a href="../user/ask.html#attribution">归因分析卡</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L36">decompose.py:36 <span class="ref-line">contribution</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L71">decompose.py:71 <span class="ref-line">shift_share</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/expr_tree.py#L91">expr_tree.py:91 <span class="ref-line">metric_components</span></a>
+    </p>
+
+    <h3 id="chain-decision">决策：阈值规则说语义模型的语言</h3>
+
+    <p>
+      阈值规则不用另学一套 DSL：它直接用语义模型自己的词汇声明——指标、维度、过滤、时间窗，
+      与语义查询是同一个形状；声明一次，每次求值都按它执行，<strong>判定过程零 LLM</strong>。
+      「变了多少才算警觉」同样交给季节噪声带：超出才触发、在带内不打扰、判不了如实报。
+      每条判定都留着它当时判的 SQL 与原始结果行；规则文件每次改动都是一次 git 提交，
+      判定史按规则版本分桶回评；条件满足时还能升级因果对照、在假想数字上做 what-if 回放，
+      没声明规则的地方由主动扫描先找异常、把候选落成待确认草稿。详见
+      <a href="../capabilities/decisions.html">判定规则</a> 与
+      <a href="../engineering/decision-engine.html">判定内核</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L245">service.py:245 <span class="ref-line">DecisionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L183">rules.py:183 <span class="ref-line">DecisionRule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">expr.py:70 <span class="ref-line">VARIABLES</span></a>
+    </p>
+
+    <h3 id="chain-action">行动：停在提案，写回不存在</h3>
+
+    <p>
+      判定触发不会只发一条通知了事：它冻结成一份<strong>行动提案</strong>——载荷在创建那一刻定死，
+      之后谁批准，外送的就是那一份；批准之前，<strong>任何东西都不会离开系统</strong>。
+      批准后外送走 webhook / IM，回执逐条落库；行动之后还会用与判定同一套噪声带复测
+      「数字动了没有」——超出 / 无变化 / 判不了，三态如实。系统自身没有写回业务库的通道，
+      这是构造上的保证，不是配置开关。安全架构见
+      <a href="../engineering/action-safety.html">行动安全架构</a>，提案生命周期见
+      <a href="../capabilities/actions.html#lifecycle">行动与审批</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L164">propose.py:164 <span class="ref-line">build_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L153">service.py:153 <span class="ref-line">ActionService</span></a>
+    </p>
+
+    <p>
+      四段各有哪些功能块、哪些事刻意不做，见 <a href="../architecture/functional.html">功能架构</a>。
+      下面回到「问数」这一段——它是四段里唯一把答案「生成」出来的，
+      也最需要先把<strong>可答边界</strong>讲清楚。
+    </p>
 
     <h2 id="semantic">语义模型：可答边界的来源</h2>
 
@@ -122,7 +208,7 @@ flowchart LR
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 分级逃生梯：三条出口对应三种命运，软 MISS 的骨架在执行前还有一道保真校验兜底。</span>
+        <span class="cap-rendered">图 2 · 分级逃生梯：三条出口对应三种命运，软 MISS 的骨架在执行前还有一道保真校验兜底。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -420,9 +506,10 @@ flowchart LR
     <h2 id="gate">人工确认门禁：pending 不进检索</h2>
 
     <p>
-      凡是系统自动生成的内容——好评问答、修正记录、蒸馏教训、自动回写的样例——
+      凡是系统自动生成的内容——好评问答、修正记录、蒸馏教训、自动回写的样例、LLM 起草的技能草稿——
       统一以 <code>pending</code> 落盘。读侧有明确的过滤器：<strong>pending 的示例与未确认的教训，
-      根本不参与检索</strong>，等于不存在。
+      根本不参与检索</strong>，等于不存在；技能同理——未确认的草稿既不进节点提示词，
+      也不进按需加载工具（下一节展开）。
     </p>
 
     <p>
@@ -441,6 +528,77 @@ flowchart LR
       </div>
     </div>
 
+    <h2 id="skills">技能：四档投放，两道断言闸</h2>
+
+    <p>
+      跨数据源的方法论——组织怎么拆比率、哪类题先查什么——以 <strong>Skills</strong> 的形式沉淀，
+      与数据源事实分开：<strong>事实进 KB，方法论进 SKILL.md</strong>。技能同样是自动内容，
+      走上面那道确认门；确认之后落进四档之一——前两档是给模型读的，后两档不是：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>档</th><th>给谁用</th><th>怎么落地</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">required</td>
+            <td>模型</td>
+            <td>正文全文注入匹配节点的系统提示</td>
+          </tr>
+          <tr>
+            <td class="mono">available</td>
+            <td>模型</td>
+            <td>只把描述广告出去，正文由 <code>load_skill</code> 工具按需取</td>
+          </tr>
+          <tr>
+            <td class="mono">validator</td>
+            <td>引擎</td>
+            <td>结果域的断言清单——在 <code>validate</code> 节点拦在交付前</td>
+          </tr>
+          <tr>
+            <td class="mono">guard</td>
+            <td>引擎</td>
+            <td>SQL 域的断言清单——在 <code>execute_sql</code> 节点拦在执行前</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      后两档的正文从不进模型，它们是给引擎执行的<strong>声明式断言</strong>。以 guard 为例：
+      管理员把「SQL 不许长什么样」写成闭集变量上的条件（<code>select_star</code>、
+      <code>join_count</code>、<code>has_time_predicate</code> 等九个 0/1 或计数变量，
+      域外标识符在写入时就报错），在授权门之后、执行之前零 LLM 判定——明确违反即拦，
+      按声明的目标回滚到生成侧收窄；<strong>判不了绝不拦</strong>：缺失基线或类型不匹配记为
+      「判不了」，不会把否定式断言翻成假阳性。这与判定规则是同一套三值纪律——
+      把「不知道」与「否」分开。
+    </p>
+
+    <p>
+      治理动作也是颗粒的：一条已确认的技能可以单独停用（<code>status: disabled</code>），
+      <strong>停用是暂停投递，不是撤回确认</strong>，恢复走「启用」；停用后四个消费面同步断开——
+      节点提示词注入、<code>load_skill</code> 的广告与按名直取、validator / guard 的执行、
+      信封枚举与试跑语料。
+      资产装上之前还有一道关：先在本机语料上做<strong>装前试跑</strong>（装 / 不装双态消融）
+      与<strong>影响面回放</strong>（逐题四桶差分）——零 LLM，报告直喂回归门。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L96">service.py:96 <span class="ref-line">_TIERS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L55">guards.py:55 <span class="ref-line">GUARD_VARIABLES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L61">execute_sql.py:61 <span class="ref-line">ORG_GUARD_TAG</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L731">service.py:731 <span class="ref-line">disable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/impact.py#L881">impact.py:881 <span class="ref-line">run_impact</span></a>
+    </p>
+
+    <p>
+      四档各自的写法、guard / validator 的完整变量表与判定例，见
+      <a href="../capabilities/skills.html">Skills</a>；信封、试跑与影响面的治理流程见
+      <a href="../engineering/extension-governance.html">扩展与治理</a>。
+    </p>
+
     <h2 id="next">继续读</h2>
 
     <div class="table-wrap">
@@ -453,6 +611,10 @@ flowchart LR
           <tr><td>把语义模型写得更好</td><td><a href="../capabilities/semantic.html">语义层</a></td></tr>
           <tr><td>KB 五个文件的具体格式与检索</td><td><a href="../capabilities/kb.html">知识库</a></td></tr>
           <tr><td>一次提问在图上经过了什么</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>判定规则、因果升级、what-if 与判定历史</td><td><a href="../capabilities/decisions.html">判定规则</a></td></tr>
+          <tr><td>提案、审批与效果验收</td><td><a href="../capabilities/actions.html">行动与审批</a></td></tr>
+          <tr><td>四档技能与扩展治理（信封 · guard · 装前试跑）</td><td><a href="../capabilities/skills.html">Skills</a> · <a href="../engineering/extension-governance.html">扩展与治理</a></td></tr>
+          <tr><td>四段链路各有哪些功能块、哪些刻意不做</td><td><a href="../architecture/functional.html">功能架构</a></td></tr>
         </tbody>
       </table>
     </div>
@@ -460,7 +622,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 24eb23b</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: f7ca1d1</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
