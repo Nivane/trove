@@ -226,8 +226,17 @@ class PresetService:
                 report.add("skills", entry, "skipped",
                            "org skill 已确认,已生效")
             elif entry in other:
-                report.add("skills", entry, "unresolved",
-                           "org skill 存在但尚未确认(pending)—— 先确认该技能")
+                # pending 与 disabled(E6 颗粒停用)同住「未生效」这一类,
+                # 但下一句话不同:一个是"先确认",一个是"先启用" —— 报错
+                # 指错方向比不报更坏(与 validate 的 preset.ref 同判据)。
+                existing = self.skills.read_skill(entry)
+                status = str((existing or {}).get("status") or "")
+                if status == "disabled":
+                    report.add("skills", entry, "unresolved",
+                               "org skill 已颗粒停用(disabled)—— 先 enable 该技能")
+                else:
+                    report.add("skills", entry, "unresolved",
+                               "org skill 存在但尚未确认(pending)—— 先确认该技能")
             else:
                 report.add("skills", entry, "unresolved", "技能不存在")
             return

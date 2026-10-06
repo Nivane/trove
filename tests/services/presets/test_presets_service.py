@@ -165,6 +165,20 @@ class TestApplySkills:
         item = _item(report, "skills", "half-done")
         assert item.status == "unresolved" and "确认" in item.reason
 
+    async def test_disabled_org_skill_reference_names_the_kill_switch(
+            self, svc, skills):
+        """E6:停用与未确认同属「未生效」,但下一句话不同 —— 指错方向比不报更坏。"""
+        skills.create({"name": "parked", "description": "被停了", "body": "b"})
+        skills.confirm("parked")
+        skills.disable("parked")
+        svc.save("refs", {"name": "refs", "description": "引用停用技能",
+                          "skills": ["parked"]})
+        report = await svc.apply("refs", "demo")
+        item = _item(report, "skills", "parked")
+        assert item.status == "unresolved"
+        assert "停用" in item.reason and "enable" in item.reason
+        assert "尚未确认" not in item.reason
+
     async def test_template_colliding_with_code_skill_skips(self, svc, skills):
         code = skills.list_code_skills()[0]["name"]
         svc.save("shadow", {"name": "shadow", "description": "同名 code skill",
