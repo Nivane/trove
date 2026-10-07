@@ -75,18 +75,22 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    T["判定触发<br/>autonomy: propose"] --> P["pending<br/>待批准 · 载荷已冻结"]
-    P -- "人工批准" --> A["approved<br/>已批准"]
-    P -- "人工驳回" --> R["rejected"]
-    P -- "超时清收" --> E["expired"]
-    P -- "撤销" --> C1["cancelled"]
-    A -- "外送" --> D["dispatched<br/>通道已收下"]
-    A -- "撤销" --> C2["cancelled"]
-    A -- "MCP 拉取并签收" --> V["delivered<br/>已回执"]
+    T["判定触发<br/>autonomy: propose"]:::entry --> P["pending<br/>待批准 · 载荷已冻结"]:::act
+    P -- "人工批准" --> A["approved<br/>已批准"]:::act
+    P -- "人工驳回" --> R["rejected"]:::entry
+    P -- "超时清收" --> E["expired"]:::entry
+    P -- "撤销" --> C1["cancelled"]:::entry
+    A -- "外送" --> D["dispatched<br/>通道已收下"]:::act
+    A -- "撤销" --> C2["cancelled"]:::entry
+    A -- "MCP 拉取并签收" --> V["delivered<br/>已回执"]:::act
     D -- "签收" --> V
-    D -- "重试" --> F["failed<br/>外送失败 · 原样留痕"]
+    D -- "重试" --> F["failed<br/>外送失败 · 原样留痕"]:::err
     F -- "显式 retry" --> D
     D -- "通道失败" --> F
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 10 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

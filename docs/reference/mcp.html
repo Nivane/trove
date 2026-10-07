@@ -132,13 +132,18 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    CLI["trove mcp"] --&gt; T{"--transport"}
-    T -- "stdio（默认）" --&gt; L["身份 = 本机可信（等价 admin）<br/>数据源：全部"]
-    T -- "sse / streamable-http" --&gt; B{"绑定非回环地址？"}
-    B -- "否 · 回环" --&gt; OK["不强制 token"]
-    B -- "是" --&gt; TOK{"--token 能解析成真实用户？"}
-    TOK -- "否" --&gt; NO["拒绝启动"]
-    TOK -- "是" --&gt; U["身份 = token 对应的用户<br/>数据源按 grants 校验，与 HTTP API 同语义"]
+    CLI["trove mcp"]:::entry --&gt; T{"--transport"}:::entry
+    T -- "stdio（默认）" --&gt; L["身份 = 本机可信（等价 admin）<br/>数据源：全部"]:::entry
+    T -- "sse / streamable-http" --&gt; B{"绑定非回环地址？"}:::gate
+    B -- "否 · 回环" --&gt; OK["不强制 token"]:::entry
+    B -- "是" --&gt; TOK{"--token 能解析成真实用户？"}:::gate
+    TOK -- "否" --&gt; NO["拒绝启动"]:::err
+    TOK -- "是" --&gt; U["身份 = token 对应的用户<br/>数据源按 grants 校验，与 HTTP API 同语义"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 5 stroke:#f59e0b,stroke-width:1.5px
         </pre>
       </div>
       <figcaption>

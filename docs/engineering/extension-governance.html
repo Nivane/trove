@@ -80,13 +80,18 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    DRAFT["自动草稿（LLM 起草 / 学习回路 / 候选收件箱）"] --&gt; PENDING["pending<br/>不进消费面 · 不进提示词"]
-    HUMAN["管理员手写"] --&gt; PENDING
-    PENDING --&gt;|"confirm"| LIVE["confirmed<br/>下一问即生效（消费点每问现读，无缓存）"]
-    PENDING --&gt;|"reject"| DEAD["rejected（终态）"]
-    LIVE --&gt; GIT["GitVersioning 提交<br/>scoped: git add -- 仅具名路径"]
-    GIT --&gt; HIST["历史 / 回滚"]
+    DRAFT["自动草稿（LLM 起草 / 学习回路 / 候选收件箱）"]:::gen --&gt; PENDING["pending<br/>不进消费面 · 不进提示词"]:::gate
+    HUMAN["管理员手写"]:::entry --&gt; PENDING
+    PENDING --&gt;|"confirm"| LIVE["confirmed<br/>下一问即生效（消费点每问现读，无缓存）"]:::entry
+    PENDING --&gt;|"reject"| DEAD["rejected（终态）"]:::entry
+    LIVE --&gt; GIT["GitVersioning 提交<br/>scoped: git add -- 仅具名路径"]:::entry
+    GIT --&gt; HIST["历史 / 回滚"]:::entry
     HIST --&gt;|"rollback sha"| LIVE
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 6 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
@@ -301,12 +306,15 @@ flowchart LR
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    SW["org_extensions_enabled = false"] --&gt; STOP1["停：组织技能注入与 load_skill 广告"]
-    SW --&gt; STOP2["停：validator 断言（结果域）与 guard 断言（SQL 域）"]
-    SW --&gt; STOP3["停：决策规则的执行（DecisionService 评估入口）"]
-    SW -.-&gt; KEEP1["不动：code skills（trove/prompts/skills/）"]
-    SW -.-&gt; KEEP2["不动：KB / few-shots / 语义模型"]
-    SW -.-&gt; KEEP3["不动：写入面——照常起草 / 确认 / 编辑"]
+    SW["org_extensions_enabled = false"]:::gate --&gt; STOP1["停：组织技能注入与 load_skill 广告"]:::entry
+    SW --&gt; STOP2["停：validator 断言（结果域）与 guard 断言（SQL 域）"]:::entry
+    SW --&gt; STOP3["停：决策规则的执行（DecisionService 评估入口）"]:::entry
+    SW -.-&gt; KEEP1["不动：code skills（trove/prompts/skills/）"]:::entry
+    SW -.-&gt; KEEP2["不动：KB / few-shots / 语义模型"]:::entry
+    SW -.-&gt; KEEP3["不动：写入面——照常起草 / 确认 / 编辑"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

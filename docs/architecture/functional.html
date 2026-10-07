@@ -92,7 +92,7 @@
 <pre class="mermaid">
 flowchart TB
     %% 配色 = 站点 token 的半透明版，与总览页同一套链路色（问数 indigo · 分析 teal ·
-    %% 决策 amber · 行动 violet · 外部 zinc 虚线）；填充低透明度、描边实色，亮暗两档同源
+    %% 决策 amber · 行动 violet · 外部 zinc 虚线）；半透明填充 + 实色描边，亮暗两档同源
     subgraph chain["链路：问数 · 分析 · 决策 · 行动（终点在系统外）"]
         direction LR
         Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;对话问答 · 可答边界&lt;br/&gt;扩展确认 · 元数据 · 澄清"]:::q
@@ -110,9 +110,9 @@ flowchart TB
     %% 带间不连线：跨带边会让带内 direction LR 失效（mermaid v11），支撑层用单节点绕开
     chain ~~~ SUP
     classDef q fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
-    classDef a fill:#14b8a61f,stroke:#14b8a6,stroke-width:1.5px;
-    classDef d fill:#f59e0b1f,stroke:#f59e0b,stroke-width:1.5px;
-    classDef act fill:#8b5cf61f,stroke:#8b5cf6,stroke-width:1.5px;
+    classDef a fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef d fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
     classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
     classDef sup fill:#71717a14,stroke:#71717a59,stroke-width:1px;
     style chain fill:#71717a0d,stroke:#71717a2e,stroke-width:1px

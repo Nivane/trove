@@ -74,12 +74,17 @@ uv run trove --datasource demo             # REPL</code></pre>
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    B["浏览器"] -- ":8080" --> F["frontend 容器<br/>nginx：托管 SPA + 反代 /v1"]
-    F -- "/v1" --> K["backend 容器<br/>trove serve：纯 JSON API"]
-    K -- "业务查询" --> P[("postgres 容器<br/>业务表 + pgvector + pg_bm25")]
-    I["db-init 容器<br/>灌 demo 数据，跑完即退"] -- "幂等灌数（backend 等它成功后才启动）" --> P
-    K -. "生成 / 反思" .-> L["LLM 网关<br/>凭证从宿主机注入"]
-    V[".trove 卷<br/>KB · 记忆 · 任务定义"] -. "挂载进 backend 容器" .-> K
+    B["浏览器"]:::entry -- ":8080" --> F["frontend 容器<br/>nginx：托管 SPA + 反代 /v1"]:::entry
+    F -- "/v1" --> K["backend 容器<br/>trove serve：纯 JSON API"]:::core
+    K -- "业务查询" --> P[("postgres 容器<br/>业务表 + pgvector + pg_bm25")]:::ext
+    I["db-init 容器<br/>灌 demo 数据，跑完即退"]:::entry -- "幂等灌数（backend 等它成功后才启动）" --> P
+    K -. "生成 / 反思" .-> L["LLM 网关<br/>凭证从宿主机注入"]:::gen
+    V[".trove 卷<br/>KB · 记忆 · 任务定义"]:::entry -. "挂载进 backend 容器" .-> K
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
 </pre>
       </div>
       <figcaption>

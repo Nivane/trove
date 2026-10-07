@@ -153,24 +153,29 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    S["SKILL.md 声明 tier"] --> R["required<br/>正文全文注入匹配节点的系统提示"]
-    S --> A["available<br/>只广告描述，正文经 load_skill 工具按需取"]
-    S --> V["validator<br/>正文从不进模型，是给引擎执行的断言清单"]
-    S --> G["guard<br/>正文从不进模型，是给引擎执行的 SQL 断言清单"]
-    R --> P["模型读 → 生成 SQL"]
+    S["SKILL.md 声明 tier"]:::entry --> R["required<br/>正文全文注入匹配节点的系统提示"]:::gen
+    S --> A["available<br/>只广告描述，正文经 load_skill 工具按需取"]:::gen
+    S --> V["validator<br/>正文从不进模型，是给引擎执行的断言清单"]:::gate
+    S --> G["guard<br/>正文从不进模型，是给引擎执行的 SQL 断言清单"]:::gate
+    R --> P["模型读 → 生成 SQL"]:::gen
     A --> P
-    P --> E["execute_sql 节点<br/>guard 在授权门之后、执行之前判定"]
+    P --> E["execute_sql 节点<br/>guard 在授权门之后、执行之前判定"]:::exec
     G --> E
-    E --> E1["通过 → 执行"]
-    E --> E2["违反 · blocking → 回滚重算（目标可收窄）"]
-    E --> E3["违反 · advisory → 只进 guard_hits 附注"]
-    E --> E4["判不了（SQL 解析失败）→ 绝不拦"]
-    E1 --> X["validate 节点<br/>零 LLM，逐条判定结果"]
+    E --> E1["通过 → 执行"]:::entry
+    E --> E2["违反 · blocking → 回滚重算（目标可收窄）"]:::err
+    E --> E3["违反 · advisory → 只进 guard_hits 附注"]:::entry
+    E --> E4["判不了（SQL 解析失败）→ 绝不拦"]:::entry
+    E1 --> X["validate 节点<br/>零 LLM，逐条判定结果"]:::exec
     V --> X
-    X --> X1["通过 → 交付"]
-    X --> X2["违反 · blocking → 回滚重算"]
-    X --> X3["违反 · advisory → 回答顶上一行提示"]
-    X --> X4["判不了 → 只进 validator_hits，不上屏"]
+    X --> X1["通过 → 交付"]:::entry
+    X --> X2["违反 · blocking → 回滚重算"]:::err
+    X --> X3["违反 · advisory → 回答顶上一行提示"]:::entry
+    X --> X4["判不了 → 只进 validator_hits，不上屏"]:::entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

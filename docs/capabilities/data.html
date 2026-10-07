@@ -95,20 +95,25 @@
         <pre class="mermaid">
 flowchart LR
     subgraph can["决定能答什么"]
-        SEM["01 语义层<br/>计划 → 权威 SQL / 骨架"]
-        KB["03 知识库<br/>五个 YAML 按谁能写分工"]
-        RET["04 混合检索<br/>两路召回 → 加权 RRF"]
+        SEM["01 语义层<br/>计划 → 权威 SQL / 骨架"]:::gen
+        KB["03 知识库<br/>五个 YAML 按谁能写分工"]:::entry
+        RET["04 混合检索<br/>两路召回 → 加权 RRF"]:::exec
     end
     subgraph trust["决定答得对不对"]
-        DEC["02 判定规则<br/>同一份语义模型，换个问法"]
-        EV["07 评测基建<br/>离线回放 + 回归门：判定不花钱"]
+        DEC["02 判定规则<br/>同一份语义模型，换个问法"]:::gate
+        EV["07 评测基建<br/>离线回放 + 回归门：判定不花钱"]:::gate
     end
     subgraph where["决定在哪跑"]
-        DS["05 多数据源<br/>注册表 + 驱动懒加载"]
-        ST["06 统一存储<br/>一个抽象，两档后端"]
+        DS["05 多数据源<br/>注册表 + 驱动懒加载"]:::ext
+        ST["06 统一存储<br/>一个抽象，两档后端"]:::entry
     end
     %% 无连线也要按左→右排：三组之间没有依赖关系，只是并列
     can ~~~ trust ~~~ where
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
         </pre>
       </div>
       <figcaption>

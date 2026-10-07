@@ -214,13 +214,15 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    L1["总在<br/>validate_sql（SQLGlot 语法校验）<br/>finish（显式收工）"]
-    L2["standard / complex 档<br/>probe_query（只读试跑）· check_result（试跑 + 规则链）<br/>预算服务在场时另有 describe_cost"]
-    L3["以上 + analyst / admin 角色<br/>catalog：约 200 字节的发现工具"]
-    L4["经 catalog 解锁 · 下一轮才可见<br/>search_values · lookup_schema · explain_plan"]
-    L5["另一条独立条件：KB 里有 confirmed 的 available skill<br/>load_skill"]
+    L1["总在<br/>validate_sql（SQLGlot 语法校验）<br/>finish（显式收工）"]:::exec
+    L2["standard / complex 档<br/>probe_query（只读试跑）· check_result（试跑 + 规则链）<br/>预算服务在场时另有 describe_cost"]:::exec
+    L3["以上 + analyst / admin 角色<br/>catalog：约 200 字节的发现工具"]:::entry
+    L4["经 catalog 解锁 · 下一轮才可见<br/>search_values · lookup_schema · explain_plan"]:::exec
+    L5["另一条独立条件：KB 里有 confirmed 的 available skill<br/>load_skill"]:::entry
     L1 --&gt; L2 --&gt; L3 --&gt; L4
     L1 --&gt; L5
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

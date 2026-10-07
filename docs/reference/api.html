@@ -100,13 +100,17 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    REQ["请求 /v1/…"] --&gt; K{"端点"}
-    K -- "普通端点" --&gt; D1["get_current_user<br/>token → 用户"]
-    D1 --&gt; D2["require_admin / require_scope<br/>按需叠加"]
-    D2 --&gt; D3["require_datasource<br/>数据源授权"]
-    D3 --&gt; D4["check_api_rate<br/>限流与日配额"]
-    D4 --&gt; H["业务处理"]
-    K -- "探活 / 指标" --&gt; FREE["/v1/health · /v1/metrics<br/>免鉴权：编排与抓取端不便携带 token"]
+    REQ["请求 /v1/…"]:::entry --&gt; K{"端点"}:::entry
+    K -- "普通端点" --&gt; D1["get_current_user<br/>token → 用户"]:::gate
+    D1 --&gt; D2["require_admin / require_scope<br/>按需叠加"]:::gate
+    D2 --&gt; D3["require_datasource<br/>数据源授权"]:::gate
+    D3 --&gt; D4["check_api_rate<br/>限流与日配额"]:::gate
+    D4 --&gt; H["业务处理"]:::exec
+    K -- "探活 / 指标" --&gt; FREE["/v1/health · /v1/metrics<br/>免鉴权：编排与抓取端不便携带 token"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

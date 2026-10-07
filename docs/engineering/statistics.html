@@ -94,14 +94,18 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    W["被测窗口<br/>（本月）"] --&gt; P["块规划 plan_blocks<br/>粒度对齐 · trailing / same_phase"]
-    P --&gt; S["块序列<br/>至多 1 条 SQL · 按维对齐"]
-    S --&gt; BD["噪声带 band<br/>median ± k · 1.4826 · MAD"]
-    S --&gt; EV["并列证据<br/>bootstrap 区间 · n_eff · low_n"]
-    W --&gt; G{"gate：当期值超出带？"}
+    W["被测窗口<br/>（本月）"]:::entry --&gt; P["块规划 plan_blocks<br/>粒度对齐 · trailing / same_phase"]:::exec
+    P --&gt; S["块序列<br/>至多 1 条 SQL · 按维对齐"]:::exec
+    S --&gt; BD["噪声带 band<br/>median ± k · 1.4826 · MAD"]:::exec
+    S --&gt; EV["并列证据<br/>bootstrap 区间 · n_eff · low_n"]:::exec
+    W --&gt; G{"gate：当期值超出带？"}:::gate
     BD --&gt; G
-    G --&gt;|"是"| OK["gated = true<br/>附位置分数（非概率）"]
-    G --&gt;|"否 / 判不了"| NO["gated = false<br/>reason 区分「在带内」与「判不了」"]
+    G --&gt;|"是"| OK["gated = true<br/>附位置分数（非概率）"]:::entry
+    G --&gt;|"否 / 判不了"| NO["gated = false<br/>reason 区分「在带内」与「判不了」"]:::entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 6 stroke:#f59e0b,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

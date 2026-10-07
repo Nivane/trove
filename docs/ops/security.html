@@ -76,15 +76,19 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    SRC["SQL 从哪来：模型生成 · 编译产物 · job 载荷 · CLI · MCP"] --> G1["只读门 ① 关键词正则<br/>廉价筛查明显的写操作"]
-    G1 --> G2["只读门 ② AST 防火墙<br/>SQLGlot 整树扫 DML / DDL 节点"]
-    G2 --> G3["只读门 ③ 执行器统一门<br/>注册表执行入口再查一次"]
-    G3 --> AU["执行前授权门（execute_sql）<br/>数据源级恒拦；表级默认只警告"]
-    AU --> HITL["人在环（开启时）<br/>载荷认不出 → 默认拒绝"]
-    HITL --> EX["正式执行<br/>只读账号 · 30s 超时"]
-    EX --> MK["字段级脱敏<br/>partial / hash / null"]
-    MK --> OUT["交付：前端 / 模型上下文"]
-    SEM["POST /v1/semantic/query"] -. "不走 workflow：只有路由层数据源授权 + 只读门" .-> EX
+    SRC["SQL 从哪来：模型生成 · 编译产物 · job 载荷 · CLI · MCP"]:::entry --> G1["只读门 ① 关键词正则<br/>廉价筛查明显的写操作"]:::gate
+    G1 --> G2["只读门 ② AST 防火墙<br/>SQLGlot 整树扫 DML / DDL 节点"]:::gate
+    G2 --> G3["只读门 ③ 执行器统一门<br/>注册表执行入口再查一次"]:::gate
+    G3 --> AU["执行前授权门（execute_sql）<br/>数据源级恒拦；表级默认只警告"]:::gate
+    AU --> HITL["人在环（开启时）<br/>载荷认不出 → 默认拒绝"]:::gate
+    HITL --> EX["正式执行<br/>只读账号 · 30s 超时"]:::exec
+    EX --> MK["字段级脱敏<br/>partial / hash / null"]:::exec
+    MK --> OUT["交付：前端 / 模型上下文"]:::entry
+    SEM["POST /v1/semantic/query"]:::entry -. "不走 workflow：只有路由层数据源授权 + 只读门" .-> EX
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

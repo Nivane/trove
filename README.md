@@ -145,17 +145,25 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    M["语义模型<br/>指标 / 维度 / 时间窗"] --> R["判定规则<br/>零 LLM 定期求值"]
-    R --> BAND{"季节噪声带<br/>超出才触发"}
-    BAND -->|"判不了"| ERR["如实报错误运行<br/>绝不静默放行"]
-    BAND -->|"超出 + 条件命中"| V["判定触发<br/>SQL + 原始行证据"]
-    V --> C["因果对照(可选)<br/>DiD → 合成对照"]
-    V --> P["行动提案<br/>载荷创建时冻结"]
-    P --> A{"人工审批"}
-    A -->|"批准"| D["外送 webhook / IM<br/>回执落库"]
-    A -->|"拒绝"| X["终止"]
-    D --> M2["效果验收<br/>同一套噪声带"]
-    M2 -.->|"回评"| Q["判定质量<br/>按规则版本分桶"]
+    %% 与站点同款的阶段配色:语义模型 indigo · 判定链 amber · 行动与闭环 violet · 对照分析 teal · 响亮失败 红
+    M["语义模型<br/>指标 / 维度 / 时间窗"]:::gen --> R["判定规则<br/>零 LLM 定期求值"]:::gate
+    R --> BAND{"季节噪声带<br/>超出才触发"}:::gate
+    BAND -->|"判不了"| ERR["如实报错误运行<br/>绝不静默放行"]:::err
+    BAND -->|"超出 + 条件命中"| V["判定触发<br/>SQL + 原始行证据"]:::gate
+    V --> C["因果对照(可选)<br/>DiD → 合成对照"]:::exec
+    V --> P["行动提案<br/>载荷创建时冻结"]:::act
+    P --> A{"人工审批"}:::gate
+    A -->|"批准"| D["外送 webhook / IM<br/>回执落库"]:::act
+    A -->|"拒绝"| X["终止"]:::entry
+    D --> M2["效果验收<br/>同一套噪声带"]:::act
+    M2 -.->|"回评"| Q["判定质量<br/>按规则版本分桶"]:::entry
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    linkStyle 10 stroke:#8b5cf6,stroke-width:1.5px
 ```
 
 逐条展开:[判定规则](https://nivane.github.io/trove/capabilities/decisions.html) · [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) · [分解数学与驱动器树](https://nivane.github.io/trove/engineering/decomposition.html) · [统计与噪声带](https://nivane.github.io/trove/engineering/statistics.html) · [闭环与契约](https://nivane.github.io/trove/engineering/closed-loop.html)。
@@ -172,10 +180,15 @@ Trove 走语义层路线,并加了一个让答案持续流动的变体:
 
 ```mermaid
 flowchart TB
-    PLAN["查询计划"] --> C["语义编译器"]
-    C -->|"全部命中"| OK["权威 SQL<br/>编译器全权产出<br/>无 LLM 补缺"]
-    C -->|"软 MISS"| PC["词表 / 取值 / 口径未声明<br/>join、过滤、分组已钉住<br/>生成补缺 + 骨架校验兜底"]
-    C -->|"硬 MISS"| MISS["未覆盖的表 / 二义 join<br/>fan-out / 坏派生定义<br/>拒绝 + 一键确认模型扩展"]
+    %% 同一配色语言:语义层 indigo(编译器为图中的主角,2px)· 权威产物 teal · 硬边界判定 amber
+    PLAN["查询计划"]:::gen --> C["语义编译器"]:::core
+    C -->|"全部命中"| OK["权威 SQL<br/>编译器全权产出<br/>无 LLM 补缺"]:::exec
+    C -->|"软 MISS"| PC["词表 / 取值 / 口径未声明<br/>join、过滤、分组已钉住<br/>生成补缺 + 骨架校验兜底"]:::gen
+    C -->|"硬 MISS"| MISS["未覆盖的表 / 二义 join<br/>fan-out / 坏派生定义<br/>拒绝 + 一键确认模型扩展"]:::gate
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 ```
 
 同一份编译器,三种结局,而且**中间的软 MISS 才是常态**——它把「模型没覆盖全」从一次硬停,变成一次照常交付。

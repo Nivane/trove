@@ -78,15 +78,20 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    TOOLS["① 工具治理<br/>构图时按角色裁剪出可见工具表"] -- "模型能看见的工具" --> LOOP
-    MEM["④ 记忆与技能<br/>情节与技能进上下文，写入过确认"] -- "上下文块 / 注入的 skill" --> LOOP
+    TOOLS["① 工具治理<br/>构图时按角色裁剪出可见工具表"]:::entry -- "模型能看见的工具" --> LOOP
+    MEM["④ 记忆与技能<br/>情节与技能进上下文，写入过确认"]:::entry -- "上下文块 / 注入的 skill" --> LOOP
     subgraph LOOP["② 生成循环（ReAct）"]
         direction LR
-        M["模型"] -- "工具调用" --> T["工具执行<br/>语法校验 / 只读探测 / 规则链"]
+        M["模型"]:::gen -- "工具调用" --> T["工具执行<br/>语法校验 / 只读探测 / 规则链"]:::exec
         T -- "观察结果" --> M
-        M -- "finish(SQL)" --> OUT["候选 SQL"]
+        M -- "finish(SQL)" --> OUT["候选 SQL"]:::gen
     end
-    LOOP -- "每轮落检查点" --> TRAVEL["③ 时间旅行与回滚<br/>版本比对判有没有进步，改坏了回上一轮"]
+    LOOP -- "每轮落检查点" --> TRAVEL["③ 时间旅行与回滚<br/>版本比对判有没有进步，改坏了回上一轮"]:::act
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    style LOOP fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
         </pre>
       </div>
       <figcaption>
@@ -219,9 +224,13 @@ flowchart LR
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    A["agentic 循环<br/>自验工具 + 自决收工"] -- "finish(SQL)，载荷过校验" --> OK["候选 SQL → 共识投票 → 执行"]
-    A -. "空手而归，或任一道预算触顶" .-> C["降级：经典子图<br/>生成 → 校验 → 重试"]
+    A["agentic 循环<br/>自验工具 + 自决收工"]:::gen -- "finish(SQL)，载荷过校验" --> OK["候选 SQL → 共识投票 → 执行"]:::entry
+    A -. "空手而归，或任一道预算触顶" .-> C["降级：经典子图<br/>生成 → 校验 → 重试"]:::err
     C -. "具名折损 -0.10（仅当这轮交付的确实是它）" .-> OK
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 1 stroke:#f59e0b,stroke-width:1.5px
         </pre>
       </div>
       <figcaption>

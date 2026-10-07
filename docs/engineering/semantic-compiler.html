@@ -64,15 +64,18 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    Q["query_sketch: 按语义模型编译计划"] --&gt; C{"编译结果"}
-    C --&gt;|"覆盖内"| OK["CompileResult<br/>权威 SQL 骨架注入 plan"]
-    C --&gt;|"软 MISS"| P["PartialCompile<br/>可解析部分权威化<br/>未解析组件记 compile_misses"]
-    C --&gt;|"硬 MISS"| M["CompileMiss<br/>触发 refuse 出口"]
-    OK --&gt; EXEC["execute_sql<br/>compiled_sql_matches · 照抄校验"]
-    P --&gt; GEN["gen_sql 按 plan 补齐未解析组件"]
-    GEN --&gt; EXEC2["execute_sql<br/>skeleton_preserved · 骨架保真校验"]
-    M --&gt; REF["refuse: 拒绝 + 反问扩展模型"]
-    M --&gt;|"模型整体缺失"| INIT["引导先建模 /kb init"]
+    Q["query_sketch: 按语义模型编译计划"]:::gen --&gt; C{"编译结果"}:::gate
+    C --&gt;|"覆盖内"| OK["CompileResult<br/>权威 SQL 骨架注入 plan"]:::gen
+    C --&gt;|"软 MISS"| P["PartialCompile<br/>可解析部分权威化<br/>未解析组件记 compile_misses"]:::gen
+    C --&gt;|"硬 MISS"| M["CompileMiss<br/>触发 refuse 出口"]:::gate
+    OK --&gt; EXEC["execute_sql<br/>compiled_sql_matches · 照抄校验"]:::exec
+    P --&gt; GEN["gen_sql 按 plan 补齐未解析组件"]:::gen
+    GEN --&gt; EXEC2["execute_sql<br/>skeleton_preserved · 骨架保真校验"]:::exec
+    M --&gt; REF["refuse: 拒绝 + 反问扩展模型"]:::gate
+    M --&gt;|"模型整体缺失"| INIT["引导先建模 /kb init"]:::gate
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>
@@ -214,14 +217,17 @@ flowchart TB
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    MISS["硬 MISS 原因"] --&gt; DRAFT["LLM 草拟最小扩展声明<br/>（字段 / 指标，不出表达式新语义）"]
-    DRAFT --&gt; CONF{"确定性冲突检测<br/>同名 / 表达式不可解析 / 数据集未声明"}
-    CONF --&gt;|"agg_duplicate 已有同口径"| TIP["不落库<br/>引导换问法加过滤条件"]
-    CONF --&gt;|"可人工修正的冲突"| PEND["落 pending 收件箱<br/>管理员修正后新建"]
-    CONF --&gt;|"无冲突"| GATE{"A / B 档确定性验证门"}
-    GATE --&gt;|"A 档: 字段在物理表中确认存在"| AUTO["自动入库（跳过 pending）<br/>同轮路由回重答"]
+    MISS["硬 MISS 原因"]:::gate --&gt; DRAFT["LLM 草拟最小扩展声明<br/>（字段 / 指标，不出表达式新语义）"]:::gen
+    DRAFT --&gt; CONF{"确定性冲突检测<br/>同名 / 表达式不可解析 / 数据集未声明"}:::gate
+    CONF --&gt;|"agg_duplicate 已有同口径"| TIP["不落库<br/>引导换问法加过滤条件"]:::entry
+    CONF --&gt;|"可人工修正的冲突"| PEND["落 pending 收件箱<br/>管理员修正后新建"]:::gate
+    CONF --&gt;|"无冲突"| GATE{"A / B 档确定性验证门"}:::gate
+    GATE --&gt;|"A 档: 字段在物理表中确认存在"| AUTO["自动入库（跳过 pending）<br/>同轮路由回重答"]:::gen
     GATE --&gt;|"B 档: 机械聚合 + 完整编译 + 真实执行过 shape"| AUTO
     GATE --&gt;|"任一不过"| PEND
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

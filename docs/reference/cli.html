@@ -64,12 +64,14 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    T["trove<br/>常驻与运维"] --&gt; T1["REPL（默认）"]
-    T --&gt; T2["serve · mcp"]
-    T --&gt; T3["admin · job · schedule<br/>maintenance"]
-    T --&gt; T4["validate · extensions · preset<br/>干跑校验与扩展资产"]
-    TC["trove-cli<br/>一次性"] --&gt; C1["提问：--print 输出 JSON"]
-    TC --&gt; C2["index：kb / schema / sync<br/>只属于 trove-cli，trove index 不认"]
+    T["trove<br/>常驻与运维"]:::entry --&gt; T1["REPL（默认）"]:::entry
+    T --&gt; T2["serve · mcp"]:::entry
+    T --&gt; T3["admin · job · schedule<br/>maintenance"]:::entry
+    T --&gt; T4["validate · extensions · preset<br/>干跑校验与扩展资产"]:::entry
+    TC["trove-cli<br/>一次性"]:::entry --&gt; C1["提问：--print 输出 JSON"]:::entry
+    TC --&gt; C2["index：kb / schema / sync<br/>只属于 trove-cli，trove index 不认"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
         </pre>
       </div>
       <figcaption>

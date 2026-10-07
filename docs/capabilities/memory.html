@@ -291,13 +291,17 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    RUN["一轮问答结束"] --> OB["observe 统一写回"]
-    OB --> EP["情节记录<br/>自包含，不进确认门"]
-    OB --> DR["三类草稿（pending）<br/>成功示例 · 纠正教训 · 蒸馏教训"]
-    DR --> G{"管理端确认"}
-    G -- "确认" --> KB[("KB 检索")]
-    G -- "拒绝" --> X["丢弃"]
-    EP --> C["进 episodes 上下文块<br/>成功当锚点，失败当反例"]
+    RUN["一轮问答结束"]:::entry --> OB["observe 统一写回"]:::exec
+    OB --> EP["情节记录<br/>自包含，不进确认门"]:::entry
+    OB --> DR["三类草稿（pending）<br/>成功示例 · 纠正教训 · 蒸馏教训"]:::entry
+    DR --> G{"管理端确认"}:::gate
+    G -- "确认" --> KB[("KB 检索")]:::exec
+    G -- "拒绝" --> X["丢弃"]:::entry
+    EP --> C["进 episodes 上下文块<br/>成功当锚点，失败当反例"]:::gen
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

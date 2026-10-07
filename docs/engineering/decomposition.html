@@ -161,17 +161,21 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    EXPR["metric 表达式<br/>sqlglot 解析"] --&gt; KIND{"顶层形状?"}
-    KIND --&gt;|"AVG(x)"| RAT1["ratio · decomposable=false<br/>子: SUM(x) / COUNT(x)"]
-    KIND --&gt;|"a / b · SafeDivide"| RAT2["ratio · decomposable=false<br/>子: 递归 a, b"]
-    KIND --&gt;|"a + b · a − b"| ADD["derived · decomposable=true<br/>子: 递归 a, b"]
-    KIND --&gt;|"a * b"| MUL["derived · decomposable=false<br/>子: 递归 a, b"]
-    KIND --&gt;|"裸标识符 = metric 名"| REF["递归展开被引用 metric<br/>环停 cycle / 深度停 depth"]
-    KIND --&gt;|"聚合函数 · 解析不了"| LEAF["叶子（自身可执行）<br/>note 标注原因"]
-    ADD --&gt; COLLECT["collect_components<br/>preorder · 去重 · max_components 截断"]
+    EXPR["metric 表达式<br/>sqlglot 解析"]:::entry --&gt; KIND{"顶层形状?"}:::gate
+    KIND --&gt;|"AVG(x)"| RAT1["ratio · decomposable=false<br/>子: SUM(x) / COUNT(x)"]:::exec
+    KIND --&gt;|"a / b · SafeDivide"| RAT2["ratio · decomposable=false<br/>子: 递归 a, b"]:::exec
+    KIND --&gt;|"a + b · a − b"| ADD["derived · decomposable=true<br/>子: 递归 a, b"]:::exec
+    KIND --&gt;|"a * b"| MUL["derived · decomposable=false<br/>子: 递归 a, b"]:::exec
+    KIND --&gt;|"裸标识符 = metric 名"| REF["递归展开被引用 metric<br/>环停 cycle / 深度停 depth"]:::exec
+    KIND --&gt;|"聚合函数 · 解析不了"| LEAF["叶子（自身可执行）<br/>note 标注原因"]:::err
+    ADD --&gt; COLLECT["collect_components<br/>preorder · 去重 · max_components 截断"]:::exec
     RAT1 --&gt; COLLECT
     RAT2 --&gt; COLLECT
     MUL --&gt; COLLECT
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>
@@ -261,16 +265,21 @@ flowchart TB
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    TREE["组件树骨架<br/>（纯函数·零查询）"] --&gt; PRE["预检·只编译不执行<br/>剔除: 解析不了 / 字段遮蔽 / GROUP BY"]
-    PRE --&gt; BUD{"预算够吗?"}
-    BUD --&gt;|"不够"| SKEL["只留骨架<br/>degraded: query_budget_exceeded"]
-    BUD --&gt;|"够"| COMB["组合编译<br/>每期一条多度量 SQL"]
-    COMB --&gt;|"编译失败（交互）"| FALL["逐候选回退<br/>逐条数预算·超则截断记账"]
-    COMB --&gt;|"成功"| RUN["执行两期<br/>purpose=driver_tree"]
+    TREE["组件树骨架<br/>（纯函数·零查询）"]:::entry --&gt; PRE["预检·只编译不执行<br/>剔除: 解析不了 / 字段遮蔽 / GROUP BY"]:::exec
+    PRE --&gt; BUD{"预算够吗?"}:::gate
+    BUD --&gt;|"不够"| SKEL["只留骨架<br/>degraded: query_budget_exceeded"]:::err
+    BUD --&gt;|"够"| COMB["组合编译<br/>每期一条多度量 SQL"]:::gen
+    COMB --&gt;|"编译失败（交互）"| FALL["逐候选回退<br/>逐条数预算·超则截断记账"]:::err
+    COMB --&gt;|"成功"| RUN["执行两期<br/>purpose=driver_tree"]:::exec
     FALL --&gt; RUN
-    RUN --&gt; MARK["_mark_tree<br/>子项求和 · 残差判定"]
-    SKEL --&gt; FIN["_finish<br/>根值优先 hop0 官方口径"]
+    RUN --&gt; MARK["_mark_tree<br/>子项求和 · 残差判定"]:::exec
+    SKEL --&gt; FIN["_finish<br/>根值优先 hop0 官方口径"]:::exec
     MARK --&gt; FIN
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

@@ -89,12 +89,16 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    LIVE["活库 schema"] --> D1["L1 结构漂移<br/>表 / 列还在不在"]
-    LIVE --> D2["L2 引用漂移<br/>语义模型引用的表 / 字段还可达吗"]
-    EXT["外部声明<br/>治理流程 / 人的通知"] --> D4["L4 口径漂移<br/>业务算法改了，库里没有痕迹"]
-    D1 --> ENT["同一条漂移条目<br/>影响面快照 + 同一套处置流程"]
+    LIVE["活库 schema"]:::ext --> D1["L1 结构漂移<br/>表 / 列还在不在"]:::exec
+    LIVE --> D2["L2 引用漂移<br/>语义模型引用的表 / 字段还可达吗"]:::exec
+    EXT["外部声明<br/>治理流程 / 人的通知"]:::ext --> D4["L4 口径漂移<br/>业务算法改了，库里没有痕迹"]:::ext
+    D1 --> ENT["同一条漂移条目<br/>影响面快照 + 同一套处置流程"]:::entry
     D2 --> ENT
     D4 --> ENT
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
         </pre>
       </div>
       <figcaption>

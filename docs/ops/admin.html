@@ -99,12 +99,16 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TB
-    U["用户"] --&gt; L1["① 账号角色<br/>admin / 非 admin → 能否进管理端"]
-    U --&gt; L2{"② 数据源授权 grants<br/>这个用户能问哪些源"}
-    U --&gt; L3["③ 工具 ACL<br/>analyst 角色 → catalog 工具可见性"]
-    L2 -- "None" --&gt; R1["拿不到授权依据<br/>拒绝一切，不查任何数据源"]
-    L2 -- "空集合" --&gt; R2["有依据、依据为空<br/>只放行默认数据源"]
-    L2 -- "非空集合" --&gt; R3["严格白名单"]
+    U["用户"]:::entry --&gt; L1["① 账号角色<br/>admin / 非 admin → 能否进管理端"]:::gate
+    U --&gt; L2{"② 数据源授权 grants<br/>这个用户能问哪些源"}:::gate
+    U --&gt; L3["③ 工具 ACL<br/>analyst 角色 → catalog 工具可见性"]:::gate
+    L2 -- "None" --&gt; R1["拿不到授权依据<br/>拒绝一切，不查任何数据源"]:::err
+    L2 -- "空集合" --&gt; R2["有依据、依据为空<br/>只放行默认数据源"]:::entry
+    L2 -- "非空集合" --&gt; R3["严格白名单"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

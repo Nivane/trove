@@ -146,17 +146,25 @@ The three close a loop — decisions run on the semantic model, action runs on d
 
 ```mermaid
 flowchart TB
-    M["Semantic model<br/>metrics / dimensions / windows"] --> R["Decision rules<br/>zero-LLM, on a schedule"]
-    R --> BAND{"Seasonal noise band<br/>triggers only outside"}
-    BAND -->|"cannot tell"| ERR["Honest error run<br/>never a silent pass"]
-    BAND -->|"outside + condition met"| V["Verdict: triggered<br/>SQL + raw rows"]
-    V --> C["Causal contrast (optional)<br/>DiD → synthetic control"]
-    V --> P["Action proposal<br/>payload frozen at creation"]
-    P --> A{"Human approval"}
-    A -->|"approve"| D["Dispatch webhook / IM<br/>receipts recorded"]
-    A -->|"reject"| X["Closed"]
-    D --> M2["Outcome measurement<br/>same noise band"]
-    M2 -.->|"scored"| Q["Verdict quality<br/>bucketed per rule revision"]
+    %% same stage palette as the docs site: semantic model indigo · decision chain amber · action & loop violet · causal analysis teal · loud failure red
+    M["Semantic model<br/>metrics / dimensions / windows"]:::gen --> R["Decision rules<br/>zero-LLM, on a schedule"]:::gate
+    R --> BAND{"Seasonal noise band<br/>triggers only outside"}:::gate
+    BAND -->|"cannot tell"| ERR["Honest error run<br/>never a silent pass"]:::err
+    BAND -->|"outside + condition met"| V["Verdict: triggered<br/>SQL + raw rows"]:::gate
+    V --> C["Causal contrast (optional)<br/>DiD → synthetic control"]:::exec
+    V --> P["Action proposal<br/>payload frozen at creation"]:::act
+    P --> A{"Human approval"}:::gate
+    A -->|"approve"| D["Dispatch webhook / IM<br/>receipts recorded"]:::act
+    A -->|"reject"| X["Closed"]:::entry
+    D --> M2["Outcome measurement<br/>same noise band"]:::act
+    M2 -.->|"scored"| Q["Verdict quality<br/>bucketed per rule revision"]:::entry
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    linkStyle 10 stroke:#8b5cf6,stroke-width:1.5px
 ```
 
 Read more: [decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [actions & approvals](https://nivane.github.io/trove/capabilities/actions.html) · [decomposition math & driver trees](https://nivane.github.io/trove/engineering/decomposition.html) · [statistics & noise bands](https://nivane.github.io/trove/engineering/statistics.html) · [the closed loop & its contracts](https://nivane.github.io/trove/engineering/closed-loop.html).
@@ -173,10 +181,15 @@ Trove takes the semantic-layer route, with a twist that keeps answers flowing:
 
 ```mermaid
 flowchart TB
-    PLAN["Query plan"] --> C["Semantic compiler"]
-    C -->|"all declared"| OK["Authoritative SQL<br/>compiler output as-is<br/>nothing to generate<br/>executed directly"]
-    C -->|"soft MISS"| PC["words, values or<br/>definitions undeclared<br/>joins, filters, grouping<br/>pinned; gaps filled"]
-    C -->|"hard MISS"| MISS["undeclared table,<br/>ambiguous join, fan-out<br/>refuse + one-click<br/>model extension"]
+    %% same palette: semantic layer indigo (the compiler is the protagonist here, 2px) · authoritative output teal · hard boundary verdict amber
+    PLAN["Query plan"]:::gen --> C["Semantic compiler"]:::core
+    C -->|"all declared"| OK["Authoritative SQL<br/>compiler output as-is<br/>nothing to generate<br/>executed directly"]:::exec
+    C -->|"soft MISS"| PC["words, values or<br/>definitions undeclared<br/>joins, filters, grouping<br/>pinned; gaps filled"]:::gen
+    C -->|"hard MISS"| MISS["undeclared table,<br/>ambiguous join, fan-out<br/>refuse + one-click<br/>model extension"]:::gate
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 ```
 
 One compiler, three outcomes — and the **soft MISS in the middle is the common case**: it turns "the model doesn't cover everything" from a hard stop into an answer that ships anyway.

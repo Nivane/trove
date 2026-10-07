@@ -183,14 +183,20 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    Y["decisions.yml · 规则<br/>（语义模型的词汇）"] --&gt; W["窗口解析<br/>自然语言窗口 → 当前期 + 基期"]
-    W --&gt; C["语义编译 build_and_compile<br/>权威 SQL · 零 LLM"]
-    C --&gt; X["只读执行<br/>connectors.execute · 单条超时"]
-    X --&gt; J["judge 纯函数<br/>逐组行卡 · 三值求值"]
-    J --&gt; G{"触发？"}
-    G --&gt;|"否"| OK["记录证据<br/>status = ok"]
-    G --&gt;|"是"| APP["附录逐层叠加（按声明）<br/>显著性门 → 因果梯 → 分析桥"]
-    APP --&gt; V["消息 + 证据 → 判定记录<br/>不可编辑 · 相邻 diff"]
+    Y["decisions.yml · 规则<br/>（语义模型的词汇）"]:::entry --&gt; W["窗口解析<br/>自然语言窗口 → 当前期 + 基期"]:::entry
+    W --&gt; C["语义编译 build_and_compile<br/>权威 SQL · 零 LLM"]:::gen
+    C --&gt; X["只读执行<br/>connectors.execute · 单条超时"]:::exec
+    X --&gt; J["judge 纯函数<br/>逐组行卡 · 三值求值"]:::gate
+    J --&gt; G{"触发？"}:::gate
+    G --&gt;|"否"| OK["记录证据<br/>status = ok"]:::entry
+    G --&gt;|"是"| APP["附录逐层叠加（按声明）<br/>显著性门 → 因果梯 → 分析桥"]:::entry
+    APP --&gt; V["消息 + 证据 → 判定记录<br/>不可编辑 · 相邻 diff"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 6 stroke:#f59e0b,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

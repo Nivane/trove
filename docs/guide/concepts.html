@@ -50,10 +50,16 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    Q["问数 · 是多少<br/>语义编译 + 生成与校验"] --> A["分析 · 为什么变了<br/>确定性分解 + 噪声带"]
-    A --> D["决策 · 该不该警觉<br/>判定规则 · 零 LLM"]
-    D --> ACT["行动 · 接下来做什么<br/>提案 → 审批 → 外送"]
+    Q["问数 · 是多少<br/>语义编译 + 生成与校验"]:::gen --> A["分析 · 为什么变了<br/>确定性分解 + 噪声带"]:::exec
+    A --> D["决策 · 该不该警觉<br/>判定规则 · 零 LLM"]:::gate
+    D --> ACT["行动 · 接下来做什么<br/>提案 → 审批 → 外送"]:::act
     ACT -. "效果验收 · 同一套噪声带" .-> D
+
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    linkStyle 3 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
@@ -196,15 +202,21 @@ flowchart LR
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    Q["查询计划"] --> C{"语义编译器"}
-    C -- "全部命中" --> H["编译成功<br/>权威 SQL 直接执行"]
-    C -- "软 MISS：词表 / 取值 / 口径缺口" --> S["PartialCompile 骨架<br/>join / 过滤 / 分组被钉住"]
-    S --> G["生成通道补齐未解析部分"]
-    G --> V{"骨架保真校验"}
-    V -- "保住了" --> E["执行交付"]
-    V -- "丢了 join / 过滤" --> X["不放行，回滚重试"]
-    C -- "硬 MISS：结构性问题" --> R["refuse：拒绝 + 起草扩展草案"]
+    Q["查询计划"]:::gen --> C{"语义编译器"}:::gen
+    C -- "全部命中" --> H["编译成功<br/>权威 SQL 直接执行"]:::exec
+    C -- "软 MISS：词表 / 取值 / 口径缺口" --> S["PartialCompile 骨架<br/>join / 过滤 / 分组被钉住"]:::gen
+    S --> G["生成通道补齐未解析部分"]:::gen
+    G --> V{"骨架保真校验"}:::exec
+    V -- "保住了" --> E["执行交付"]:::exec
+    V -- "丢了 join / 过滤" --> X["不放行，回滚重试"]:::err
+    C -- "硬 MISS：结构性问题" --> R["refuse：拒绝 + 起草扩展草案"]:::gate
     R -- "确认后重答" --> Q
+
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 8 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

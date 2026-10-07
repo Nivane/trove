@@ -61,11 +61,15 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    T["触发（已超出噪声带）"] --&gt; C{"条件清单逐条实测"}
-    C --&gt;|"任一未过"| L1["L1 确定性分解<br/>描述，不主张因果<br/>unmet 各带实测值 / 阈值"]
-    C --&gt;|"C1–C5 全过"| L2["L2 差中差 DiD<br/>ATT =（T_post−T_pre）−（C_post−C_pre）"]
-    L2 --&gt;|"mode=auto 且 C6 供体拟合通过"| L3["L3 合成对照<br/>等权供体 · 比值外推"]
-    L2 --&gt;|"C6 未过"| S2["诚实停在 L2<br/>unmet 写明卡在哪"]
+    T["触发（已超出噪声带）"]:::entry --&gt; C{"条件清单逐条实测"}:::gate
+    C --&gt;|"任一未过"| L1["L1 确定性分解<br/>描述，不主张因果<br/>unmet 各带实测值 / 阈值"]:::exec
+    C --&gt;|"C1–C5 全过"| L2["L2 差中差 DiD<br/>ATT =（T_post−T_pre）−（C_post−C_pre）"]:::exec
+    L2 --&gt;|"mode=auto 且 C6 供体拟合通过"| L3["L3 合成对照<br/>等权供体 · 比值外推"]:::exec
+    L2 --&gt;|"C6 未过"| S2["诚实停在 L2<br/>unmet 写明卡在哪"]:::entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 2 stroke:#f59e0b,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
@@ -198,12 +202,15 @@ flowchart TB
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    V["最近一条 verdict<br/>evidence.rows"] --&gt; S["场景解析 parse_scenario<br/>pct / abs / set · 未知键报错"]
-    S --&gt; A["假想数字 apply_adjustments<br/>unapplied 记账"]
-    V --&gt; J1["judge（原数字）"]
-    A --&gt; J2["judge（假想数字）"]
-    J1 --&gt; F["flip：none / fired / cleared"]
+    V["最近一条 verdict<br/>evidence.rows"]:::entry --&gt; S["场景解析 parse_scenario<br/>pct / abs / set · 未知键报错"]:::exec
+    S --&gt; A["假想数字 apply_adjustments<br/>unapplied 记账"]:::exec
+    V --&gt; J1["judge（原数字）"]:::gate
+    A --&gt; J2["judge（假想数字）"]:::gate
+    J1 --&gt; F["flip：none / fired / cleared"]:::entry
     J2 --&gt; F
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

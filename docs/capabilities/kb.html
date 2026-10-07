@@ -372,14 +372,18 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
-    Q["提问 → 回答"] --> D{"这条内容从哪来"}
+    Q["提问 → 回答"]:::entry --> D{"这条内容从哪来"}:::entry
     D -- "人当场点头（/kb learn --yes）" --> K
-    D -- "自动回写 / 蒸馏" --> P["pending 草稿<br/>示例 · 教训"]
-    P --> G{"管理端确认"}
-    G -- "确认" --> K[("KB YAML<br/>examples / lessons")]
-    G -- "拒绝" --> X["丢弃"]
-    K --> R["检索：先表锚定过滤，再打分"]
+    D -- "自动回写 / 蒸馏" --> P["pending 草稿<br/>示例 · 教训"]:::entry
+    P --> G{"管理端确认"}:::gate
+    G -- "确认" --> K[("KB YAML<br/>examples / lessons")]:::entry
+    G -- "拒绝" --> X["丢弃"]:::entry
+    K --> R["检索：先表锚定过滤，再打分"]:::exec
     R --> Q
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 7 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

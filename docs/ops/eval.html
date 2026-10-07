@@ -67,14 +67,18 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    RUN["真实评测跑一次<br/>scripts/eval_bird.py<br/>连真库 + 真模型（花钱）"] --> RES["results.jsonl<br/>逐题判定 + run_id"]
-    RES --> RP["离线回放<br/>trove/eval/replay.py<br/>零模型调用"]
-    RP --> REP["replay.jsonl<br/>结构化判定 + gold 匹配"]
-    RES --> GATE["回归门<br/>trove/eval/gate.py<br/>零 LLM，纯函数"]
+    RUN["真实评测跑一次<br/>scripts/eval_bird.py<br/>连真库 + 真模型（花钱）"]:::exec --> RES["results.jsonl<br/>逐题判定 + run_id"]:::entry
+    RES --> RP["离线回放<br/>trove/eval/replay.py<br/>零模型调用"]:::exec
+    RP --> REP["replay.jsonl<br/>结构化判定 + gold 匹配"]:::entry
+    RES --> GATE["回归门<br/>trove/eval/gate.py<br/>零 LLM，纯函数"]:::gate
     REP --> GATE
-    SC["检索 scorecard<br/>tune_rrf / eval_*_retrieval"] --> GATE
-    VR["扩展面报告<br/>trove validate --run / --impact<br/>零 LLM"] --> GATE
-    GATE --> VERDICT["按方向 + 容差判定<br/>有回归 → 退出码 1 拦下"]
+    SC["检索 scorecard<br/>tune_rrf / eval_*_retrieval"]:::entry --> GATE
+    VR["扩展面报告<br/>trove validate --run / --impact<br/>零 LLM"]:::entry --> GATE
+    GATE --> VERDICT["按方向 + 容差判定<br/>有回归 → 退出码 1 拦下"]:::gate
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

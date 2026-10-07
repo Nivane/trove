@@ -180,11 +180,16 @@ docker compose down</code></pre>
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    C["① 连接<br/>URL 或管理台注册"] --> M["② 建模<br/>/kb init 连实时 schema 起草"]
-    M --> Q["③ 提问"]
-    Q -- "答得出" --> A["回答（可 /kb learn 沉淀）"]
-    Q -- "模型没覆盖" --> R["拒绝 + 起草扩展草稿"]
+    C["① 连接<br/>URL 或管理台注册"]:::entry --> M["② 建模<br/>/kb init 连实时 schema 起草"]:::gen
+    M --> Q["③ 提问"]:::entry
+    Q -- "答得出" --> A["回答（可 /kb learn 沉淀）"]:::entry
+    Q -- "模型没覆盖" --> R["拒绝 + 起草扩展草稿"]:::gate
     R -- "确认草稿" --> Q
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 4 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

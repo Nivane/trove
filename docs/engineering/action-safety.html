@@ -132,14 +132,20 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    N["pending<br/>待审批"] --&gt;|"approve"| A["approved"]
-    N --&gt;|"reject"| R["rejected"]
-    N --&gt;|"过期（expire_due 周期清收）"| X["expired"]
-    A --&gt;|"cancel"| C["cancelled"]
-    A --&gt;|"dispatch"| D["dispatched"]
-    D --&gt;|"2xx 回执"| L["delivered"]
-    D --&gt;|"失败（记原因 + 回执行）"| F["failed"]
+    N["pending<br/>待审批"]:::gate --&gt;|"approve"| A["approved"]:::entry
+    N --&gt;|"reject"| R["rejected"]:::entry
+    N --&gt;|"过期（expire_due 周期清收）"| X["expired"]:::entry
+    A --&gt;|"cancel"| C["cancelled"]:::entry
+    A --&gt;|"dispatch"| D["dispatched"]:::act
+    D --&gt;|"2xx 回执"| L["delivered"]:::entry
+    D --&gt;|"失败（记原因 + 回执行）"| F["failed"]:::err
     F --&gt;|"retry（仅可重试类）"| D
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 7 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

@@ -42,12 +42,17 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TD
-    A["装驱动（extras 按需懒加载）"] --> B["注册：连接探测通过才落库"]
-    B --> C["/kb init 建模"]
-    C --> D["通读 YAML、校准 semantics.yml"]
-    D --> E["lint_kb.py 自检（可加活库探测）"]
+    A["装驱动（extras 按需懒加载）"]:::entry --> B["注册：连接探测通过才落库"]:::entry
+    B --> C["/kb init 建模"]:::gen
+    C --> D["通读 YAML、校准 semantics.yml"]:::gen
+    D --> E["lint_kb.py 自检（可加活库探测）"]:::exec
     E -- "发现问题" --> D
-    E -- "干净" --> F["提问 → /kb learn 沉淀"]
+    E -- "干净" --> F["提问 → /kb learn 沉淀"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    linkStyle 4 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

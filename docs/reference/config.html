@@ -76,10 +76,13 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart LR
-    C1["./conf/agent.yml<br/>全局 · 优先级高"] --&gt; EFF["生效配置"]
-    C2["~/.trove/conf/agent.yml<br/>个人覆盖 · 优先级低"] -. "前者缺项时兜底" .-&gt; C1
-    C3[".trove/datasources.yml<br/>每个数据源：连接 · 检索参数"] --&gt; EFF
-    C4["~/.trove/settings.db<br/>管理台改的运行时设置"] -- "启动时合入" --&gt; EFF
+    C1["./conf/agent.yml<br/>全局 · 优先级高"]:::entry --&gt; EFF["生效配置"]:::core
+    C2["~/.trove/conf/agent.yml<br/>个人覆盖 · 优先级低"]:::entry -. "前者缺项时兜底" .-&gt; C1
+    C3[".trove/datasources.yml<br/>每个数据源：连接 · 检索参数"]:::entry --&gt; EFF
+    C4["~/.trove/settings.db<br/>管理台改的运行时设置"]:::entry -- "启动时合入" --&gt; EFF
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
         </pre>
       </div>
       <figcaption>

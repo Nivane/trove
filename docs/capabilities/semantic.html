@@ -218,17 +218,22 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    P["查询计划（query_sketch 产出）"] --> C["SemanticCompiler.compile_detailed"]
-    M[("semantics.yml")] --> C
-    C -- "全部解析" --> OK["成功：权威 SQL<br/>生成通道基本不参与"]
-    C -- "只缺词表 / 取值 / 口径" --> PC["PartialCompile<br/>骨架 SQL + 交接契约 + 未解析清单"]
-    C -- "结构性问题" --> CM["CompileMiss<br/>携带 reason"]
-    OK --> RUN["执行"]
-    PC --> GEN["生成通道按契约补齐"]
-    GEN --> CHK{"执行前：骨架保真校验<br/>join 边 / WHERE / 分组宽度"}
+    P["查询计划（query_sketch 产出）"]:::entry --> C["SemanticCompiler.compile_detailed"]:::gen
+    M[("semantics.yml")]:::entry --> C
+    C -- "全部解析" --> OK["成功：权威 SQL<br/>生成通道基本不参与"]:::entry
+    C -- "只缺词表 / 取值 / 口径" --> PC["PartialCompile<br/>骨架 SQL + 交接契约 + 未解析清单"]:::entry
+    C -- "结构性问题" --> CM["CompileMiss<br/>携带 reason"]:::gate
+    OK --> RUN["执行"]:::exec
+    PC --> GEN["生成通道按契约补齐"]:::gen
+    GEN --> CHK{"执行前：骨架保真校验<br/>join 边 / WHERE / 分组宽度"}:::gate
     CHK -- "保住了" --> RUN
-    CHK -- "丢了" --> RT["打回重生成"]
-    CM --> RF["refuse：拒绝 + 起草扩展草案"]
+    CHK -- "丢了" --> RT["打回重生成"]:::entry
+    CM --> RF["refuse：拒绝 + 起草扩展草案"]:::gate
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    linkStyle 9 stroke:#f59e0b,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>

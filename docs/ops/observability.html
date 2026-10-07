@@ -320,18 +320,23 @@
       <div class="diagram-canvas">
         <pre class="mermaid">
 flowchart TD
-    Q["出了什么问题？"] --> P1["服务整体不可用"]
-    Q --> P2["某个数据源问不出来"]
-    Q --> P3["答案内容不对"]
-    Q --> P4["想知道某一轮为什么这么答"]
-    Q --> P5["准确率整体下滑"]
-    P1 --> H1["/v1/health：顶层 status + 存储 ping"]
-    H1 --> H1a["unavailable 503：内部存储不可达"]
-    H1 --> H1b["degraded 200：存储正常，是某个源连不上"]
-    P2 --> H2["health 的数据源段 → check_drift.py"]
-    P3 --> H3["先查 query_sketch 的计划，而不是生成的 SQL"]
-    P4 --> H4["/trace 回放：当时的上下文与工具返回"]
-    P5 --> H5["回归门对比，而不是逐个案例猜"]
+    Q["出了什么问题？"]:::entry --> P1["服务整体不可用"]:::entry
+    Q --> P2["某个数据源问不出来"]:::entry
+    Q --> P3["答案内容不对"]:::entry
+    Q --> P4["想知道某一轮为什么这么答"]:::entry
+    Q --> P5["准确率整体下滑"]:::entry
+    P1 --> H1["/v1/health：顶层 status + 存储 ping"]:::exec
+    H1 --> H1a["unavailable 503：内部存储不可达"]:::err
+    H1 --> H1b["degraded 200：存储正常，是某个源连不上"]:::err
+    P2 --> H2["health 的数据源段 → check_drift.py"]:::exec
+    P3 --> H3["先查 query_sketch 的计划，而不是生成的 SQL"]:::exec
+    P4 --> H4["/trace 回放：当时的上下文与工具返回"]:::exec
+    P5 --> H5["回归门对比，而不是逐个案例猜"]:::gate
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
         </pre>
       </div>
       <figcaption>

@@ -103,14 +103,16 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    Q["问题"] --> KW["keyword 通道<br/>pg_bm25 / FTS5"]
-    Q --> DN["dense 通道<br/>pgvector HNSW / 余弦"]
-    KW -- "有序 id 列表" --> RRF["加权 RRF<br/>只用排名，不用原始分"]
+    Q["问题"]:::entry --> KW["keyword 通道<br/>pg_bm25 / FTS5"]:::exec
+    Q --> DN["dense 通道<br/>pgvector HNSW / 余弦"]:::exec
+    KW -- "有序 id 列表" --> RRF["加权 RRF<br/>只用排名，不用原始分"]:::exec
     DN -- "有序 id 列表" --> RRF
-    RRF --> N["按排序位归一化到 [0,1]"]
-    N --> RR{"精排？默认关闭"}
-    RR -- "deterministic / bge / http" --> OUT["候选交给下游打分融合"]
+    RRF --> N["按排序位归一化到 [0,1]"]:::exec
+    N --> RR{"精排？默认关闭"}:::entry
+    RR -- "deterministic / bge / http" --> OUT["候选交给下游打分融合"]:::entry
     RR -- "默认：不精排，直接用融合顺序" --> OUT
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

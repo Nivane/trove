@@ -55,13 +55,19 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart LR
-    V["判定 verdict<br/>（含触发日与规则版本）"] --&gt; P["提案 → 审批 → 外送"]
-    P --&gt; W["N 天后的小时级 sweep<br/>measure_due"]
-    W --&gt; M["verifier（包外执行面）<br/>ITS + 可选 DiD 净效应"]
-    M --&gt; O["outcome 行<br/>超带 / 无变化 / 判不了"]
-    O --&gt; S["回评分桶<br/>（rule_id, rule_rev）"]
-    S --&gt; R["质量报告 / 全局面"]
-    D["主动扫描<br/>扫描发现 → 规则草稿"] --&gt; V
+    V["判定 verdict<br/>（含触发日与规则版本）"]:::gate --&gt; P["提案 → 审批 → 外送"]:::act
+    P --&gt; W["N 天后的小时级 sweep<br/>measure_due"]:::entry
+    W --&gt; M["verifier（包外执行面）<br/>ITS + 可选 DiD 净效应"]:::exec
+    M --&gt; O["outcome 行<br/>超带 / 无变化 / 判不了"]:::entry
+    O --&gt; S["回评分桶<br/>（rule_id, rule_rev）"]:::entry
+    S --&gt; R["质量报告 / 全局面"]:::entry
+    D["主动扫描<br/>扫描发现 → 规则草稿"]:::entry --&gt; V
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    linkStyle 6 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
