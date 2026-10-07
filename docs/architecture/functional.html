@@ -93,24 +93,24 @@
 flowchart TB
     subgraph chain["链路：问数 · 分析 · 决策 · 行动（终点在系统外）"]
         direction LR
-        Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;门禁 · 生成 · 校验 · 澄清"]
-        A["分析&lt;br/&gt;问「为什么」&lt;br/&gt;归因卡 · 来源四档"]
-        D["决策&lt;br/&gt;算不算有问题&lt;br/&gt;规则 · 历史 · 订阅"]
-        ACT["行动&lt;br/&gt;停在一份提案&lt;br/&gt;审批 · 拉通道 · 回执"]
-        EXT["外部系统&lt;br/&gt;（执行与后果）"]
+        Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;对话问答 · 可答边界&lt;br/&gt;扩展确认 · 元数据 · 澄清"]
+        A["分析&lt;br/&gt;「为什么」的分解与检验&lt;br/&gt;归因卡 · 噪声带 · 来源四档"]
+        D["决策&lt;br/&gt;算不算有问题，有多确定&lt;br/&gt;判定规则 · 历史对照 · 订阅&lt;br/&gt;因果升级梯 · What-if&lt;br/&gt;主动扫描 · 质量回评"]
+        ACT["行动&lt;br/&gt;停在一份可审计的提案&lt;br/&gt;提案 · 审批 · 拉通道&lt;br/&gt;回执对账 · 效果验收"]
+        EXT["外部系统&lt;br/&gt;执行与后果"]
         Q --&gt; A
         A --&gt; D
         D --&gt; ACT
         ACT -.-&gt;|回执对账| D
         ACT -.-&gt;|交付 / 回执| EXT
     end
-    SUP["横向支撑（所有环节共用）&lt;br/&gt;知识库 · 语义模型 · 记忆 · Skills&lt;br/&gt;主题域 · 权限 · 审计 · 令牌&lt;br/&gt;人工确认的闸门贯穿全部"]
+    SUP["横向支撑（所有环节共用）&lt;br/&gt;知识库 · 语义模型 · 记忆 · Skills&lt;br/&gt;主题域 · 权限 · 审计 · 令牌 · 评测台&lt;br/&gt;人工确认的闸门贯穿全部"]
     %% 带间不连线：跨带边会让带内 direction LR 失效（mermaid v11），支撑层用单节点绕开
     chain ~~~ SUP
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 上带是四段链路（首页口径）：问数 → 分析 → 决策 → 行动，终点在外部系统；下方一块是贯穿所有环节的横向支撑。虚线是交付与回执。</span>
+        <span class="cap-rendered">图 1 · 上带是四段链路（首页口径）：问数 → 分析 → 决策 → 行动，终点在外部系统——每段列出自己的功能块，细节见下方两张表。下方一块是贯穿所有环节的横向支撑。虚线是交付与回执。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -161,7 +161,7 @@ flowchart TB
             <td>答案旁可看它怎么一步步算出来；每条 SQL 标注四档来源之一——已认证复用 / 知识库复用 / 语义编译 / 模型生成</td>
           </tr>
           <tr>
-            <td rowspan="4"><strong>决<br>策</strong></td>
+            <td rowspan="8"><strong>决<br>策</strong></td>
             <td><a href="../capabilities/decisions.html">判定规则</a></td>
             <td>管理端</td>
             <td>阈值规则声明在语义模型自己的词汇上（与语义查询同一个形状）；确定性引擎求值，零 LLM</td>
@@ -170,6 +170,26 @@ flowchart TB
             <td>判定历史</td>
             <td>管理端</td>
             <td>每次触发留下版本、相邻两次对照；每条判定带 SQL 与原始行——证据可回放</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/decisions.html#causal">因果升级梯</a></td>
+            <td>管理端</td>
+            <td>声明 <code>causal</code> 的规则在噪声带之后逐级升级（相关 → 差中差 → 合成对照），每条假设带体检（通过 / 不通过 / 无法检验），过不去就停在上一级并说明——因果是附录，绝不改变触发结论</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/decisions.html#whatif">What-if 重放</a></td>
+            <td>管理端</td>
+            <td>把最近一条判定留下的数字行灌进同一个 judge 纯函数当场重判：零业务库查询、显著性只重放不重算；规则被改过，结果自报「重放的是旧规则」</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/decisions.html#scan">主动扫描</a></td>
+            <td>管理端</td>
+            <td>反向的找问题：<code>scan_spec</code>（度量 × 维度 × top_k）扫出超出噪声带的异常按 |z| 排序，落草稿、确认后才成规则；可选的 LLM 假设层默认关</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/decisions.html#quality">质量回评</a></td>
+            <td>管理端</td>
+            <td>按 <code>(rule_id, rule_rev)</code> 分桶看每条规则的四类结局与触发率；分母不够就明说「样本不足」，不给伪精度</td>
           </tr>
           <tr>
             <td><a href="../admin/automation.html#subs">报告订阅</a></td>
@@ -182,7 +202,7 @@ flowchart TB
             <td>判定 / 订阅 / 问数统一调度；不可求值的规则以错误上报，不静默</td>
           </tr>
           <tr>
-            <td rowspan="3"><strong>行<br>动</strong></td>
+            <td rowspan="4"><strong>行<br>动</strong></td>
             <td><a href="../capabilities/actions.html#lifecycle">行动提案</a></td>
             <td>管理端</td>
             <td>判定触发即生成提案：载荷创建即定稿、同一触发只提案一次</td>
@@ -196,6 +216,11 @@ flowchart TB
             <td><a href="../capabilities/actions.html#pull">拉通道交付</a></td>
             <td>外部系统</td>
             <td>webhook 与 MCP 并列；对方回执回来对账</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/actions.html#effect">效果验收</a></td>
+            <td>管理端</td>
+            <td>交付不是终点：按约定窗口回来测量，与判定用<strong>同一套噪声带</strong>比对，给「超出噪声带 / 无可辨识变化 / 测不了」三态结局——没有变化也是诚实的结论</td>
           </tr>
         </tbody>
       </table>
@@ -308,6 +333,12 @@ flowchart TB
             <td>审批通过后的拉通道</td>
             <td>外部系统；回执回来对账</td>
             <td>审计轨迹</td>
+          </tr>
+          <tr>
+            <td>效果结局（三态）</td>
+            <td>效果验收窗口到期后的测量</td>
+            <td>质量回评的分桶统计；判定历史</td>
+            <td>判定运行记录</td>
           </tr>
         </tbody>
       </table>

@@ -55,6 +55,7 @@ flowchart TB
 
     subgraph caps["能力 · trove/services"]
         SEM["语义模型"]
+        ANA["分析 · 归因分解 · 统计器械"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
         ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]
@@ -69,6 +70,7 @@ flowchart TB
     CLI --> WF
     MCP --> WF
     WF --> SEM
+    WF --> ANA
     WF --> KB
     WF --> MEM
     MEM -->|"判定触发"| ACT

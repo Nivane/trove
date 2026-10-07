@@ -41,8 +41,9 @@
     <p>
       先把形状看一眼，再往下读细节。图上的两个带（入口、能力）夹着编排——它是一张
       LangGraph 图，所以画成一个节点；加外挂的模型层与状态层，就是下面「五层」那张
-      表的形状——数据源在 Trove 之外，所以不在这五层里。实线是「谁调谁」，
-      虚线是「谁会用到大模型」；两条都不是数据流。
+      表的形状。数据源在 Trove 之外，所以不在这五层里；<strong>行动的执行同理</strong>——
+      判定触发产出的提案、审批与回执在系统内，执行在外（webhook 推 / MCP 拉）。
+      实线是「谁调谁」，虚线是「谁会用到大模型」；两条都不是数据流。
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -60,12 +61,14 @@ flowchart TB
 
     subgraph caps["能力 · trove/services"]
         SEM["语义模型"]
+        ANA["分析 · 归因分解 · 统计器械"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
+        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]
     end
 
     LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
-    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB&lt;br/&gt;SQLite"]
+    DS["数据源&lt;br/&gt;PostgreSQL · MySQL · Doris&lt;br/&gt;ClickHouse · DuckDB · SQLite&lt;br/&gt;Snowflake · BigQuery"]
     STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite&lt;br/&gt;会话 · 任务 · 检查点&lt;br/&gt;查询日志 · 谱系"]
 
     UI --&gt; WF
@@ -73,15 +76,17 @@ flowchart TB
     CLI --&gt; WF
     MCP --&gt; WF
     WF --&gt; SEM
+    WF --&gt; ANA
     WF --&gt; KB
     WF --&gt; MEM
+    MEM --&gt;|"判定触发"| ACT
     WF -.-&gt; LLM
     KB --&gt; DS
     MEM --&gt; STATE
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 入口进来，编排决定做什么，能力层干活，落点在状态与数据源。</span>
+        <span class="cap-rendered">图 1 · 入口进来，编排决定做什么，能力层干活（问数 · 分析 · 判定 · 行动都在这一层），落点在状态与数据源；行动的执行在系统外。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -107,7 +112,7 @@ flowchart TB
           <tr>
             <td><strong>服务层</strong></td>
             <td class="mono">trove/services/</td>
-            <td>知识库、语义层、记忆、检索、数据源、任务、认证</td>
+            <td>知识库、语义模型、检索、记忆、判定、行动、分析、Skills、数据源、任务调度、认证与授权</td>
           </tr>
           <tr>
             <td><strong>模型层</strong></td>

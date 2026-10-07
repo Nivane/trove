@@ -55,6 +55,7 @@ flowchart TB
 
     subgraph caps["Capabilities · trove/services"]
         SEM["Semantic model"]
+        ANA["Analysis · attribution · statistics"]
         KB["Knowledge base + retrieval"]
         MEM["Memory · decision rules · Skills"]
         ACT["Actions · proposal / approval / receipt / measured effect"]
@@ -69,6 +70,7 @@ flowchart TB
     CLI --> WF
     MCP --> WF
     WF --> SEM
+    WF --> ANA
     WF --> KB
     WF --> MEM
     MEM -->|"on trigger"| ACT

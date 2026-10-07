@@ -66,10 +66,12 @@
       <a class="cta ghost" href="user/ui-tour.html">用户 / 管理台指南（图文）</a>
     </div>
 
-    <!-- 流动管线：提问在这条链上走 28 个节点（数字契约见 docs.css 的 .hp-facts 注释） -->
+    <!-- 链路面板：主行是四段链路总览（问数 → 分析 → 决策 → 行动 → 外部系统），
+         问数段由一条「展开」虚线接出下方的查询管线；管线里的数字契约（28 节点）
+         见 docs.css 的 .hp-facts 注释。 -->
     <div class="hp-panel">
       <div class="hp-head">
-        <span class="hp-title">查询管线 · graphs.py</span>
+        <span class="hp-title">一条链路 · 问数 → 分析 → 决策 → 行动</span>
         <span class="hp-legend">
           <i><span class="hp-dot ok"></span>HIT 编译直出</i>
           <i><span class="hp-dot warn"></span>软 MISS 骨架补齐</i>
@@ -77,26 +79,60 @@
         </span>
       </div>
       <div class="hp-scroll">
-        <svg class="hp-svg" viewBox="0 0 992 104" role="img" aria-label="查询管线：从提问到交付的节点链路">
+        <svg class="hp-svg" viewBox="0 0 992 190" role="img" aria-label="一条链路：问数 → 分析 → 决策 → 行动，终点在外部系统；问数段展开为查询管线">
           <g>
-            <rect class="nd"          x="8"   y="27" width="96" height="50" rx="10"/><text x="56"  y="57">意图路由</text>
-            <rect class="nd"          x="118" y="27" width="96" height="50" rx="10"/><text x="166" y="57">语义绑定</text>
-            <rect class="nd is-gate"  x="228" y="27" width="96" height="50" rx="10"/><text x="276" y="57">语义门禁</text>
-            <rect class="nd"          x="338" y="27" width="96" height="50" rx="10"/><text x="386" y="57">计划与编译</text>
-            <rect class="nd"          x="448" y="27" width="96" height="50" rx="10"/><text x="496" y="57">生成与共识</text>
-            <rect class="nd"          x="558" y="27" width="96" height="50" rx="10"/><text x="606" y="57">执行前三门</text>
-            <rect class="nd"          x="668" y="27" width="96" height="50" rx="10"/><text x="716" y="57">校验与脱敏</text>
-            <rect class="nd"          x="778" y="27" width="96" height="50" rx="10"/><text x="826" y="57">反思</text>
-            <rect class="nd is-out"   x="888" y="27" width="96" height="50" rx="10"/><text x="936" y="57">交付</text>
+            <rect class="seg" x="8"   y="16" width="210" height="64" rx="12"/>
+            <text class="seg-name" x="113" y="43">问数</text>
+            <text class="seg-sub"  x="113" y="62">提问 → 可核对的答案</text>
+
+            <line class="edge" x1="218" y1="48" x2="247" y2="48"/>
+
+            <rect class="seg" x="247" y="16" width="180" height="64" rx="12"/>
+            <text class="seg-name" x="337" y="43">分析</text>
+            <text class="seg-sub"  x="337" y="62">归因分解 · 驱动器树</text>
+
+            <line class="edge" x1="427" y1="48" x2="456" y2="48"/>
+
+            <rect class="seg" x="456" y="16" width="180" height="64" rx="12"/>
+            <text class="seg-name" x="546" y="43">决策</text>
+            <text class="seg-sub"  x="546" y="62">判定规则 · 零 LLM</text>
+
+            <line class="edge" x1="636" y1="48" x2="665" y2="48"/>
+
+            <rect class="seg" x="665" y="16" width="180" height="64" rx="12"/>
+            <text class="seg-name" x="755" y="43">行动</text>
+            <text class="seg-sub"  x="755" y="62">提案 · 审批 · 验收</text>
+
+            <line class="edge" x1="845" y1="48" x2="874" y2="48"/>
+
+            <rect class="seg is-ext" x="874" y="16" width="110" height="64" rx="12"/>
+            <text class="seg-name" x="929" y="43">外部系统</text>
+            <text class="seg-sub"  x="929" y="62">执行在系统外</text>
           </g>
-          <line class="edge" x1="104" y1="52" x2="118" y2="52"/>
-          <line class="edge" x1="214" y1="52" x2="228" y2="52"/>
-          <line class="edge" x1="324" y1="52" x2="338" y2="52"/>
-          <line class="edge" x1="434" y1="52" x2="448" y2="52"/>
-          <line class="edge" x1="544" y1="52" x2="558" y2="52"/>
-          <line class="edge" x1="654" y1="52" x2="668" y2="52"/>
-          <line class="edge" x1="764" y1="52" x2="778" y2="52"/>
-          <line class="edge" x1="874" y1="52" x2="888" y2="52"/>
+          <g>
+            <line class="hp-expand" x1="113" y1="80" x2="113" y2="110"/>
+            <path class="hp-expand" d="M 109 110 L 113 116 L 117 110" fill="none"/>
+            <text class="hp-expand-label" x="126" y="112">问数段 · 查询管线展开</text>
+
+            <rect class="nd"          x="8"   y="124" width="96" height="50" rx="10"/><text x="56"  y="154">意图路由</text>
+            <rect class="nd"          x="118" y="124" width="96" height="50" rx="10"/><text x="166" y="154">语义绑定</text>
+            <rect class="nd is-gate"  x="228" y="124" width="96" height="50" rx="10"/><text x="276" y="154">语义门禁</text>
+            <rect class="nd"          x="338" y="124" width="96" height="50" rx="10"/><text x="386" y="154">计划与编译</text>
+            <rect class="nd"          x="448" y="124" width="96" height="50" rx="10"/><text x="496" y="154">生成与共识</text>
+            <rect class="nd"          x="558" y="124" width="96" height="50" rx="10"/><text x="606" y="154">执行前三门</text>
+            <rect class="nd"          x="668" y="124" width="96" height="50" rx="10"/><text x="716" y="154">校验与脱敏</text>
+            <rect class="nd"          x="778" y="124" width="96" height="50" rx="10"/><text x="826" y="154">反思</text>
+            <rect class="nd is-out"   x="888" y="124" width="96" height="50" rx="10"/><text x="936" y="154">交付</text>
+
+            <line class="edge" x1="104" y1="149" x2="118" y2="149"/>
+            <line class="edge" x1="214" y1="149" x2="228" y2="149"/>
+            <line class="edge" x1="324" y1="149" x2="338" y2="149"/>
+            <line class="edge" x1="434" y1="149" x2="448" y2="149"/>
+            <line class="edge" x1="544" y1="149" x2="558" y2="149"/>
+            <line class="edge" x1="654" y1="149" x2="668" y2="149"/>
+            <line class="edge" x1="764" y1="149" x2="778" y2="149"/>
+            <line class="edge" x1="874" y1="149" x2="888" y2="149"/>
+          </g>
         </svg>
       </div>
       <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">8000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>

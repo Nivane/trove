@@ -352,6 +352,16 @@ h1 {
   fill: #d4d4d8; font-family: "IBM Plex Mono", monospace;
   font-size: 11.5px; text-anchor: middle;
 }
+/* 四段链路主行的段块：比节点（.nd）亮一档、描边取靛蓝，和展开行的小节点
+   区分「段」与「步骤」；外部系统虚线框——它不在系统内，这是形状上的口径。 */
+.hp-svg .seg { fill: #15151b; stroke: rgba(129,140,248,.30); stroke-width: 1; }
+.hp-svg .seg.is-ext { fill: none; stroke: rgba(255,255,255,.18); stroke-dasharray: 4 4; }
+.hp-svg .seg-name { font-size: 13.5px; font-weight: 600; fill: #e4e4e7; }
+.hp-svg .seg-sub { font-size: 10px; fill: #8b8b94; }
+/* 问数块到展开行的「展开」虚线：静态（不参与 .edge 的流动动画）、更细，
+   它表达的从属关系（管线属于问数段）而不是链路上的流动。 */
+.hp-svg .hp-expand { stroke: rgba(129,140,248,.4); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.hp-svg .hp-expand-label { font-size: 10px; fill: #71717a; text-anchor: start; }
 @media (prefers-reduced-motion: reduce) { .hp-svg .edge { animation: none; } }
 
 /* 事实条：四个数字沿用 .repro-n 类名——scripts/check_page_anchors.py 按
