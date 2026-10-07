@@ -91,26 +91,36 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
+    %% 配色 = 站点 token 的半透明版，与总览页同一套链路色（问数 indigo · 分析 teal ·
+    %% 决策 amber · 行动 violet · 外部 zinc 虚线）；填充低透明度、描边实色，亮暗两档同源
     subgraph chain["链路：问数 · 分析 · 决策 · 行动（终点在系统外）"]
         direction LR
-        Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;对话问答 · 可答边界&lt;br/&gt;扩展确认 · 元数据 · 澄清"]
-        A["分析&lt;br/&gt;「为什么」的分解与检验&lt;br/&gt;归因卡 · 噪声带 · 来源四档"]
-        D["决策&lt;br/&gt;算不算有问题，有多确定&lt;br/&gt;判定规则 · 历史对照 · 订阅&lt;br/&gt;因果升级梯 · What-if&lt;br/&gt;主动扫描 · 质量回评"]
-        ACT["行动&lt;br/&gt;停在一份可审计的提案&lt;br/&gt;提案 · 审批 · 拉通道&lt;br/&gt;回执对账 · 效果验收"]
-        EXT["外部系统&lt;br/&gt;执行与后果"]
+        Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;对话问答 · 可答边界&lt;br/&gt;扩展确认 · 元数据 · 澄清"]:::q
+        A["分析&lt;br/&gt;「为什么」的分解与检验&lt;br/&gt;归因卡 · 噪声带 · 来源四档"]:::a
+        D["决策&lt;br/&gt;算不算有问题，有多确定&lt;br/&gt;判定规则 · 历史对照 · 订阅&lt;br/&gt;因果升级梯 · What-if&lt;br/&gt;主动扫描 · 质量回评"]:::d
+        ACT["行动&lt;br/&gt;停在一份可审计的提案&lt;br/&gt;提案 · 审批 · 拉通道&lt;br/&gt;回执对账 · 效果验收"]:::act
+        EXT["外部系统&lt;br/&gt;执行与后果"]:::ext
         Q --&gt; A
         A --&gt; D
         D --&gt; ACT
         ACT -.-&gt;|回执对账| D
         ACT -.-&gt;|交付 / 回执| EXT
     end
-    SUP["横向支撑（所有环节共用）&lt;br/&gt;知识库 · 语义模型 · 记忆 · Skills&lt;br/&gt;主题域 · 权限 · 审计 · 令牌 · 评测台&lt;br/&gt;人工确认的闸门贯穿全部"]
+    SUP["横向支撑（所有环节共用）&lt;br/&gt;知识库 · 语义模型 · 记忆 · Skills&lt;br/&gt;主题域 · 权限 · 审计 · 令牌 · 评测台&lt;br/&gt;人工确认的闸门贯穿全部"]:::sup
     %% 带间不连线：跨带边会让带内 direction LR 失效（mermaid v11），支撑层用单节点绕开
     chain ~~~ SUP
+    classDef q fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef a fill:#14b8a61f,stroke:#14b8a6,stroke-width:1.5px;
+    classDef d fill:#f59e0b1f,stroke:#f59e0b,stroke-width:1.5px;
+    classDef act fill:#8b5cf61f,stroke:#8b5cf6,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+    classDef sup fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    style chain fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    linkStyle 3 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 上带是四段链路（首页口径）：问数 → 分析 → 决策 → 行动，终点在外部系统——每段列出自己的功能块，细节见下方两张表。下方一块是贯穿所有环节的横向支撑。虚线是交付与回执。</span>
+        <span class="cap-rendered">图 1 · 上带是四段链路（首页口径）：问数 → 分析 → 决策 → 行动，终点在外部系统——每段列出自己的功能块，细节见下方两张表。下方一块是贯穿所有环节的横向支撑。虚线是交付与回执。颜色读法与首页一致：问数 indigo · 分析 teal · 决策 amber · 行动 violet，外部系统 zinc 虚线。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>

@@ -50,26 +50,29 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TB
+    %% 配色 = 站点 token 的半透明版（zinc 中性 + indigo 主色 + 链路各段一色）：
+    %% 填充一律低透明度、描边用实色、文字不动色——亮暗两档同一份源码都成立
+    %% （mermaid 把颜色烘进 SVG，跨主题只有透明度能自适应）。
     subgraph entry["入口"]
-        UI["Web UI"]
-        SRV["HTTP 服务"]
-        CLI["CLI / REPL"]
-        MCP["MCP"]
+        UI["Web UI"]:::entry
+        SRV["HTTP 服务"]:::entry
+        CLI["CLI / REPL"]:::entry
+        MCP["MCP"]:::entry
     end
 
-    WF["编排 · trove/workflow&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
+    WF["编排 · trove/workflow&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]:::core
 
     subgraph caps["能力 · trove/services"]
-        SEM["语义模型"]
-        ANA["分析 · 归因分解 · 统计器械"]
-        KB["知识库 + 混合检索"]
-        MEM["记忆 · 判定规则 · Skills"]
-        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]
+        SEM["语义模型"]:::cap
+        ANA["分析 · 归因分解 · 统计器械"]:::ana
+        KB["知识库 + 混合检索"]:::cap
+        MEM["记忆 · 判定规则 · Skills"]:::cap
+        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]:::act
     end
 
-    LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
-    DS["数据源&lt;br/&gt;PostgreSQL · MySQL · Doris&lt;br/&gt;ClickHouse · DuckDB · SQLite&lt;br/&gt;Snowflake · BigQuery"]
-    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite&lt;br/&gt;会话 · 任务 · 检查点&lt;br/&gt;查询日志 · 谱系"]
+    LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]:::base
+    DS["数据源&lt;br/&gt;PostgreSQL · MySQL · Doris&lt;br/&gt;ClickHouse · DuckDB · SQLite&lt;br/&gt;Snowflake · BigQuery"]:::ext
+    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite&lt;br/&gt;会话 · 任务 · 检查点&lt;br/&gt;查询日志 · 谱系"]:::base
 
     UI --&gt; WF
     SRV --&gt; WF
@@ -83,10 +86,21 @@ flowchart TB
     WF -.-&gt; LLM
     KB --&gt; DS
     MEM --&gt; STATE
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef cap fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef ana fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef base fill:#71717a14,stroke:#71717a59,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+    style entry fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    style caps fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    linkStyle 8 stroke:#f59e0b,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 入口进来，编排决定做什么，能力层干活（问数 · 分析 · 判定 · 行动都在这一层），落点在状态与数据源；行动的执行在系统外。</span>
+        <span class="cap-rendered">图 1 · 入口进来，编排决定做什么，能力层干活（问数 · 分析 · 判定 · 行动都在这一层），落点在状态与数据源；行动的执行在系统外。颜色按层读：编排 indigo、分析 teal、行动 violet、系统之外 zinc 虚线、底座中性；琥珀色的边是「判定触发」。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>

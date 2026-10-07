@@ -1189,6 +1189,14 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* 文档页里的源码锚点与首页同款，只是不换行时更容易读 */
 .doc-col .ref { white-space: nowrap; }
+/* 窄屏例外：芯片里常有长标识符（如 _route_semantic_gate_after_linking_fast_match），
+   保持 nowrap 会把页面顶出横向滚动条——允许换行，标识符过长时也允许断开。 */
+@media (max-width: 700px) {
+  .ref, .doc-col .ref { white-space: normal; overflow-wrap: anywhere; }
+  /* 行内代码同理：API 路径 / 配置键 / 指标名都是不可断的长 token。
+     只豁免代码块（pre code）——块内保持不折行、由 pre 自己横向滚动。 */
+  :not(pre) > code { overflow-wrap: anywhere; }
+}
 
 /* ── 入口卡（首页） ────────────────────────────────────── */
 /* 首页「从这里开始」的整卡链接：视觉取自上下页的 .doc-pager a，但类名表意。

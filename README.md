@@ -44,26 +44,27 @@ Trove 是一个**自学习型数据决策智能体**:用自然语言提问,得�
 
 ```mermaid
 flowchart TB
+    %% 配色为站点同款的低透明度填充 + 实色描边，亮暗两档同一份源码都成立
     subgraph entry["入口"]
-        UI["Web UI"]
-        SRV["HTTP 服务"]
-        CLI["CLI / REPL"]
-        MCP["MCP"]
+        UI["Web UI"]:::entry
+        SRV["HTTP 服务"]:::entry
+        CLI["CLI / REPL"]:::entry
+        MCP["MCP"]:::entry
     end
 
-    WF["编排 · trove/workflow<br/>LangGraph 工作流<br/>语义门禁 → 计划与编译<br/>生成 → 执行与校验 → 反思"]
+    WF["编排 · trove/workflow<br/>LangGraph 工作流<br/>语义门禁 → 计划与编译<br/>生成 → 执行与校验 → 反思"]:::core
 
     subgraph caps["能力 · trove/services"]
-        SEM["语义模型"]
-        ANA["分析 · 归因分解 · 统计器械"]
-        KB["知识库 + 混合检索"]
-        MEM["记忆 · 判定规则 · Skills"]
-        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]
+        SEM["语义模型"]:::cap
+        ANA["分析 · 归因分解 · 统计器械"]:::ana
+        KB["知识库 + 混合检索"]:::cap
+        MEM["记忆 · 判定规则 · Skills"]:::cap
+        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]:::act
     end
 
-    LLM["模型 · trove/llm<br/>LLM 网关"]
-    DS["数据源<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]
-    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite<br/>会话 · 任务 · 检查点<br/>查询日志 · 谱系"]
+    LLM["模型 · trove/llm<br/>LLM 网关"]:::base
+    DS["数据源<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]:::ext
+    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite<br/>会话 · 任务 · 检查点<br/>查询日志 · 谱系"]:::base
 
     UI --> WF
     SRV --> WF
@@ -77,6 +78,16 @@ flowchart TB
     WF -.-> LLM
     KB --> DS
     MEM --> STATE
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef cap fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef ana fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef base fill:#71717a14,stroke:#71717a59,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+    style entry fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    style caps fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    linkStyle 8 stroke:#f59e0b,stroke-width:1.5px
 ```
 
 两个带(入口、能力)夹着编排——它是一张 LangGraph 图,所以画成一个节点;再加外挂的模型层与状态层,就是它的形状。数据源在 Trove 之外,所以不在五层里;**行动的执行同理**——判定触发产出的提案、审批与回执在内,执行在外(webhook 推 / MCP 拉)。实线是「谁调谁」,虚线是「谁会用到大模型」——两条都不是数据流。往里每一步的细节见[系统架构](https://nivane.github.io/trove/architecture/overview.html)与[查询工作流](https://nivane.github.io/trove/architecture/workflow.html);产品功能怎么分块、对谁开放、边界在哪见[功能架构](https://nivane.github.io/trove/architecture/functional.html)。
@@ -85,19 +96,27 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    Q(["提问"]) --> ROUTE["route_intent 意图分流<br/>数据问题走主链,元数据走自校验链"]
-    ROUTE --> SL["schema_linking 语义绑定<br/>把问题锚到语义模型上"]
-    SL --> GATE{"语义门禁"}
-    GATE -->|"结构上够不着"| REFUSE["refuse 拒绝<br/>+ 起草模型扩展,确认后重答"]
-    GATE -->|"覆盖 / 部分覆盖"| FAST["fast_match 确定性快径<br/>KB 精确命中就直接给 SQL"]
-    FAST -->|"未命中"| GEN["规划 → 编译 → 生成<br/>agentic 循环,可多候选投票"]
-    FAST -->|"命中"| EXEC["执行前三道门<br/>授权 → 人在环 → 只读三层"]
+    %% 与站点架构页同一套阶段配色:路由/出口 zinc · 门禁 amber · 生成 indigo ·
+    %% 执行与校验 teal · 失败分析 红;低透明度填充 + 实色描边,亮暗两档同源
+    Q(["提问"]):::entry --> ROUTE["route_intent 意图分流<br/>数据问题走主链,元数据走自校验链"]:::entry
+    ROUTE --> SL["schema_linking 语义绑定<br/>把问题锚到语义模型上"]:::entry
+    SL --> GATE{"语义门禁"}:::gate
+    GATE -->|"结构上够不着"| REFUSE["refuse 拒绝<br/>+ 起草模型扩展,确认后重答"]:::gate
+    GATE -->|"覆盖 / 部分覆盖"| FAST["fast_match 确定性快径<br/>KB 精确命中就直接给 SQL"]:::gate
+    FAST -->|"未命中"| GEN["规划 → 编译 → 生成<br/>agentic 循环,可多候选投票"]:::gen
+    FAST -->|"命中"| EXEC["执行前三道门<br/>授权 → 人在环 → 只读三层"]:::exec
     GEN --> EXEC
-    EXEC --> VAL["执行 → 规则链校验 → 脱敏<br/>结果逐条核验后才算数"]
-    VAL --> RE{"reflect 反思"}
-    RE -->|"未过"| RB["analyze_error 失败分析<br/>版本比对 → 回滚重试"]
+    EXEC --> VAL["执行 → 规则链校验 → 脱敏<br/>结果逐条核验后才算数"]:::exec
+    VAL --> RE{"reflect 反思"}:::gate
+    RE -->|"未过"| RB["analyze_error 失败分析<br/>版本比对 → 回滚重试"]:::err
     RB --> GEN
-    RE -->|"通过"| OUT(["交付<br/>结论 · 图表 · 洞察<br/>归因 · 来源"])
+    RE -->|"通过"| OUT(["交付<br/>结论 · 图表 · 洞察<br/>归因 · 来源"]):::entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 11 stroke:#8b5cf6,stroke-width:1.5px
 ```
 
 28 个节点的完整版本、分支与回滚阶梯、每个节点的输入输出,见[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。

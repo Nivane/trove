@@ -60,6 +60,8 @@
       <div class="diagram-canvas">
 <pre class="mermaid">
 flowchart TD
+    %% 配色 = 站点 token 的半透明版，按阶段着色：路由/出口 zinc · 门禁 amber ·
+    %% 生成 indigo · 执行与校验 teal · 失败分析 红；填充低透明度、描边实色，亮暗两档同源
     START(["提问"]) --> RI["route_intent 意图路由"]
 
     RI -- "问数 / 归因" --> PD["parse_date → schema_linking"]
@@ -89,10 +91,22 @@ flowchart TD
 
     AE -- "回滚重试" --> GEN
     AE -- "到顶 / 回不动" --> OUT
+
+    class START,OUT,RI,PD,AM,AN entry
+    class GATE,FM,RF gate
+    class QS,GEN,HITL gen
+    class EX,SEL,MK,INS exec
+    class AE err
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 21 stroke:#8b5cf6,stroke-width:1.5px
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 默认图（reflection）的形状：一条主干、两条跳过生成的岔路（元数据自校验环、模板快径）、两个环（生成回滚、反思回滚）。归因类问题在 insights 前多经过一个条件节点 <code>attribution</code>。为免两条贯穿全图的竖线，<code>answer_metadata</code> 与三个终态答案节点到 <code>output</code> 的收敛边已从略——它们都是 <code>output</code> 的直接上游。</span>
+        <span class="cap-rendered">图 1 · 默认图（reflection）的形状：一条主干、两条跳过生成的岔路（元数据自校验环、模板快径）、两个环（生成回滚、反思回滚）。归因类问题在 insights 前多经过一个条件节点 <code>attribution</code>。为免两条贯穿全图的竖线，<code>answer_metadata</code> 与三个终态答案节点到 <code>output</code> 的收敛边已从略——它们都是 <code>output</code> 的直接上游。颜色按阶段读：门禁 amber · 生成 indigo · 执行与校验 teal · 失败分析红；紫色的边是「回滚重试」。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -323,6 +337,12 @@ flowchart LR
     AE -- "重新认表" --> SL["schema_linking"]
     AE -- "其实是元数据题" --> AM["answer_metadata"]
     AE -- "到顶 / 回不动" --> OUT["output 交付已知 + 说明不确定性"]
+    class AE err
+    class GR,QS gen
+    class SL,AM,OUT entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
 </pre>
       </div>
       <figcaption>

@@ -44,26 +44,28 @@ Its promise is not "always right" but **never wrong without a fight**:
 
 ```mermaid
 flowchart TB
+    %% Fills are low-alpha with solid strokes, matching the docs site token palette —
+    %% one source works in both light and dark rendering
     subgraph entry["Entry points"]
-        UI["Web UI"]
-        SRV["HTTP service"]
-        CLI["CLI / REPL"]
-        MCP["MCP"]
+        UI["Web UI"]:::entry
+        SRV["HTTP service"]:::entry
+        CLI["CLI / REPL"]:::entry
+        MCP["MCP"]:::entry
     end
 
-    WF["Orchestration · trove/workflow<br/>LangGraph workflow<br/>semantic gate → plan and compile<br/>generate → execute and validate → reflect"]
+    WF["Orchestration · trove/workflow<br/>LangGraph workflow<br/>semantic gate → plan and compile<br/>generate → execute and validate → reflect"]:::core
 
     subgraph caps["Capabilities · trove/services"]
-        SEM["Semantic model"]
-        ANA["Analysis · attribution · statistics"]
-        KB["Knowledge base + retrieval"]
-        MEM["Memory · decision rules · Skills"]
-        ACT["Actions · proposal / approval / receipt / measured effect"]
+        SEM["Semantic model"]:::cap
+        ANA["Analysis · attribution · statistics"]:::ana
+        KB["Knowledge base + retrieval"]:::cap
+        MEM["Memory · decision rules · Skills"]:::cap
+        ACT["Actions · proposal / approval / receipt / measured effect"]:::act
     end
 
-    LLM["Models · trove/llm<br/>LLM gateway"]
-    DS["Data sources<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]
-    STATE["State · trove/storage<br/>PostgreSQL / SQLite<br/>sessions · tasks · checkpoints<br/>query log · lineage"]
+    LLM["Models · trove/llm<br/>LLM gateway"]:::base
+    DS["Data sources<br/>PostgreSQL · MySQL · Doris<br/>ClickHouse · DuckDB · SQLite<br/>Snowflake · BigQuery"]:::ext
+    STATE["State · trove/storage<br/>PostgreSQL / SQLite<br/>sessions · tasks · checkpoints<br/>query log · lineage"]:::base
 
     UI --> WF
     SRV --> WF
@@ -77,6 +79,16 @@ flowchart TB
     WF -.-> LLM
     KB --> DS
     MEM --> STATE
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef core fill:#6366f11f,stroke:#6366f1,stroke-width:2px;
+    classDef cap fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef ana fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef base fill:#71717a14,stroke:#71717a59,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+    style entry fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    style caps fill:#71717a0d,stroke:#71717a2e,stroke-width:1px
+    linkStyle 8 stroke:#f59e0b,stroke-width:1.5px
 ```
 
 Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. **The same goes for executing an action** — the proposals, approvals and receipts a trigger produces are inside; the execution is outside (pushed via webhook / pulled via MCP). Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
@@ -85,19 +97,27 @@ Two bands (entry and capabilities) with the orchestration between them — a sin
 
 ```mermaid
 flowchart TB
-    Q(["Question"]) --> ROUTE["route_intent<br/>split by intent"]
-    ROUTE --> SL["schema_linking<br/>anchor it to the model"]
-    SL --> GATE{"Semantic gate"}
-    GATE -->|"out of reach"| REFUSE["refuse<br/>+ draft a model extension"]
-    GATE -->|"covered / partial"| FAST["fast_match shortcut<br/>an exact KB hit goes to SQL"]
-    FAST -->|"miss"| GEN["Plan → compile → generate<br/>agentic loop, voting"]
-    FAST -->|"hit"| EXEC["Three gates pre-execution<br/>auth → HITL → read-only"]
+    %% Same stage palette as the architecture pages: routing/delivery zinc · gates amber ·
+    %% generation indigo · execution and validation teal · failure analysis red
+    Q(["Question"]):::entry --> ROUTE["route_intent<br/>split by intent"]:::entry
+    ROUTE --> SL["schema_linking<br/>anchor it to the model"]:::entry
+    SL --> GATE{"Semantic gate"}:::gate
+    GATE -->|"out of reach"| REFUSE["refuse<br/>+ draft a model extension"]:::gate
+    GATE -->|"covered / partial"| FAST["fast_match shortcut<br/>an exact KB hit goes to SQL"]:::gate
+    FAST -->|"miss"| GEN["Plan → compile → generate<br/>agentic loop, voting"]:::gen
+    FAST -->|"hit"| EXEC["Three gates pre-execution<br/>auth → HITL → read-only"]:::exec
     GEN --> EXEC
-    EXEC --> VAL["Execute → rules → masking<br/>rules must pass first"]
-    VAL --> RE{"reflect"}
-    RE -->|"not passing"| RB["analyze_error<br/>version diff → roll back"]
+    EXEC --> VAL["Execute → rules → masking<br/>rules must pass first"]:::exec
+    VAL --> RE{"reflect"}:::gate
+    RE -->|"not passing"| RB["analyze_error<br/>version diff → roll back"]:::err
     RB --> GEN
-    RE -->|"passing"| OUT(["Delivery<br/>conclusion · chart<br/>insights · attribution"])
+    RE -->|"passing"| OUT(["Delivery<br/>conclusion · chart<br/>insights · attribution"]):::entry
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef err fill:#dc262614,stroke:#dc262699,stroke-width:1.5px;
+    linkStyle 11 stroke:#8b5cf6,stroke-width:1.5px
 ```
 
 The full 28-node version, every branch and the rollback ladder: [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
