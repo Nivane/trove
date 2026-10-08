@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Trove 四链路图（唯一来源）：docs/index.html 的 hero 面板、README.md 与
+  README.en.md 都引用这一份文件；改图只改这里，三处同时生效。
+  深色底（#0c0c10 + 顶部靛蓝辉光）烘在文件里：站点上与 .hp-panel 的面板底
+  无缝衔接，GitHub 上（明暗主题皆然）它就是一张深色卡片，与 banner.png 同例。
+  两套编码不重叠：段块与行首色点 = 链路（问数 indigo · 分析 teal · 决策 amber ·
+  行动 violet，与 architecture/functional.html 同一套）；节点描边 = 角色
+  （灰 = 零 LLM 确定性 · 靛 = 模型参与 · 琥珀 = 能拦的闸门）。四行有长短是
+  真实差异（六格与九格不是同一种链），不拉伸凑满。行动·效果验收有一条虚线
+  回环到决策·质量回评（静态虚线 = 回环，不参与 .edge 的流动动画）。
+  字体：内嵌 IBM Plex Mono 极小子集（ILMS·×→ 七个字形，IBM Plex 为 OFL-1.1
+  授权），保证与站点同款渲染；中文与其余字符和站点行为一致，走系统字体回退。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 992 424" role="img" aria-label="一条链路：问数 → 分析 → 决策 → 行动，终点在外部系统。主行下方四行是每段自己的内部管线：靛蓝描边的节点由模型参与，琥珀描边的是闸门，其余为零 LLM 的确定性步骤；行动的效果验收有一条虚线回环到决策的质量回评">
+  <title>一条链路 · 问数 → 分析 → 决策 → 行动（四段内部管线逐节点拆解）</title>
+  <style>
+    @font-face {
+      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+      src: url(data:font/woff2;base64,d09GMgABAAAAAANsAA4AAAAABnwAAAMaAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhYbHhwuBmAAZBEQCoNUgm8LFAABNgIkAxQEIAWDOgcgGwwFyAQe+Lzy/T/JKFlUzlbkZFbCqfRpm3MBH80TgPzPuZ4PaAJffG9qHbRdFnbTIYyuwqLxRFITvNKBvsmPXASgI9kSwUuKnwIv7VEppk6f68ON0mjZNoU2hL6s5MD81onlBVk0z4ovyqF5axtxuiLDxFpUkMtlGCPPCTeJGMaKYW6P1FSPKh1Y4mhE5k5k5Bisg2dNnmeIsxgh6xXx/x0oQjSLQ2xBSCryOOsxcGxZAkJzQRJAFRZ6ggmum28wi3ks4Qh3Q9ZviCxh5u6xX9pH7cP2PnuB3f9J8fAO1j6BAzdeglFtm6B6xKM0jYU6QdlJH1UussV+VxRFdzbpqwcGaa4gZ0KAqmtCU70iAK+ioamaEkCq8IZFeJFeVQvXIjXFG7/8zuQl525rK+6K+ht+/+U75/eL+rvaituTFu6+411+i7rrpnnp9rl91N1K9C0O9S8xQxf5zIWJy08LUX9GW3EKL6g7mTg+dEFLny4CzFbz/RNMQ2+tPxzTuLER35TdQ3dP2ev/D2XHfflzZnE5+rF7fcr6FPfjmHnHsyqGOCuGpB2fRy8tpnRq8rmGiEET5i6YNmHI1hnaPL3n1C7r24fEVcdn+gpGdLYuLRowacacMWMHLJ+lz9Z7Tuuyo0Pn+Jps+tiWhWVZFpZlWdwC+rzuJdo2bSt6iZMpXmWbZhsZqy6cuhBNso1p2leu8Np2SS6GZT37GBs09pvb43hZ5Xk81vG+5j5d1/7Y/7//LblUib0LVQ6gX41rGfb/7/+/cumtniNkGAY+yphKP8J4QYeF3HnET3qTjpNOvy7HTUosKrfui+C3DoK2PANJIDfAwUi2g0Jv8kClJRHgpDtDhUDhHkijiCLyGM0ABlBIIgWkk0cR0P4U3ptFf3IpIJUBLGA6c5nFZOaxkCySKcMzueSQSz8Wk0wqxWQRTwF+kikYTLblGwymP0OGaYaoGSKeQVO1MeI4xizZIdfjUsIUxpNH+VGl1Csgt5cZyCBGfLX0EJIgFIjl/TGYRBZZaCFLhTlPMoXHzC4hmST6/wkIOWYXMfaJ2y0A) format("woff2");
+    }
+    .edge { stroke: rgba(129,140,248,.5); stroke-width: 1.6; stroke-dasharray: 4 4; animation: hp-dash .9s linear infinite; }
+    @keyframes hp-dash { to { stroke-dashoffset: -8; } }
+    .nd { fill: #141419; stroke: rgba(255,255,255,.13); stroke-width: 1; }
+    .nd.is-gate { stroke: rgba(251,191,36,.45); }
+    .nd.is-llm { stroke: rgba(129,140,248,.6); }
+    text { fill: #d4d4d8; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; text-anchor: middle; }
+    .seg { fill: #15151b; stroke: rgba(129,140,248,.30); stroke-width: 1; }
+    .seg.is-q   { stroke: rgba(129,140,248,.55); }
+    .seg.is-a   { stroke: rgba(45,212,191,.45); }
+    .seg.is-d   { stroke: rgba(251,191,36,.45); }
+    .seg.is-act { stroke: rgba(167,139,250,.45); }
+    .seg.is-ext { fill: none; stroke: rgba(255,255,255,.18); stroke-dasharray: 4 4; }
+    .seg-name { font-size: 13.5px; font-weight: 600; fill: #e4e4e7; }
+    .seg-sub { font-size: 10px; fill: #8b8b94; }
+    .row-dot.q   { fill: #818cf8; }
+    .row-dot.a   { fill: #2dd4bf; }
+    .row-dot.d   { fill: #fbbf24; }
+    .row-dot.act { fill: #a78bfa; }
+    .row-cap  { text-anchor: start; font-weight: 600; fill: #e4e4e7; }
+    .row-note { text-anchor: end; font-size: 10.5px; fill: #71717a; }
+    .hp-loop { fill: none; stroke: rgba(167,139,250,.45); stroke-width: 1.2; stroke-dasharray: 3 3; }
+    .hp-loop-head { fill: rgba(167,139,250,.7); }
+    .hp-loop-label { font-size: 10px; fill: #71717a; text-anchor: middle; }
+    @media (prefers-reduced-motion: reduce) { .edge { animation: none; } }
+  </style>
+  <defs>
+    <!-- 面板辉光：复刻 .hp-panel 的 radial-gradient(58% 74px at 50% 0, rgba(99,102,241,.11), transparent 72%)（1040 宽面板下的几何，随 SVG 等比缩放） -->
+    <radialGradient id="hp-glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="translate(496,-18) scale(598,73)">
+      <stop offset="0" stop-color="#6366f1" stop-opacity="0.11"/>
+      <stop offset="0.72" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="992" height="424" fill="#0c0c10"/>
+  <rect width="992" height="424" fill="url(#hp-glow)"/>
+
+  <g>
+    <rect class="seg is-q" x="8"   y="16" width="210" height="64" rx="12"/>
+    <text class="seg-name" x="113" y="43">问数</text>
+    <text class="seg-sub"  x="113" y="62">提问 → 可核对的答案</text>
+
+    <line class="edge" x1="218" y1="48" x2="247" y2="48"/>
+
+    <rect class="seg is-a" x="247" y="16" width="180" height="64" rx="12"/>
+    <text class="seg-name" x="337" y="43">分析</text>
+    <text class="seg-sub"  x="337" y="62">归因分解 · 驱动器树</text>
+
+    <line class="edge" x1="427" y1="48" x2="456" y2="48"/>
+
+    <rect class="seg is-d" x="456" y="16" width="180" height="64" rx="12"/>
+    <text class="seg-name" x="546" y="43">决策</text>
+    <text class="seg-sub"  x="546" y="62">判定规则 · 零 LLM</text>
+
+    <line class="edge" x1="636" y1="48" x2="665" y2="48"/>
+
+    <rect class="seg is-act" x="665" y="16" width="180" height="64" rx="12"/>
+    <text class="seg-name" x="755" y="43">行动</text>
+    <text class="seg-sub"  x="755" y="62">提案 · 审批 · 验收</text>
+
+    <line class="edge" x1="845" y1="48" x2="874" y2="48"/>
+
+    <rect class="seg is-ext" x="874" y="16" width="110" height="64" rx="12"/>
+    <text class="seg-name" x="929" y="43">外部系统</text>
+    <text class="seg-sub"  x="929" y="62">执行在系统外</text>
+  </g>
+  <!-- 四行展开：每段一行，各用自己的形状（管线 / 分解 / 判定链 + 梯 / 提案 + 回环）。
+       行首色点 = 链路色，节点描边 = 角色：默认零 LLM 确定性 · 靛蓝模型参与 · 琥珀闸门 -->
+  <g>
+    <circle class="row-dot q" cx="11" cy="99" r="3.5"/>
+    <text class="row-cap" x="24" y="102">问数 · 查询管线</text>
+    <text class="row-note" x="930" y="102">命中直出 · 软 MISS 骨架补齐 · 硬 MISS 拒绝并引导扩展</text>
+
+    <rect class="nd is-llm"  x="8"   y="112" width="96" height="50" rx="10"/><text x="56"  y="142">意图路由</text>
+    <rect class="nd"         x="118" y="112" width="96" height="50" rx="10"/><text x="166" y="142">语义绑定</text>
+    <rect class="nd is-gate" x="228" y="112" width="96" height="50" rx="10"/><text x="276" y="142">语义门禁</text>
+    <rect class="nd is-llm"  x="338" y="112" width="96" height="50" rx="10"/><text x="386" y="142">计划与编译</text>
+    <rect class="nd is-llm"  x="448" y="112" width="96" height="50" rx="10"/><text x="496" y="142">生成与共识</text>
+    <rect class="nd is-gate" x="558" y="112" width="96" height="50" rx="10"/><text x="606" y="142">执行前三门</text>
+    <rect class="nd"         x="668" y="112" width="96" height="50" rx="10"/><text x="716" y="142">校验与脱敏</text>
+    <rect class="nd is-llm"  x="778" y="112" width="96" height="50" rx="10"/><text x="826" y="142">反思</text>
+    <rect class="nd is-llm"  x="888" y="112" width="96" height="50" rx="10"/><text x="936" y="142">解读与交付</text>
+
+    <line class="edge" x1="104" y1="137" x2="118" y2="137"/>
+    <line class="edge" x1="214" y1="137" x2="228" y2="137"/>
+    <line class="edge" x1="324" y1="137" x2="338" y2="137"/>
+    <line class="edge" x1="434" y1="137" x2="448" y2="137"/>
+    <line class="edge" x1="544" y1="137" x2="558" y2="137"/>
+    <line class="edge" x1="654" y1="137" x2="668" y2="137"/>
+    <line class="edge" x1="764" y1="137" x2="778" y2="137"/>
+    <line class="edge" x1="874" y1="137" x2="888" y2="137"/>
+  </g>
+  <g>
+    <circle class="row-dot a" cx="11" cy="181" r="3.5"/>
+    <text class="row-cap" x="24" y="184">分析 · 分解与检验</text>
+    <text class="row-note" x="930" y="184">分解引擎零 LLM · 模型只写可选假设层与一句解读</text>
+
+    <rect class="nd"        x="8"   y="194" width="96" height="50" rx="10"/><text x="56"  y="224">锚定总量</text>
+    <rect class="nd"        x="118" y="194" width="96" height="50" rx="10"/><text x="166" y="224">维度预选</text>
+    <rect class="nd"        x="228" y="194" width="96" height="50" rx="10"/><text x="276" y="224">分解 · 比率</text>
+    <rect class="nd"        x="338" y="194" width="96" height="50" rx="10"/><text x="386" y="224">下钻 · 驱动树</text>
+    <rect class="nd"        x="448" y="194" width="96" height="50" rx="10"/><text x="496" y="224">噪声带</text>
+    <rect class="nd is-llm" x="558" y="194" width="96" height="50" rx="10"/><text x="606" y="224">假设层</text>
+    <rect class="nd is-llm" x="668" y="194" width="96" height="50" rx="10"/><text x="716" y="224">解读与证据</text>
+
+    <line class="edge" x1="104" y1="219" x2="118" y2="219"/>
+    <line class="edge" x1="214" y1="219" x2="228" y2="219"/>
+    <line class="edge" x1="324" y1="219" x2="338" y2="219"/>
+    <line class="edge" x1="434" y1="219" x2="448" y2="219"/>
+    <line class="edge" x1="544" y1="219" x2="558" y2="219"/>
+    <line class="edge" x1="654" y1="219" x2="668" y2="219"/>
+  </g>
+  <g>
+    <circle class="row-dot d" cx="11" cy="263" r="3.5"/>
+    <text class="row-cap" x="24" y="266">决策 · 判定链</text>
+    <text class="row-note" x="930" y="266">全程零模型参与 · 带门与因果梯声明后才跑</text>
+
+    <rect class="nd"         x="8"   y="276" width="96" height="50" rx="10"/><text x="56"  y="306">规则声明</text>
+    <rect class="nd is-gate" x="118" y="276" width="96" height="50" rx="10"/><text x="166" y="306">编译门</text>
+    <rect class="nd"         x="228" y="276" width="96" height="50" rx="10"/><text x="276" y="306">窗口与取数</text>
+    <rect class="nd"         x="338" y="276" width="96" height="50" rx="10"/><text x="386" y="306">条件求值</text>
+    <rect class="nd is-gate" x="448" y="276" width="96" height="50" rx="10"/><text x="496" y="306">噪声带门</text>
+    <rect class="nd"         x="558" y="276" width="96" height="50" rx="10"/><text x="606" y="306">因果梯</text>
+    <rect class="nd"         x="668" y="276" width="96" height="50" rx="10"/><text x="716" y="306">判定与证据</text>
+    <rect class="nd"         x="778" y="276" width="96" height="50" rx="10"/><text x="826" y="306">质量回评</text>
+
+    <line class="edge" x1="104" y1="301" x2="118" y2="301"/>
+    <line class="edge" x1="214" y1="301" x2="228" y2="301"/>
+    <line class="edge" x1="324" y1="301" x2="338" y2="301"/>
+    <line class="edge" x1="434" y1="301" x2="448" y2="301"/>
+    <line class="edge" x1="544" y1="301" x2="558" y2="301"/>
+    <line class="edge" x1="654" y1="301" x2="668" y2="301"/>
+    <line class="edge" x1="764" y1="301" x2="778" y2="301"/>
+  </g>
+  <g>
+    <circle class="row-dot act" cx="11" cy="345" r="3.5"/>
+    <text class="row-cap" x="24" y="348">行动 · 提案与验收</text>
+    <text class="row-note" x="930" y="348">全程零模型参与 · 批准之前不离开系统</text>
+
+    <rect class="nd"         x="8"   y="358" width="96" height="50" rx="10"/><text x="56"  y="388">提案 · 冻结</text>
+    <rect class="nd"         x="118" y="358" width="96" height="50" rx="10"/><text x="166" y="388">模板 × 通道</text>
+    <rect class="nd is-gate" x="228" y="358" width="96" height="50" rx="10"/><text x="276" y="388">审批门</text>
+    <rect class="nd"         x="338" y="358" width="96" height="50" rx="10"/><text x="386" y="388">外送</text>
+    <rect class="nd"         x="448" y="358" width="96" height="50" rx="10"/><text x="496" y="388">回执对账</text>
+    <rect class="nd"         x="558" y="358" width="96" height="50" rx="10"/><text x="606" y="388">效果验收</text>
+
+    <line class="edge" x1="104" y1="383" x2="118" y2="383"/>
+    <line class="edge" x1="214" y1="383" x2="228" y2="383"/>
+    <line class="edge" x1="324" y1="383" x2="338" y2="383"/>
+    <line class="edge" x1="434" y1="383" x2="448" y2="383"/>
+    <line class="edge" x1="544" y1="383" x2="558" y2="383"/>
+
+    <!-- 闭环：效果验收的测量回到决策的质量回评（虚线 = 回环，不是链路前向） -->
+    <path class="hp-loop" d="M 654 383 H 944 Q 960 383 960 367 V 317 Q 960 301 944 301 H 886"/>
+    <path class="hp-loop-head" d="M 876 301 L 886 296 L 886 306 Z"/>
+    <text class="hp-loop-label" x="862" y="377">效果回评</text>
+  </g>
+</svg>
