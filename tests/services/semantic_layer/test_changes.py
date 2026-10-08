@@ -272,6 +272,44 @@ async def test_wrapper_commit_counts_unchanged(kb: KbService):
     assert "Auto-approved-by: deterministic-gate" in log
 
 
+async def test_write_region_fails_before_first_byte(kb: KbService, monkeypatch):
+    """写区中途的查找失败 → 主线/drafts/changes 三文件零字节（I5 形状钉住）。
+
+    今天不可达（全仓无草稿删除路径），但写区顺序是承重的：所有可能 raise 的
+    读都必须在第一个字节落盘之前。计数 monkeypatch —— 第 1 次（入口守卫）
+    放行真实实现，第 2 次（写区内 mark_applied 的查找）抛错。
+    """
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    mgr = SemanticManager(kb)
+    draft = await mgr.create_draft(DS, "metric", "upsert", "avg_loan",
+                                   {"expression": "AVG(loan.amount)"}, "平均")
+    svc = _svc(kb)
+    sem_before = kb.semantics_path(DS).read_bytes()
+    drafts_path = Path(kb.kb_dir) / DS / "semantic_drafts.yml"
+    drafts_before = drafts_path.read_bytes()
+    chg_path = svc.changes_path(DS)
+    chg_before = chg_path.read_bytes() if chg_path.exists() else None
+
+    real = SemanticManager._find_draft
+    calls = {"n": 0}
+
+    def flaky(self, datasource, draft_id):
+        calls["n"] += 1
+        if calls["n"] > 1:                  # 第 2 次 = 已在写区内
+            raise RuntimeError("write region reached")
+        return real(self, datasource, draft_id)
+
+    monkeypatch.setattr(SemanticManager, "_find_draft", flaky)
+    with pytest.raises(RuntimeError):
+        await svc.merge_draft(DS, draft["id"], dialect="sqlite", by="admin")
+
+    assert calls["n"] == 2                  # 入口守卫放行过,写区内那次炸了
+    assert kb.semantics_path(DS).read_bytes() == sem_before
+    assert drafts_path.read_bytes() == drafts_before
+    assert (chg_path.read_bytes() if chg_path.exists() else None) == chg_before
+
+
 async def test_conflict_draft_cannot_confirm_nor_merge(kb: KbService):
     """A11：冲突草稿确认被拒（守卫不搬家：仍在合并入口）。"""
     from trove.services.semantic_layer.manage import SemanticManager
