@@ -64,6 +64,13 @@ def test_neutral_when_nothing_changes(tmp_path):
     assert out["now_broken"] == []
 
 
+def test_still_compiles_lists_survivors(tmp_path):
+    """A8：三态里的 `still_compiles` 如实列出「改完仍然编得过」的产物（§5.4 输出形状）。"""
+    out = run_replay(_kb(tmp_path), "demo", dialect="sqlite",
+                     base_text=_dump(BASE), after_text=_dump(BASE))
+    assert out["still_compiles"] == ["rule:revenue_drop", "topic:credits"]
+
+
 def test_repeated_calls_do_not_share_state(tmp_path):
     """两次调用互不串味 —— 浅拷贝模块级 _EMPTY 会让第二次带着第一次的键。"""
     kb = _kb(tmp_path)
