@@ -341,47 +341,14 @@ h1 {
 .hp-legend .mk-llm  { stroke: rgba(129,140,248,.75); }
 .hp-legend .mk-gate { stroke: rgba(251,191,36,.6); }
 
+/* 图形本体在 assets/hero-chains.svg（唯一来源，README 双语引的是同一份）：
+   样式与深色底随文件走，这里只管版位——更宽的 viewBox（992），窄屏给足
+   横向滚动量、文字不缩得太小。 */
 .hp-scroll { overflow-x: auto; }
-.hp-svg { display: block; width: 100%; min-width: 700px; } /* 更宽的 viewBox（992），窄屏给足横向滚动量，文字不缩得太小 */
-.hp-svg .edge {
-  stroke: rgba(129,140,248,.5); stroke-width: 1.6;
-  stroke-dasharray: 4 4; animation: hp-dash .9s linear infinite;
-}
-@keyframes hp-dash { to { stroke-dashoffset: -8; } }
-.hp-svg .nd { fill: #141419; stroke: rgba(255,255,255,.13); stroke-width: 1; }
-.hp-svg .nd.is-gate { stroke: rgba(251,191,36,.45); }
-.hp-svg .nd.is-llm { stroke: rgba(129,140,248,.6); }
-.hp-svg text {
-  fill: #d4d4d8; font-family: "IBM Plex Mono", monospace;
-  font-size: 11.5px; text-anchor: middle;
-}
-/* 四段链路主行的段块：比节点（.nd）亮一档、描边取各自的链路色（问数 indigo ·
-   分析 teal · 决策 amber · 行动 violet，与 architecture/functional.html 同一套），
-   和展开行的小节点区分「段」与「步骤」；外部系统虚线框——它不在系统内，这是
-   形状上的口径。段色只出现在主行描边与逐行行首的色点上，节点描边留给角色
-   （零 LLM / 模型参与 / 闸门），两套编码不重叠。 */
-.hp-svg .seg { fill: #15151b; stroke: rgba(129,140,248,.30); stroke-width: 1; }
-.hp-svg .seg.is-q   { stroke: rgba(129,140,248,.55); }
-.hp-svg .seg.is-a   { stroke: rgba(45,212,191,.45); }
-.hp-svg .seg.is-d   { stroke: rgba(251,191,36,.45); }
-.hp-svg .seg.is-act { stroke: rgba(167,139,250,.45); }
-.hp-svg .seg.is-ext { fill: none; stroke: rgba(255,255,255,.18); stroke-dasharray: 4 4; }
-.hp-svg .seg-name { font-size: 13.5px; font-weight: 600; fill: #e4e4e7; }
-.hp-svg .seg-sub { font-size: 10px; fill: #8b8b94; }
-/* 四行展开：每段的内部管线逐行排在主行下方。行有长短是真实差异（六格与九格
-   不是同一种链），不拉伸凑满；行首色点 = 链路色，右侧小字是该行的读法。 */
-.hp-svg .row-dot.q   { fill: #818cf8; }
-.hp-svg .row-dot.a   { fill: #2dd4bf; }
-.hp-svg .row-dot.d   { fill: #fbbf24; }
-.hp-svg .row-dot.act { fill: #a78bfa; }
-.hp-svg .row-cap  { text-anchor: start; font-weight: 600; fill: #e4e4e7; }
-.hp-svg .row-note { text-anchor: end; font-size: 10.5px; fill: #71717a; }
-/* 行动 → 决策的回评闭环：静态虚线（不参与 .edge 的流动动画）、更细，
-   它表达的是回环（验收结论回到质量回评），而不是链路上的前向流动。 */
-.hp-svg .hp-loop { fill: none; stroke: rgba(167,139,250,.45); stroke-width: 1.2; stroke-dasharray: 3 3; }
-.hp-svg .hp-loop-head { fill: rgba(167,139,250,.7); }
-.hp-svg .hp-loop-label { font-size: 10px; fill: #71717a; text-anchor: middle; }
-@media (prefers-reduced-motion: reduce) { .hp-svg .edge { animation: none; } }
+.hp-svg { display: block; width: 100%; min-width: 700px; height: auto; }
+/* 图的全部样式（节点/段块/行色点/闭环虚线/流动动画与 reduced-motion 降级）
+   已随图形本体移入 assets/hero-chains.svg——独立文件在 <img> 里拿不到页面样式，
+   样式内联是单源的前提。图例三枚微型节点仍由上面的 .hp-legend 规则着色。 */
 
 /* 事实条：四个数字沿用 .repro-n 类名——scripts/check_page_anchors.py 按
    `<span class="repro-n" data-count="…">` 的既有形状抓会随代码变动的
