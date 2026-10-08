@@ -123,16 +123,23 @@ class ImpactSet:
     examples: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     lessons: list[str] = field(default_factory=list)
+    #: 受影响的主题域（设计 §5.6 增补键；from_dict 容忍旧载荷）。
+    topics: list[str] = field(default_factory=list)
+    #: 依据强度：实体展示名 → "reference"（结构化引用）| "mention"（词面）。
+    basis: dict[str, str] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
-        return not (self.metrics or self.examples or self.rules or self.lessons)
+        return not (self.metrics or self.examples or self.rules
+                    or self.lessons or self.topics)
 
-    def to_dict(self) -> dict[str, list[str]]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "metrics": list(self.metrics),
             "examples": list(self.examples),
             "rules": list(self.rules),
             "lessons": list(self.lessons),
+            "topics": list(self.topics),
+            "basis": dict(self.basis),
         }
 
     @classmethod
@@ -143,6 +150,8 @@ class ImpactSet:
             examples=list(d.get("examples") or []),
             rules=list(d.get("rules") or []),
             lessons=list(d.get("lessons") or []),
+            topics=list(d.get("topics") or []),
+            basis=dict(d.get("basis") or {}),
         )
 
 

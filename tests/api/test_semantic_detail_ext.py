@@ -179,7 +179,8 @@ async def test_detail_drift_lifecycle_from_store(client, api_app, api_kb):
     assert courses["first_seen_at"]
     assert courses["seen_count"] == 1
     assert courses["impact"] == {"metrics": ["平均成绩"], "examples": [],
-                                 "rules": [], "lessons": []}
+                                 "rules": [], "lessons": [], "topics": [],
+                                 "basis": {}}
     assert courses["level"] == "L2"
     # L1 存储行没有把语义层条目串成生命周期
     assert by_subject["students.ghost"]["impact"]["metrics"] == []

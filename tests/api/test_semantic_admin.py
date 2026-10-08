@@ -80,7 +80,8 @@ async def test_semantic_detail_drift_detected(client, api_app, api_kb):
     assert by_subject["courses"]["severity"] == "critical"
     assert by_subject["courses"]["detail"]["dataset"] == "courses"
     assert by_subject["courses"]["impact"] == {
-        "metrics": [], "examples": [], "rules": [], "lessons": []}
+        "metrics": [], "examples": [], "rules": [], "lessons": [],
+        "topics": [], "basis": {}}
     # 本用例没跑过漂移检测:生命周期字段不在位 → null(形状在,值缺省)
     assert by_subject["courses"]["drift_id"] is None
     assert by_subject["courses"]["first_seen_at"] is None

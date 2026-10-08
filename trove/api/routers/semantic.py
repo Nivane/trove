@@ -149,7 +149,7 @@ async def _drift_view(request: Request, ds: str, dialect: str) -> dict[str, Any]
                     (row.level, normalize_subject(row.subject)), row)
         except Exception:
             stored = {}
-    empty_impact = {"metrics": [], "examples": [], "rules": [], "lessons": []}
+    empty_impact = ImpactSet().to_dict()
     items: list[dict[str, Any]] = []
     for item in adapted.items:
         row = stored.get((item.level, normalize_subject(item.subject)))
