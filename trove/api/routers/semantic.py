@@ -586,16 +586,20 @@ async def verify_semantic_change(
 
 @router.post("/admin/semantic/{name}/changes/{change_id}/merge")
 async def merge_semantic_change(
-    name: str, change_id: str, request: Request, auto: bool = False,
+    name: str, change_id: str, request: Request,
     admin: dict = Depends(require_admin),
 ) -> dict:
-    """合并（★ I1 的唯一写入口的 HTTP 面）。冲突 409 / 门禁不过 422。"""
+    """合并（★ I1 的唯一写入口的 HTTP 面）。冲突 409 / 门禁不过 422。
+
+    无 ``auto`` 入参（设计 §8.2）：``Auto-approved-by: deterministic-gate``
+    只能由确定性门自己触发 —— 客户端可控的查询参数会让审计标记可伪造。
+    """
     from trove.services.semantic_layer.changes import ChangeInvalid, ChangeStale
 
     ds = _resolve_datasource(request, name)
     actor = str(admin.get("username", ""))
     try:
-        change = await _changes(request).merge(ds, change_id, by=actor, auto=auto)
+        change = await _changes(request).merge(ds, change_id, by=actor)
     except ChangeStale as e:
         raise HTTPException(status_code=409, detail={"code": "stale_change",
                                                      "message": str(e)})
@@ -607,7 +611,8 @@ async def merge_semantic_change(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await _audit(request, "semantic.change.merge", admin, 200, {
-        "datasource": ds, "id": change_id, "auto": auto,
+        "datasource": ds, "id": change_id,
+        "auto": bool(change.get("auto")),
         "warnings": change.get("warnings"), "degraded": change.get("degraded")})
     return {"change": change}
 

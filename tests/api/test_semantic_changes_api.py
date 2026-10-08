@@ -52,11 +52,35 @@ async def test_merge_then_stale_conflict(client):
     assert stale.json()["detail"]["code"] == "stale_change"
 
 
-async def test_merge_invalid_returns_422(client):
+async def test_open_invalid_expression_returns_400(client):
     resp = await client.post("/v1/admin/semantic/test_db/changes", json={
         "payloads": [{"kind": "metric", "action": "upsert", "name": "bad",
                       "payload": {"expression": "SELEC nope("}}], "note": ""})
     assert resp.status_code == 400          # 开单干跑就拦下
+
+
+async def test_merge_invalid_returns_422(client, api_app):
+    """真 422:合并时的门禁不过 —— ``ChangeInvalid`` → ``change_invalid``。
+
+    机制:``open`` 会干跑 payload,非法表达式在开单那一刻就是 400;要走到
+    merge 的 422 分支,只能让记录里的 payload 与开单干跑时不同 —— 直接改
+    落盘的 ``semantic_changes.yml``(``base_digest`` 记的是 semantics.yml 的
+    文本,**不动它** → 乐观并发照过,冲突路径不抢先命中)。
+    """
+    import yaml
+
+    change = (await _open(client)).json()["change"]
+    path = api_app.state.kb.kb_dir / "test_db" / "semantic_changes.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["changes"][0]["payloads"][0]["payload"]["expression"] = "SELEC nope("
+    path.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8")
+
+    resp = await client.post(
+        f"/v1/admin/semantic/test_db/changes/{change['id']}/merge")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "change_invalid"
 
 
 async def test_reject_requires_reason(client):

@@ -14,6 +14,13 @@
 
 **诚实边界**：这是防手滑的棘轮,不是沙箱 —— 用 ``write_text`` 且路径不含
 字面量的绕过测不到；它挡的是「又开了一条正经的写入路径」（见 §9.3）。
+
+**白名单也不等于「全部写者清单」**：``trove/services/kb/git_versioning.py``
+的 ``git restore --source <sha>``（KB 回滚 ``rollback`` / ``rollback_tree``）
+同样会改写 ``semantics.yml``，但**构造上看不见** —— 它不写文件,是把 git 当
+写者,AST 规则里没有任何写入调用可命。回滚是**恢复到已被提交的历史版本**,与
+「agent 新写一份语义」是两回事,刻意不纳入规则;但读者不可因此把白名单当作
+写者全集。
 """
 from __future__ import annotations
 
