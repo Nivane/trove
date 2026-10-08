@@ -54,6 +54,16 @@ async function apiError(resp: Response): Promise<ApiError> {
           .map((d: { msg?: string }) => d?.msg ?? '')
           .filter(Boolean)
           .join('; ')
+      } else if (parsed && parsed.detail && typeof parsed.detail === 'object') {
+        // 结构化 detail({code,message},如语义变更评审的 409 stale_change /
+        // 422 change_invalid):取 message 逐字展示,缺 message 退 code ——
+        // 绝不把原始 JSON 丢进 toast。字符串/数组两支的行为不变。
+        const detail = parsed.detail as { code?: string; message?: string }
+        if (typeof detail.message === 'string' && detail.message) {
+          message = detail.message
+        } else if (typeof detail.code === 'string' && detail.code) {
+          message = detail.code
+        }
       }
     } catch {
       /* keep raw text */

@@ -647,6 +647,64 @@ export interface SemanticDraft {
   diff?: SemanticDraftDiff
 }
 
+// ── 语义分支评审(变更单)—— §8.2 六端点 ────────────────────────
+//
+// 「变更」是一条把草稿/自动应用的改动打包评审的记录:.staging 里冻结
+// 快照(重算锚点 = base_digest/base_commit),评审看 diff / 影响面 / 编译
+// 回放,合并或驳回都落 git。`auto` 是**读侧的历史标记** —— 确定性门自动
+// 合并过这一单,由服务端写入,不是客户端可传的开关。
+
+/** 变更 diff 的实体级摘要(按 kind 分组的增/删/改名字)。 */
+export interface SemanticChangeEntityDiff {
+  added: string[]
+  removed: string[]
+  modified: string[]
+}
+
+export interface SemanticChangeDiff {
+  entities: Record<string, SemanticChangeEntityDiff>
+  details: SemanticDraftDiff[]
+}
+
+/** 影响面:被这次变更触碰的产物 + 每条的判定依据(reference/mention)。 */
+export interface SemanticImpact {
+  metrics: string[]
+  examples: string[]
+  rules: string[]
+  lessons: string[]
+  topics?: string[]
+  basis?: Record<string, string>
+}
+
+export interface SemanticChangeRecord {
+  id: string
+  datasource: string
+  origin: string
+  status: string
+  question?: string
+  note?: string
+  author?: string
+  created_at?: string
+  auto?: boolean
+  subjects?: Array<{ kind: string; name: string }>
+  payloads?: Array<Record<string, unknown>>
+  warnings?: Array<{ code: string; subjects?: string[] }>
+  degraded?: string[]
+  reject_reason?: string
+}
+
+export interface SemanticChangeDetail extends SemanticChangeRecord {
+  diff?: SemanticChangeDiff | null
+  impact?: SemanticImpact | null
+  verification?: {
+    verdict: string
+    replayed?: string[]
+    now_broken?: string[]
+    was_broken_now_compiles?: string[]
+    not_applicable_reason?: string | null
+  } | null
+}
+
 /** 漂移影响面快照(发现时冻结;空组也是事实,不隐藏)。 */
 export interface SemanticDriftImpact {
   metrics: string[]
