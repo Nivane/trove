@@ -67,39 +67,40 @@
     </div>
 
     <!-- 链路面板：主行是四段链路总览（问数 → 分析 → 决策 → 行动 → 外部系统），
-         问数段由一条「展开」虚线接出下方的查询管线；管线里的数字契约（28 节点）
+         下方四行把每段自己的内部管线逐行展开（行首色点 = 链路色，节点描边 = 角色：
+         默认零 LLM / 靛蓝模型参与 / 琥珀闸门）；问数管线的数字契约（28 节点）
          见 docs.css 的 .hp-facts 注释。 -->
     <div class="hp-panel">
       <div class="hp-head">
         <span class="hp-title">一条链路 · 问数 → 分析 → 决策 → 行动</span>
         <span class="hp-legend">
-          <i><span class="hp-dot ok"></span>HIT 编译直出</i>
-          <i><span class="hp-dot warn"></span>软 MISS 骨架补齐</i>
-          <i><span class="hp-dot danger"></span>硬 MISS 拒绝 + 扩展</i>
+          <i><svg viewBox="0 0 11 11" aria-hidden="true"><rect class="mk mk-det" x="1" y="1" width="9" height="9" rx="3"/></svg>零 LLM 确定性</i>
+          <i><svg viewBox="0 0 11 11" aria-hidden="true"><rect class="mk mk-llm" x="1" y="1" width="9" height="9" rx="3"/></svg>模型参与</i>
+          <i><svg viewBox="0 0 11 11" aria-hidden="true"><rect class="mk mk-gate" x="1" y="1" width="9" height="9" rx="3"/></svg>闸门（能拦）</i>
         </span>
       </div>
       <div class="hp-scroll">
-        <svg class="hp-svg" viewBox="0 0 992 190" role="img" aria-label="一条链路：问数 → 分析 → 决策 → 行动，终点在外部系统；问数段展开为查询管线">
+        <svg class="hp-svg" viewBox="0 0 992 424" role="img" aria-label="一条链路：问数 → 分析 → 决策 → 行动，终点在外部系统。主行下方四行是每段自己的内部管线：靛蓝描边的节点由模型参与，琥珀描边的是闸门，其余为零 LLM 的确定性步骤；行动的效果验收有一条虚线回环到决策的质量回评">
           <g>
-            <rect class="seg" x="8"   y="16" width="210" height="64" rx="12"/>
+            <rect class="seg is-q" x="8"   y="16" width="210" height="64" rx="12"/>
             <text class="seg-name" x="113" y="43">问数</text>
             <text class="seg-sub"  x="113" y="62">提问 → 可核对的答案</text>
 
             <line class="edge" x1="218" y1="48" x2="247" y2="48"/>
 
-            <rect class="seg" x="247" y="16" width="180" height="64" rx="12"/>
+            <rect class="seg is-a" x="247" y="16" width="180" height="64" rx="12"/>
             <text class="seg-name" x="337" y="43">分析</text>
             <text class="seg-sub"  x="337" y="62">归因分解 · 驱动器树</text>
 
             <line class="edge" x1="427" y1="48" x2="456" y2="48"/>
 
-            <rect class="seg" x="456" y="16" width="180" height="64" rx="12"/>
+            <rect class="seg is-d" x="456" y="16" width="180" height="64" rx="12"/>
             <text class="seg-name" x="546" y="43">决策</text>
             <text class="seg-sub"  x="546" y="62">判定规则 · 零 LLM</text>
 
             <line class="edge" x1="636" y1="48" x2="665" y2="48"/>
 
-            <rect class="seg" x="665" y="16" width="180" height="64" rx="12"/>
+            <rect class="seg is-act" x="665" y="16" width="180" height="64" rx="12"/>
             <text class="seg-name" x="755" y="43">行动</text>
             <text class="seg-sub"  x="755" y="62">提案 · 审批 · 验收</text>
 
@@ -109,33 +110,100 @@
             <text class="seg-name" x="929" y="43">外部系统</text>
             <text class="seg-sub"  x="929" y="62">执行在系统外</text>
           </g>
+          <!-- 四行展开：每段一行，各用自己的形状（管线 / 分解 / 判定链 + 梯 / 提案 + 回环）。
+               行首色点 = 链路色，节点描边 = 角色：默认零 LLM 确定性 · 靛蓝模型参与 · 琥珀闸门 -->
           <g>
-            <line class="hp-expand" x1="113" y1="80" x2="113" y2="110"/>
-            <path class="hp-expand" d="M 109 110 L 113 116 L 117 110" fill="none"/>
-            <text class="hp-expand-label" x="126" y="112">问数段 · 查询管线展开</text>
+            <circle class="row-dot q" cx="11" cy="99" r="3.5"/>
+            <text class="row-cap" x="24" y="102">问数 · 查询管线</text>
+            <text class="row-note" x="930" y="102">命中直出 · 软 MISS 骨架补齐 · 硬 MISS 拒绝并引导扩展</text>
 
-            <rect class="nd"          x="8"   y="124" width="96" height="50" rx="10"/><text x="56"  y="154">意图路由</text>
-            <rect class="nd"          x="118" y="124" width="96" height="50" rx="10"/><text x="166" y="154">语义绑定</text>
-            <rect class="nd is-gate"  x="228" y="124" width="96" height="50" rx="10"/><text x="276" y="154">语义门禁</text>
-            <rect class="nd"          x="338" y="124" width="96" height="50" rx="10"/><text x="386" y="154">计划与编译</text>
-            <rect class="nd"          x="448" y="124" width="96" height="50" rx="10"/><text x="496" y="154">生成与共识</text>
-            <rect class="nd"          x="558" y="124" width="96" height="50" rx="10"/><text x="606" y="154">执行前三门</text>
-            <rect class="nd"          x="668" y="124" width="96" height="50" rx="10"/><text x="716" y="154">校验与脱敏</text>
-            <rect class="nd"          x="778" y="124" width="96" height="50" rx="10"/><text x="826" y="154">反思</text>
-            <rect class="nd is-out"   x="888" y="124" width="96" height="50" rx="10"/><text x="936" y="154">交付</text>
+            <rect class="nd is-llm"  x="8"   y="112" width="96" height="50" rx="10"/><text x="56"  y="142">意图路由</text>
+            <rect class="nd"         x="118" y="112" width="96" height="50" rx="10"/><text x="166" y="142">语义绑定</text>
+            <rect class="nd is-gate" x="228" y="112" width="96" height="50" rx="10"/><text x="276" y="142">语义门禁</text>
+            <rect class="nd is-llm"  x="338" y="112" width="96" height="50" rx="10"/><text x="386" y="142">计划与编译</text>
+            <rect class="nd is-llm"  x="448" y="112" width="96" height="50" rx="10"/><text x="496" y="142">生成与共识</text>
+            <rect class="nd is-gate" x="558" y="112" width="96" height="50" rx="10"/><text x="606" y="142">执行前三门</text>
+            <rect class="nd"         x="668" y="112" width="96" height="50" rx="10"/><text x="716" y="142">校验与脱敏</text>
+            <rect class="nd is-llm"  x="778" y="112" width="96" height="50" rx="10"/><text x="826" y="142">反思</text>
+            <rect class="nd is-llm"  x="888" y="112" width="96" height="50" rx="10"/><text x="936" y="142">解读与交付</text>
 
-            <line class="edge" x1="104" y1="149" x2="118" y2="149"/>
-            <line class="edge" x1="214" y1="149" x2="228" y2="149"/>
-            <line class="edge" x1="324" y1="149" x2="338" y2="149"/>
-            <line class="edge" x1="434" y1="149" x2="448" y2="149"/>
-            <line class="edge" x1="544" y1="149" x2="558" y2="149"/>
-            <line class="edge" x1="654" y1="149" x2="668" y2="149"/>
-            <line class="edge" x1="764" y1="149" x2="778" y2="149"/>
-            <line class="edge" x1="874" y1="149" x2="888" y2="149"/>
+            <line class="edge" x1="104" y1="137" x2="118" y2="137"/>
+            <line class="edge" x1="214" y1="137" x2="228" y2="137"/>
+            <line class="edge" x1="324" y1="137" x2="338" y2="137"/>
+            <line class="edge" x1="434" y1="137" x2="448" y2="137"/>
+            <line class="edge" x1="544" y1="137" x2="558" y2="137"/>
+            <line class="edge" x1="654" y1="137" x2="668" y2="137"/>
+            <line class="edge" x1="764" y1="137" x2="778" y2="137"/>
+            <line class="edge" x1="874" y1="137" x2="888" y2="137"/>
+          </g>
+          <g>
+            <circle class="row-dot a" cx="11" cy="181" r="3.5"/>
+            <text class="row-cap" x="24" y="184">分析 · 分解与检验</text>
+            <text class="row-note" x="930" y="184">分解引擎零 LLM · 模型只写可选假设层与一句解读</text>
+
+            <rect class="nd"        x="8"   y="194" width="96" height="50" rx="10"/><text x="56"  y="224">锚定总量</text>
+            <rect class="nd"        x="118" y="194" width="96" height="50" rx="10"/><text x="166" y="224">维度预选</text>
+            <rect class="nd"        x="228" y="194" width="96" height="50" rx="10"/><text x="276" y="224">分解 · 比率</text>
+            <rect class="nd"        x="338" y="194" width="96" height="50" rx="10"/><text x="386" y="224">下钻 · 驱动树</text>
+            <rect class="nd"        x="448" y="194" width="96" height="50" rx="10"/><text x="496" y="224">噪声带</text>
+            <rect class="nd is-llm" x="558" y="194" width="96" height="50" rx="10"/><text x="606" y="224">假设层</text>
+            <rect class="nd is-llm" x="668" y="194" width="96" height="50" rx="10"/><text x="716" y="224">解读与证据</text>
+
+            <line class="edge" x1="104" y1="219" x2="118" y2="219"/>
+            <line class="edge" x1="214" y1="219" x2="228" y2="219"/>
+            <line class="edge" x1="324" y1="219" x2="338" y2="219"/>
+            <line class="edge" x1="434" y1="219" x2="448" y2="219"/>
+            <line class="edge" x1="544" y1="219" x2="558" y2="219"/>
+            <line class="edge" x1="654" y1="219" x2="668" y2="219"/>
+          </g>
+          <g>
+            <circle class="row-dot d" cx="11" cy="263" r="3.5"/>
+            <text class="row-cap" x="24" y="266">决策 · 判定链</text>
+            <text class="row-note" x="930" y="266">全程零模型参与 · 带门与因果梯声明后才跑</text>
+
+            <rect class="nd"         x="8"   y="276" width="96" height="50" rx="10"/><text x="56"  y="306">规则声明</text>
+            <rect class="nd is-gate" x="118" y="276" width="96" height="50" rx="10"/><text x="166" y="306">编译门</text>
+            <rect class="nd"         x="228" y="276" width="96" height="50" rx="10"/><text x="276" y="306">窗口与取数</text>
+            <rect class="nd"         x="338" y="276" width="96" height="50" rx="10"/><text x="386" y="306">条件求值</text>
+            <rect class="nd is-gate" x="448" y="276" width="96" height="50" rx="10"/><text x="496" y="306">噪声带门</text>
+            <rect class="nd"         x="558" y="276" width="96" height="50" rx="10"/><text x="606" y="306">因果梯</text>
+            <rect class="nd"         x="668" y="276" width="96" height="50" rx="10"/><text x="716" y="306">判定与证据</text>
+            <rect class="nd"         x="778" y="276" width="96" height="50" rx="10"/><text x="826" y="306">质量回评</text>
+
+            <line class="edge" x1="104" y1="301" x2="118" y2="301"/>
+            <line class="edge" x1="214" y1="301" x2="228" y2="301"/>
+            <line class="edge" x1="324" y1="301" x2="338" y2="301"/>
+            <line class="edge" x1="434" y1="301" x2="448" y2="301"/>
+            <line class="edge" x1="544" y1="301" x2="558" y2="301"/>
+            <line class="edge" x1="654" y1="301" x2="668" y2="301"/>
+            <line class="edge" x1="764" y1="301" x2="778" y2="301"/>
+          </g>
+          <g>
+            <circle class="row-dot act" cx="11" cy="345" r="3.5"/>
+            <text class="row-cap" x="24" y="348">行动 · 提案与验收</text>
+            <text class="row-note" x="930" y="348">全程零模型参与 · 批准之前不离开系统</text>
+
+            <rect class="nd"         x="8"   y="358" width="96" height="50" rx="10"/><text x="56"  y="388">提案 · 冻结</text>
+            <rect class="nd"         x="118" y="358" width="96" height="50" rx="10"/><text x="166" y="388">模板 × 通道</text>
+            <rect class="nd is-gate" x="228" y="358" width="96" height="50" rx="10"/><text x="276" y="388">审批门</text>
+            <rect class="nd"         x="338" y="358" width="96" height="50" rx="10"/><text x="386" y="388">外送</text>
+            <rect class="nd"         x="448" y="358" width="96" height="50" rx="10"/><text x="496" y="388">回执对账</text>
+            <rect class="nd"         x="558" y="358" width="96" height="50" rx="10"/><text x="606" y="388">效果验收</text>
+
+            <line class="edge" x1="104" y1="383" x2="118" y2="383"/>
+            <line class="edge" x1="214" y1="383" x2="228" y2="383"/>
+            <line class="edge" x1="324" y1="383" x2="338" y2="383"/>
+            <line class="edge" x1="434" y1="383" x2="448" y2="383"/>
+            <line class="edge" x1="544" y1="383" x2="558" y2="383"/>
+
+            <!-- 闭环：效果验收的测量回到决策的质量回评（虚线 = 回环，不是链路前向） -->
+            <path class="hp-loop" d="M 654 383 H 944 Q 960 383 960 367 V 317 Q 960 301 944 301 H 886"/>
+            <path class="hp-loop-head" d="M 876 301 L 886 296 L 886 306 Z"/>
+            <text class="hp-loop-label" x="862" y="377">效果回评</text>
           </g>
         </svg>
       </div>
-      <p class="hp-facts"><span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">8000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
+      <p class="hp-facts">问数管线 <span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">8000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
     </div>
 
     <div class="hp-connector" aria-hidden="true">
