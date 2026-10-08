@@ -110,3 +110,58 @@ def test_topic_scope_emptied_is_broken(tmp_path):
                      base_text=_dump(BASE), after_text=_dump(after))
     assert "topic:credits" in out["now_broken"]
     assert out["verdict"] == "regresses"
+
+
+def test_topic_scope_restored_is_improvement(tmp_path):
+    """域过期 → 域恢复 = 真「曾经编不出」,记 improves（「新增主题不算修复」的正向半边）。"""
+    base = {"version": "0.2.0.dev0", "semantic_model": [{
+        "name": "demo", "datasets": [], "metrics": [],
+        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}]}
+    after = {"version": "0.2.0.dev0", "semantic_model": [{
+        "name": "demo", "datasets": [{"name": "credit_card", "source": "credit_card"}],
+        "metrics": [],
+        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}]}
+    out = run_replay(_kb(tmp_path, rules=None), "demo", dialect="sqlite",
+                     base_text=_dump(base), after_text=_dump(after))
+    assert out["was_broken_now_compiles"] == ["topic:credits"]
+    assert out["verdict"] == "improves"
+
+
+def test_block_pick_follows_dialect_parameter(tmp_path):
+    """``_parse`` 用调用方的 dialect 挑表达式块 —— mysql 挑到编不出的块,sqlite 回退 ANSI。
+
+    MYSQL 块 ``SUM(1)`` 不含 ``dataset.field`` 引用 → 度量锚定为空 →
+    ``build_and_compile`` 抛「cannot determine anchor datasets」;ANSI 块引用
+    ``loan.refund`` → 锚定 loan → 能编。块选择若写死 sqlite,mysql 那次会误挑
+    ANSI 把坏块编译成功 —— 这条断言即红。
+    """
+    doc = {"version": "0.2.0.dev0", "semantic_model": [{
+        "name": "demo",
+        "datasets": [{"name": "loan", "source": "loan"}],
+        "metrics": [{"name": "refund_rate", "expression": {"dialects": [
+            {"dialect": "MYSQL", "expression": "SUM(1)"},
+            {"dialect": "ANSI_SQL", "expression": "SUM(loan.refund)"}]}}],
+    }]}
+    kb = _kb(tmp_path)  # RULES 的 subject 正是 refund_rate
+
+    mysql_out = run_replay(kb, "demo", dialect="mysql",
+                           base_text=_dump(doc), after_text=_dump(doc))
+    assert "rule:revenue_drop" in mysql_out["now_broken"]
+    sqlite_out = run_replay(kb, "demo", dialect="sqlite",
+                            base_text=_dump(doc), after_text=_dump(doc))
+    assert "rule:revenue_drop" not in sqlite_out["now_broken"]
+
+
+def test_unexpected_exception_degrades_to_unknown(tmp_path, monkeypatch):
+    """运行期任何异常 → verdict=unknown + reason,不阻断（模块契约）。"""
+    from trove.services.semantic_layer import sandbox
+
+    def boom(model, rule, dialect):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sandbox, "_rule_compiles", boom)
+    out = run_replay(_kb(tmp_path), "demo", dialect="sqlite",
+                     base_text=_dump(BASE), after_text=_dump(BASE))
+    assert out["verdict"] == "unknown"
+    assert "boom" in out["reason"]
+    assert out["now_broken"] == []
