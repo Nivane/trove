@@ -771,9 +771,15 @@ class ConfigLoader:
         # 加了字段却不在加载器里读 YAML,配置就永远不生效(恒取默认)。
         changes_raw = (resolved.get("semantic_changes", {})
                        or agent_section.get("semantic_changes", {}) or {})
+        # ``sandbox_by_origin`` 容忍 YAML 标量（``sandbox_by_origin: manual``）:
+        # 逐字遍历字符串会把它按**字符**展开 —— 来源集合静默变成一个谁也
+        # 匹配不上的值,沙箱于是永不对任何来源触发,而配置看起来是对的。
+        sandbox_raw = changes_raw.get("sandbox_by_origin")
+        if isinstance(sandbox_raw, str):
+            sandbox_raw = [sandbox_raw]
         changes_conf = ChangesConfig(
             sandbox_by_origin=[
-                str(o) for o in (changes_raw.get("sandbox_by_origin")
+                str(o) for o in (sandbox_raw
                                  or ["draft_confirm", "auto_apply"])],
             retain_staging_days=max(0, int(changes_raw.get("retain_staging_days", 30))),
         )

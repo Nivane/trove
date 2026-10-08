@@ -7,8 +7,8 @@ from trove.core.config import AgentConfig, ChangesConfig, ConfigLoader
 def _load(tmp_path, body: str) -> AgentConfig:
     path = tmp_path / "agent.yml"
     path.write_text(body, encoding="utf-8")
-    # 加载器在 ConfigLoader 上（`ConfigLoader.load_agent_config(config_path)`）——
-    # 这是仓内既有测试的统一写法（tests/core/test_config.py）。
+    # ``load_agent_config`` 在 ``ConfigLoader`` 上,参数名是 ``config_path``
+    # （``explicit_path`` 是 ``find_config_file`` 的参数）。
     return ConfigLoader.load_agent_config(str(path))
 
 
@@ -35,3 +35,11 @@ def test_nested_agent_spelling(tmp_path):
         "agent:\n  semantic_changes:\n    retain_staging_days: 3\n"
     ))
     assert conf.semantic_changes.retain_staging_days == 3
+
+
+def test_scalar_sandbox_origin_is_tolerated(tmp_path):
+    """YAML 标量不是列表：逐字遍历会按字符展开,来源集合静默失效。"""
+    conf = _load(tmp_path, (
+        "semantic_changes:\n  sandbox_by_origin: manual\n"
+    ))
+    assert conf.semantic_changes.sandbox_by_origin == ["manual"]
