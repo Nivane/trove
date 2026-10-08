@@ -253,16 +253,19 @@ flowchart LR
     </p>
 
     <div class="callout warn">
-      <span class="callout-tag">现状：形状与读取口已落地，写入口未接</span>
+      <span class="callout-tag">现状：形状与读取口已落地，漂移检测侧写入口未接</span>
       <div>
-        <p>上面这张表目前是<strong>契约</strong>，不是现有能力。</p>
+        <p>上面这张表对<strong>漂移条目</strong>而言目前仍是契约，不是现有数据。</p>
         <p>四个维度、<code>ImpactSet</code> 形状、读取 API（<code>impact()</code>）都已实现，
-        并有测试正面钉住。但<strong>填充它的 <code>ImpactResolver</code> 尚未接线</strong>：
-        落库时 <code>store.record(report)</code> 不传 <code>impact=</code>，
-        <code>store.py</code> 于是回退到空 <code>ImpactSet</code>，
-        <code>affected</code> 列因此恒为空（四个维度都是空列表）。</p>
-        <p>所以「哪些指标引用了消失的列」今天问不出来。要等 <code>ImpactResolver</code>
-        接上才有答案——在那之前，任何按影响面排序或过滤的界面都是在读空集。</p>
+        并有测试正面钉住；填充它的 <code>ImpactResolver</code>（<code>drift/impact.py</code>）
+        也已存在，并被语义变更评审消费——变更详情里的影响面就是它现算的。
+        但<strong>漂移检测的落库路径仍未接线</strong>：落库时
+        <code>store.record(report)</code> 不传 <code>impact=</code>，<code>store.py</code>
+        于是回退到空 <code>ImpactSet</code>，<code>affected</code> 列因此恒为空
+        （四个维度都是空列表）。</p>
+        <p>所以漂移条目上的「哪些指标引用了消失的列」今天仍问不出来，任何按影响面排序或过滤
+        漂移的界面读到的都是空集——要等检测侧落库时传入 <code>impact=</code> 才有答案。
+        这里冻结的是空快照，与变更评审现算的影响面不是同一条数据，不要混看。</p>
       </div>
     </div>
 
