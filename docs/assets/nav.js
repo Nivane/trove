@@ -17,6 +17,9 @@
   "use strict";
 
   // ── 站点结构：唯一真源，改这里就是改全站导航 ──────────────
+  // 分组顺序与首页「从这里开始」的三柱卡片一致：架构 → 数据 / Agent /
+  // 决策与行动 → 设计深潜（深潜沉底）。改顺序时 index.html 的 .cards
+  // 区要同看，否则两个入口给出的阅读推进方向相反。
   var NAV = [
     {
       group: "入门",
@@ -56,6 +59,31 @@
       ]
     },
     {
+      group: "数据能力",
+      items: [
+        { href: "capabilities/data.html", text: "数据能力总览" },
+        { href: "capabilities/semantic.html", text: "语义层" },
+        { href: "capabilities/kb.html", text: "知识库" },
+        { href: "capabilities/retrieval.html", text: "混合检索" }
+      ]
+    },
+    {
+      group: "Agent 能力",
+      items: [
+        { href: "capabilities/agent.html", text: "Agent 能力总览" },
+        { href: "capabilities/memory.html", text: "记忆子系统" },
+        { href: "capabilities/skills.html", text: "Skills" },
+        { href: "capabilities/llm-gateway.html", text: "LLM 网关" }
+      ]
+    },
+    {
+      group: "决策与行动",
+      items: [
+        { href: "capabilities/decisions.html", text: "判定规则" },
+        { href: "capabilities/actions.html", text: "行动与审批" }
+      ]
+    },
+    {
       group: "设计深潜",
       items: [
         { href: "engineering/semantic-compiler.html", text: "语义编译边界" },
@@ -66,26 +94,6 @@
         { href: "engineering/closed-loop.html", text: "闭环与契约" },
         { href: "engineering/action-safety.html", text: "行动安全架构" },
         { href: "engineering/extension-governance.html", text: "扩展与治理" }
-      ]
-    },
-    {
-      group: "数据能力",
-      items: [
-        { href: "capabilities/data.html", text: "数据能力总览" },
-        { href: "capabilities/semantic.html", text: "语义层" },
-        { href: "capabilities/kb.html", text: "知识库" },
-        { href: "capabilities/retrieval.html", text: "混合检索" },
-        { href: "capabilities/decisions.html", text: "判定规则" },
-        { href: "capabilities/actions.html", text: "行动与审批" }
-      ]
-    },
-    {
-      group: "Agent 能力",
-      items: [
-        { href: "capabilities/agent.html", text: "Agent 能力总览" },
-        { href: "capabilities/memory.html", text: "记忆子系统" },
-        { href: "capabilities/skills.html", text: "Skills" },
-        { href: "capabilities/llm-gateway.html", text: "LLM 网关" }
       ]
     },
     {
