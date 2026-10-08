@@ -197,8 +197,12 @@ class ChangeService:
                              subjects: list[dict[str, str]]) -> tuple[list[dict], list[str]]:
         """open_subjects ∩ touched_subjects → warnings;读不到 → degraded（I8）。
 
-        两侧归一后按**名字部分**比较（``field:loan.region`` 与 ``loan.region``
-        交集）——漂移侧存的是未带前缀的归一主体。
+        两侧都经 ``normalize_subject`` 归一后按**裸名字**比较：漂移侧存的是归一
+        后的裸主体（``loan.region``），``subjects`` 这边取的也是每条记录的
+        ``name`` 字段。**``kind:`` 前缀不被剥离**（``normalize_subject`` 只做
+        小写/去引号/压空白/取末两段）——``field:loan.region`` 与 ``loan.region``
+        **不会**交集,所以调用方必须传裸名。本文件 ``detail()`` 里带前缀的那种
+        形状是交给 ``resolve_impact`` 的,与这里无关。
         """
         try:
             open_subs = await self._drift_store().open_subjects(datasource)
@@ -216,13 +220,21 @@ class ChangeService:
         if not payloads:
             raise ChangeError("变更至少需要一个 payload")
         for p in payloads:
+            # 形状先于内容：非 dict 的条目/载荷在这里挡下。放过去的话,下面
+            # 的 ``p.get(...)`` 会抛 AttributeError,干跑的 ``(ValueError,
+            # TypeError)`` 兜不住 —— 到 HTTP 层就是一次 500。
+            if not isinstance(p, dict):
+                raise ChangeError("payload 条目必须是对象(dict)")
             if str(p.get("kind")) not in _KINDS:
                 raise ChangeError(f"kind 必须为 {sorted(_KINDS)} 之一")
             if str(p.get("action")) not in _ACTIONS:
                 raise ChangeError(f"action 必须为 {sorted(_ACTIONS)} 之一")
             if not str(p.get("name") or ""):
                 raise ChangeError("name 必填")
-            if str(p.get("action")) == "upsert" and not p.get("payload"):
+            pl = p.get("payload")
+            if pl is not None and not isinstance(pl, dict):
+                raise ChangeError("payload 必须是对象(dict)")
+            if str(p.get("action")) == "upsert" and not pl:
                 raise ChangeError("upsert 载荷需要 payload")
 
     async def open(self, datasource: str, *, origin: str, payloads: list[dict],
@@ -310,6 +322,10 @@ class ChangeService:
                 out["diff"] = build_change_diff(
                     _load_yaml_str(base_text), _load_yaml_str(after_text),
                     rec.payloads, rec.dialect or dialect).to_dict()
+            else:
+                # 快照半损 → 这份 diff 算不出来。**如实标注**：`diff is None`
+                # 与「还没算过」是两件事（同 staging 的 None 语义）。
+                degraded.append("snapshot_missing")
         try:
             from trove.services.drift.impact import resolve_impact
 

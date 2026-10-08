@@ -12,9 +12,11 @@ import pytest
 
 from trove.core.config import ChangesConfig
 from trove.services.kb.service import KbService
-# ChangeError / ChangeStale 由 Task 6 的 merge 用例引入;本任务不用就不 import
+# ChangeStale 由 Task 6 的 merge 用例引入;本任务不用就不 import
 # (ruff 的 F401 是 CI 硬门,空 import 留在这里只会让本任务的验证变红)。
-from trove.services.semantic_layer.changes import ChangeNotFound, ChangeService
+from trove.services.semantic_layer.changes import (
+    ChangeError, ChangeNotFound, ChangeService,
+)
 from tests.helpers.kb import ossie_semantics_yaml
 
 DS = "demo"
@@ -105,6 +107,27 @@ async def test_drift_gate_warns_without_blocking(kb: KbService):
     svc = _svc(kb)
     rec = await svc.open(DS, origin="manual", payloads=[PAYLOAD])
     assert rec["status"] == "open"  # 漂移面有数据/没数据都不拦 open
+
+
+async def test_open_rejects_non_dict_payload_entries(kb: KbService):
+    """非 dict 的条目/载荷在开单时就被挡下 —— 不是留到 merge/HTTP 层炸 500。"""
+    svc = _svc(kb)
+    with pytest.raises(ChangeError):
+        await svc.open(DS, origin="manual", payloads=["不是对象"])
+    with pytest.raises(ChangeError):
+        await svc.open(DS, origin="manual",
+                       payloads=[{"kind": "metric", "action": "upsert",
+                                  "name": "x", "payload": "不是对象"}])
+
+
+async def test_detail_marks_missing_snapshot_as_degraded(kb: KbService):
+    """快照半损时 diff 算不了 —— 如实进 degraded,不静默成「还没算」。"""
+    svc = _svc(kb)
+    rec = await svc.open(DS, origin="manual", payloads=[PAYLOAD])
+    (svc._staging.root(rec["id"]) / "after.semantics.yml").unlink()
+    out = svc.detail(DS, rec["id"])
+    assert out["diff"] is None
+    assert "snapshot_missing" in out["degraded"]
 
 
 async def test_drift_unavailable_is_degraded_not_empty(kb: KbService):
