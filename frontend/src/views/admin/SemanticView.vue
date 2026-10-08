@@ -370,7 +370,7 @@ const CHANGE_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'origin', label: t('semChangeOrigin', ui.lang), sortable: true },
   { key: 'summary', label: t('semChangeSummary', ui.lang) },
   { key: 'subjects', label: t('semChangeSubjects', ui.lang), align: 'right' as const },
-  { key: 'created_at', label: t('createdAt', ui.lang), sortable: true, defaultDir: 'desc' as const },
+  { key: 'created_at', label: t('semCreatedAt', ui.lang), sortable: true, defaultDir: 'desc' as const },
 ])
 
 const sortedMetrics = computed(() => {
@@ -740,14 +740,19 @@ async function runConfirm() {
         changeRejectError.value = t('semChangeRejectReason', ui.lang)
         return
       }
-      await apiPost(
-        `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(ctx.change.id)}/reject`,
-        { reason },
-      )
-      notifySuccess(t('semChangeRejectedOk', ui.lang))
-      confirmCtx.value = null
-      values.change = ''
-      await Promise.all([loadChanges(), loadDetail()])
+      changeAction.value = 'reject'
+      try {
+        await apiPost(
+          `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(ctx.change.id)}/reject`,
+          { reason },
+        )
+        notifySuccess(t('semChangeRejectedOk', ui.lang))
+        confirmCtx.value = null
+        values.change = ''
+        await Promise.all([loadChanges(), loadDetail()])
+      } finally {
+        changeAction.value = null
+      }
     } else {
       const ok = await createDraft(ctx.kind, 'delete', ctx.name, {}, '')
       if (ok) confirmCtx.value = null
@@ -858,18 +863,22 @@ function openDraftDrawer(d: SemanticDraft) {
 const changes = ref<SemanticChangeRecord[]>([])
 const changesLoaded = ref(false)
 const changeDetail = ref<SemanticChangeDetail | null>(null)
-const changeBusy = ref(false)
+const changeAction = ref<'merge' | 'verify' | 'reject' | null>(null)
+const changesLoading = ref(false)
 const changeRejectReason = ref('')
 const changeRejectError = ref('')
 
 async function loadChanges() {
   if (!values.ds) return
+  changesLoading.value = true
   try {
     changes.value = (await apiGet<{ changes: SemanticChangeRecord[] }>(
       `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes`)).changes ?? []
     changesLoaded.value = true
   } catch (e) {
     toastError(e)
+  } finally {
+    changesLoading.value = false
   }
 }
 
@@ -886,17 +895,26 @@ watch(
   { immediate: true },
 )
 
-watch(() => values.change, async (id) => {
-  changeDetail.value = null
-  if (!id) return
-  try {
-    changeDetail.value = (await apiGet<{ change: SemanticChangeDetail }>(
-      `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(id)}`,
-    )).change
-  } catch (e) {
-    toastError(e)
-  }
-})
+// 详情跟随 (变更 id, 数据源) 双键:composable 的 immediate watcher 先把 URL 里的
+// `change` 灌进 values(在本次 setup 之前),immediate 缺省会让深链首绘永远不发详情请求;
+// ds 切换时 resetViewState 清了 changeDetail 但 id 没变,不带 ds 键同样不重取。
+watch(
+  [() => values.change, () => values.ds],
+  async ([id]) => {
+    changeDetail.value = null
+    if (!id) return
+    const ds = values.ds
+    if (!ds) return
+    try {
+      changeDetail.value = (await apiGet<{ change: SemanticChangeDetail }>(
+        `/v1/admin/semantic/${encodeURIComponent(ds)}/changes/${encodeURIComponent(id)}`,
+      )).change
+    } catch (e) {
+      toastError(e)
+    }
+  },
+  { immediate: true },
+)
 
 const changeOpen = computed({
   get: () => !!values.change,
@@ -910,10 +928,15 @@ function openChangeRow(row: unknown) {
 }
 
 function changeStatusLabel(status: string): string {
-  const map: Record<string, 'semChangeOpen' | 'semChangeMerged' | 'semChangeRejected'> = {
+  const map: Record<
+    string,
+    'semChangeOpen' | 'semChangeMerged' | 'semChangeRejected' | 'semChangeStale' | 'semChangeApproved'
+  > = {
     open: 'semChangeOpen',
     merged: 'semChangeMerged',
     rejected: 'semChangeRejected',
+    stale: 'semChangeStale',
+    approved: 'semChangeApproved',
   }
   const key = map[status]
   // 认不出的状态是数据不是文案,原样带出(色调已按 danger/muted 表态)
@@ -960,8 +983,14 @@ function verifyPill(verdict: string): string {
 function changeWarningLabel(code: string): string {
   return code === 'open_drift' ? t('semChangeWarnDrift', ui.lang) : code
 }
+const DEGRADED_KEYS: Record<string, I18nKey> = {
+  drift_unavailable: 'semChangeDegradedDrift',
+  snapshot_missing: 'semChangeDegradedSnapshot',
+  impact_unavailable: 'semChangeDegradedImpact',
+}
 function changeDegradedLabel(code: string): string {
-  return code === 'drift_unavailable' ? t('semChangeDegradedDrift', ui.lang) : code
+  const key = DEGRADED_KEYS[code]
+  return key ? t(key, ui.lang) : code
 }
 
 function subjectLabel(i: number): string {
@@ -978,7 +1007,7 @@ function payloadJson(p: Record<string, unknown>): string {
 }
 
 async function mergeChange(rec: SemanticChangeDetail) {
-  changeBusy.value = true
+  changeAction.value = 'merge'
   try {
     await apiPost(`/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(rec.id)}/merge`)
     notifySuccess(t('semChangeMergedOk', ui.lang))
@@ -988,12 +1017,12 @@ async function mergeChange(rec: SemanticChangeDetail) {
     // 409 stale_change 的 message 逐字由 http 层带出(detail 是 {code,message} 对象)
     toastError(e)
   } finally {
-    changeBusy.value = false
+    changeAction.value = null
   }
 }
 
 async function runChangeVerify(rec: SemanticChangeDetail) {
-  changeBusy.value = true
+  changeAction.value = 'verify'
   try {
     const out = await apiPost<{ verification: SemanticChangeDetail['verification'] }>(
       `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(rec.id)}/verify`)
@@ -1001,7 +1030,7 @@ async function runChangeVerify(rec: SemanticChangeDetail) {
   } catch (e) {
     toastError(e)
   } finally {
-    changeBusy.value = false
+    changeAction.value = null
   }
 }
 
@@ -2212,7 +2241,7 @@ const pageTitle = computed(() =>
             row-key="id"
             row-clickable
             :sort="sortState"
-            :loading="loading"
+            :loading="loading || changesLoading"
             :empty-text="t('emptyData', ui.lang)"
             @row-click="openChangeRow"
             @update:sort="onSort"
@@ -2782,15 +2811,16 @@ const pageTitle = computed(() =>
         <el-button
           size="small"
           type="primary"
-          :loading="changeBusy"
-          :disabled="changeBusy || changeDetail?.status !== 'open'"
+          :loading="changeAction === 'merge'"
+          :disabled="!!changeAction || changeDetail?.status !== 'open'"
           @click="changeDetail && mergeChange(changeDetail)"
         >
           {{ t('semChangeMerge', ui.lang) }}
         </el-button>
         <el-button
           size="small"
-          :disabled="changeBusy || !changeDetail"
+          :loading="changeAction === 'verify'"
+          :disabled="!!changeAction || !changeDetail"
           @click="changeDetail && runChangeVerify(changeDetail)"
         >
           {{ t('semChangeVerify', ui.lang) }}
@@ -2799,7 +2829,8 @@ const pageTitle = computed(() =>
           size="small"
           type="danger"
           plain
-          :disabled="changeBusy || changeDetail?.status !== 'open'"
+          :loading="changeAction === 'reject'"
+          :disabled="!!changeAction || changeDetail?.status !== 'open'"
           @click="changeDetail && askRejectChange(changeDetail)"
         >
           {{ t('semChangeReject', ui.lang) }}
