@@ -29,6 +29,7 @@ htmlcov/
 !.trove/kb/*/
 .trove/kb/.locks/
 .trove/kb/*/.generated/
+.trove/kb/*/.staging/
 !.trove/kb/*/*.yml
 
 # Local dev process state (PID / logs)

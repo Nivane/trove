@@ -383,6 +383,24 @@ class ExtensionsConfig:
 
 
 @dataclass
+class ChangesConfig:
+    """语义变更评审配置（``agent.semantic_changes.*``，设计 §5.1/§8.4）。
+
+    ``sandbox_by_origin``：**显式开单**时默认跑沙箱验证的来源集合——有明确
+    来源问题的变更默认验证；纯手工开单默认不跑。包装路径（confirm/auto）
+    没有评审窗口、不写快照，不在此列。
+
+    ``retain_staging_days``：``.staging/`` 快照保留天数，``<= 0`` = 不清理
+    （与 assets/events_retention_days 同款语义；清理在 ``open()`` 时顺带做，
+    不依赖调度器）。
+    """
+
+    sandbox_by_origin: list[str] = field(
+        default_factory=lambda: ["draft_confirm", "auto_apply"])
+    retain_staging_days: int = 30
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -477,6 +495,7 @@ class AgentConfig:
     # 主动扫描(B6):定时扫描的假设开关(默认关)+ 交互侧假设(默认开)+
     # 预算。见 ScanConfig。
     scan: ScanConfig = field(default_factory=ScanConfig)
+    semantic_changes: ChangesConfig = field(default_factory=ChangesConfig)
     # 行动层:提案/审批/外送(默认关闭)。见 ActionConfig。
     action: ActionConfig = field(default_factory=ActionConfig)
     # 扩展面治理:组织扩展(org skills / validator / 决策规则执行)总开关,
@@ -748,6 +767,17 @@ class ConfigLoader:
             k=scan_k,
         )
 
+        # 语义变更评审（设计 §5.1）。与 extensions/authz/assets 同款纪律:
+        # 加了字段却不在加载器里读 YAML,配置就永远不生效(恒取默认)。
+        changes_raw = (resolved.get("semantic_changes", {})
+                       or agent_section.get("semantic_changes", {}) or {})
+        changes_conf = ChangesConfig(
+            sandbox_by_origin=[
+                str(o) for o in (changes_raw.get("sandbox_by_origin")
+                                 or ["draft_confirm", "auto_apply"])],
+            retain_staging_days=max(0, int(changes_raw.get("retain_staging_days", 30))),
+        )
+
         # Parse action layer (P3; agent.action.* — same top-level-or-nested
         # reading as decision/attribution: a field the loader does not read is
         # a config that silently never applies).
@@ -918,6 +948,7 @@ class ConfigLoader:
             analysis=analysis_conf,
             decision=decision_conf,
             scan=scan_conf,
+            semantic_changes=changes_conf,
             action=action_conf,
             extensions=extensions_conf,
             eval=eval_conf,
