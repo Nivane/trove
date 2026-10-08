@@ -1,0 +1,347 @@
+"""语义变更 —— 草稿之上的「合并单元」（设计 §5.2/§6/§7.1）。
+
+分层：草稿 = 收件箱（intake），变更 = 合并单元（unit of merge）。agent 与
+草稿两条路径写 ``semantics.yml`` 唯一经由本模块 ``_write_merge`` 的同步写
+区（I1）；包装方法 ``merge_draft`` / ``merge_auto``（Task 6）保持
+``manage.py`` 对外签名与提交数不变。
+
+**同步写区纪律（A6）**：digest 双检 → 应用 payload → 写前门禁 → 写盘，这
+一段内**不得有 await**（单进程事件循环下即原子区）；唯一的取数 await
+（漂移 warn 门）放在写区之前。``get``/``list``/``verify``/``detail`` 因此
+是同步方法——同步写区要能直调它们。
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import yaml
+
+from trove.core import metrics
+from trove.core.config import ChangesConfig
+from trove.services.datasource.naming import is_path_safe
+from trove.services.drift.models import ImpactSet, normalize_subject
+from trove.services.semantic_layer.diff import build_change_diff
+from trove.services.semantic_layer.manage import (
+    # ``_reject_bad_semantics``（写前门禁）由 Task 6 的 ``_write_merge`` 引入：
+    # 记录层不落盘语义模型，现在 import 它只会触发 ruff 的 F401。
+    _ACTIONS, _KINDS, _apply_draft, _dump_yaml, _load_yaml,
+)
+
+logger = logging.getLogger(__name__)
+
+_ORIGINS = ("draft_confirm", "auto_apply", "manual")
+_STATUSES = ("open", "approved", "rejected", "merged", "stale")
+
+
+class ChangeError(ValueError):
+    """变更操作的确定性错误（400/409/422 由路由层区分）。"""
+
+
+class ChangeStale(ChangeError):
+    """乐观并发冲突：主线已被他人修改（→ 409 stale_change）。"""
+
+
+class ChangeInvalid(ChangeError):
+    """lint / 写前门禁不过（→ 422 change_invalid）；主线不动（I5）。"""
+
+
+class ChangeNotFound(KeyError):
+    """变更不存在（→ 404）。"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _digest(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_yaml_str(text: str) -> dict[str, Any]:
+    """文本 → dict（坏文本/非映射 → {}）——快照回读专用,与 _load_yaml 同宽容。"""
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _subjects_of(payloads: list[dict[str, Any]]) -> list[dict[str, str]]:
+    out = []
+    for p in payloads:
+        kind = str(p.get("kind") or "")
+        name = str(p.get("name") or "")
+        if kind and name:
+            out.append({"kind": kind, "name": name})
+    return out
+
+
+@dataclass
+class ChangeRecord:
+    id: str
+    datasource: str
+    origin: str = "manual"
+    status: str = "open"
+    question: str = ""
+    note: str = ""
+    author: str = ""
+    created_at: str = ""
+    base_digest: str = ""
+    base_commit: str = ""
+    subjects: list[dict[str, str]] = field(default_factory=list)
+    payloads: list[dict[str, Any]] = field(default_factory=list)
+    draft_id: str = ""
+    auto: bool = False
+    warnings: list[dict[str, Any]] = field(default_factory=list)
+    degraded: list[str] = field(default_factory=list)
+    dialect: str | None = None
+    diff: dict[str, Any] | None = None
+    reject_reason: str = ""
+    resolved_by: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ChangeRecord":
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in dict(d or {}).items() if k in known})
+
+
+class ChangeService:
+    def __init__(self, kb, *, config: ChangesConfig | None = None,
+                 drift_store: Any = None, staging=None) -> None:
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        self._kb = kb
+        self._config = config or ChangesConfig()
+        self._drift = drift_store  # 注入(测试/装配);None = 首次用时惰性构造
+        # 隔离区按数据源分目录（``<kb>/<ds>/.staging/<id>/``——根 .gitignore 的
+        # 条目正是 ``.trove/kb/*/.staging/``,快照必须与它同构）。注入的
+        # StagingArea 覆盖全部数据源（测试/装配用）;``self._staging`` 指向上
+        # 一次用过的数据源,评审/测试靠它定位快照。
+        self._injected_staging = staging
+        self._staging = staging
+        self._manager = SemanticManager(kb)
+
+    # ── 基础 ─────────────────────────────────────────────
+
+    def _check(self, datasource: str) -> None:
+        if not is_path_safe(datasource):
+            raise ValueError(f"unsafe KB datasource name {datasource!r}")
+
+    def _area(self, datasource: str):
+        """该数据源的隔离区（注入优先）。"""
+        from trove.services.semantic_layer.staging import StagingArea
+
+        if self._injected_staging is not None:
+            return self._injected_staging
+        area = StagingArea(Path(self._kb.kb_dir) / datasource)
+        self._staging = area
+        return area
+
+    def changes_path(self, datasource: str) -> Path:
+        return Path(self._kb.kb_dir) / datasource / "semantic_changes.yml"
+
+    def _load(self, datasource: str) -> list[ChangeRecord]:
+        data = _load_yaml(self.changes_path(datasource))
+        return [ChangeRecord.from_dict(e) for e in (data.get("changes") or [])]
+
+    def _save(self, datasource: str, records: list[ChangeRecord]) -> None:
+        _dump_yaml(self.changes_path(datasource),
+                   {"changes": [r.to_dict() for r in records]})
+
+    def get(self, datasource: str, change_id: str) -> ChangeRecord:
+        self._check(datasource)
+        for r in self._load(datasource):
+            if r.id == change_id:
+                return r
+        raise ChangeNotFound(f"变更不存在: {change_id}")
+
+    def list(self, datasource: str, *, status: str | None = None) -> list[ChangeRecord]:
+        self._check(datasource)
+        return [r for r in self._load(datasource) if status is None or r.status == status]
+
+    def _head_commit(self, datasource: str) -> str:
+        """当前 HEAD（重算锚点）——best-effort,取不到留空。"""
+        try:
+            from trove.services.kb.git_versioning import GitKb
+
+            entries = GitKb(Path(self._kb.kb_dir), enabled=True).history_files(
+                [self._kb.semantics_path(datasource)], limit=1)
+            return entries[0]["sha"] if entries else ""
+        except Exception:
+            return ""
+
+    def _current_text(self, datasource: str) -> str:
+        path = self._kb.semantics_path(datasource)
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # ── 漂移 warn 门（I8）────────────────────────────────
+
+    def _drift_store(self):
+        if self._drift is None:
+            from trove.services.drift.store import DriftStore
+
+            self._drift = DriftStore(Path(self._kb.kb_dir).parent.parent)
+        return self._drift
+
+    async def drift_warnings(self, datasource: str,
+                             subjects: list[dict[str, str]]) -> tuple[list[dict], list[str]]:
+        """open_subjects ∩ touched_subjects → warnings;读不到 → degraded（I8）。
+
+        两侧归一后按**名字部分**比较（``field:loan.region`` 与 ``loan.region``
+        交集）——漂移侧存的是未带前缀的归一主体。
+        """
+        try:
+            open_subs = await self._drift_store().open_subjects(datasource)
+        except Exception as e:
+            logger.warning("drift store unavailable for %s: %s", datasource, e)
+            return [], ["drift_unavailable"]
+        wanted = {normalize_subject(s.get("name") or "") for s in subjects}
+        wanted.discard("")
+        hit = sorted(o for o in open_subs if normalize_subject(o) in wanted)
+        return ([{"code": "open_drift", "subjects": hit}] if hit else []), []
+
+    # ── 开单 ─────────────────────────────────────────────
+
+    def _validate_payloads(self, payloads: list[dict[str, Any]]) -> None:
+        if not payloads:
+            raise ChangeError("变更至少需要一个 payload")
+        for p in payloads:
+            if str(p.get("kind")) not in _KINDS:
+                raise ChangeError(f"kind 必须为 {sorted(_KINDS)} 之一")
+            if str(p.get("action")) not in _ACTIONS:
+                raise ChangeError(f"action 必须为 {sorted(_ACTIONS)} 之一")
+            if not str(p.get("name") or ""):
+                raise ChangeError("name 必填")
+            if str(p.get("action")) == "upsert" and not p.get("payload"):
+                raise ChangeError("upsert 载荷需要 payload")
+
+    async def open(self, datasource: str, *, origin: str, payloads: list[dict],
+                   question: str = "", note: str = "", author: str = "",
+                   dialect: str | None = None) -> dict[str, Any]:
+        """显式开单：快照 `.staging/<id>/` + 记录 status=open（两条提交之一）。
+
+        刻意**不查漂移面**：warn 门的取数 await 在 merge 时做（合入前那一
+        刻的漂移才是要看的），开单只写记录与快照——这里写的 warnings 会在
+        合入时被覆盖,提前查一次只是把一份会过期的答案记进审计。
+        """
+        self._check(datasource)
+        origin = origin if origin in _ORIGINS else "manual"
+        self._validate_payloads(payloads)
+        area = self._area(datasource)
+        # 清理在 open 时顺带做（不依赖调度器）;隔离区按数据源分目录,因此
+        # 这里只清当前数据源的快照——别的源有自己的保留期账。
+        area.prune(self._config.retain_staging_days)
+        base_text = self._current_text(datasource)
+        data = _load_yaml(self._kb.semantics_path(datasource))
+        after = copy.deepcopy(data) if data else {}
+        for p in payloads:
+            fake = {"id": "chg-dry", "kind": p.get("kind"), "action": p.get("action"),
+                    "name": p.get("name"), "payload": p.get("payload")}
+            try:
+                _apply_draft(after, fake, dialect)
+            except (ValueError, TypeError) as e:
+                raise ChangeInvalid(f"开单干跑失败: {e}") from e
+        rec = ChangeRecord(
+            id=f"chg-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:4]}",
+            datasource=datasource, origin=origin, status="open",
+            question=question, note=note, author=author, created_at=_now(),
+            base_digest=_digest(base_text), base_commit=self._head_commit(datasource),
+            subjects=_subjects_of(payloads), payloads=[dict(p) for p in payloads],
+            dialect=dialect,
+        )
+        area.stage(rec.id, base_text=base_text,
+                   after_text=yaml.safe_dump(after, allow_unicode=True,
+                                             sort_keys=False))
+        records = self._load(datasource)
+        records.append(rec)
+        self._save(datasource, records)
+        trailers = {"Generator": "semantic.change.open"}
+        if author:
+            trailers["Approved-by"] = author
+        await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, f"semantic: open change {rec.id} ({rec.note or origin})",
+            files=["semantic_changes.yml"], trailers=trailers)
+        metrics.record_semantic_change("open", origin)
+        if origin in (self._config.sandbox_by_origin or []):
+            self.verify(datasource, rec.id)
+        return rec.to_dict()
+
+    # ── 验证 / 详情 / 驳回 ───────────────────────────────
+
+    def verify(self, datasource: str, change_id: str) -> dict[str, Any]:
+        """沙箱编译回放（零 LLM）。快照缺 → 明确报错（半损不静默）。"""
+        from trove.services.semantic_layer.sandbox import run_replay
+
+        rec = self.get(datasource, change_id)
+        area = self._area(datasource)
+        base_text = area.read_base(rec.id)
+        after_text = area.read_after(rec.id)
+        if base_text is None or after_text is None:
+            raise ChangeError(f"变更 {rec.id} 的快照缺失 —— 已不可验证（可重开）")
+        out = run_replay(Path(self._kb.kb_dir), datasource,
+                         dialect=rec.dialect or "sqlite",
+                         base_text=base_text, after_text=after_text)
+        area.write_verification(rec.id, out)
+        return out
+
+    def detail(self, datasource: str, change_id: str, *,
+               dialect: str | None = None) -> dict[str, Any]:
+        """详情：记录 + diff + 影响面 + 验证（后三者惰性算,失败只降级）。"""
+        rec = self.get(datasource, change_id)
+        out = rec.to_dict()
+        degraded = list(out.get("degraded") or [])
+        out["diff"] = rec.diff
+        if out["diff"] is None:
+            area = self._area(datasource)
+            base_text = area.read_base(rec.id)
+            after_text = area.read_after(rec.id)
+            if base_text is not None and after_text is not None:
+                out["diff"] = build_change_diff(
+                    _load_yaml_str(base_text), _load_yaml_str(after_text),
+                    rec.payloads, rec.dialect or dialect).to_dict()
+        try:
+            from trove.services.drift.impact import resolve_impact
+
+            out["impact"] = resolve_impact(
+                Path(self._kb.kb_dir), datasource,
+                {f"{s['kind']}:{s['name']}" for s in rec.subjects}).to_dict()
+        except Exception as e:
+            logger.warning("impact resolve failed for %s: %s", rec.id, e)
+            out["impact"] = ImpactSet().to_dict()
+            degraded.append("impact_unavailable")
+        out["verification"] = self._area(datasource).read_verification(rec.id)
+        out["degraded"] = degraded
+        return out
+
+    async def reject(self, datasource: str, change_id: str, *, by: str,
+                     reason: str) -> dict[str, Any]:
+        if not str(reason or "").strip():
+            raise ChangeError("驳回必须给出 reason —— 无理由的驳回等于删记录")
+        rec = self.get(datasource, change_id)
+        if rec.status != "open":
+            raise ChangeError(f"变更 {change_id} 已 {rec.status}")
+        rec.status = "rejected"
+        rec.reject_reason = reason
+        rec.resolved_by = by
+        records = self._load(datasource)
+        self._save(datasource, [rec if r.id == rec.id else r for r in records])
+        trailers = {"Generator": "semantic.change.reject"}
+        if by:
+            trailers["Approved-by"] = by
+        await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, f"semantic: reject change {rec.id}",
+            files=["semantic_changes.yml"], trailers=trailers)
+        metrics.record_semantic_change("rejected", rec.origin)
+        return rec.to_dict()
