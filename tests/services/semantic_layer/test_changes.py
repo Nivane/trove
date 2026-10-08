@@ -214,6 +214,8 @@ async def test_merge_invalid_leaves_mainline_and_staging(kb: KbService):
         await svc.open(DS, origin="manual", payloads=[bad])
     rec = await svc.open(DS, origin="manual", payloads=[PAYLOAD])
     before = kb.semantics_path(DS).read_bytes()
+    staged = svc._staging.root(rec["id"])
+    snapshot_before = (staged / "after.semantics.yml").read_bytes()
     stored = svc.get(DS, rec["id"])   # get() 返回 ChangeRecord；open() 返回 dict
     stored.payloads = [bad]           # 模拟记录被外部改坏（门禁必须兜住）
     svc._save(DS, [stored])
@@ -222,6 +224,9 @@ async def test_merge_invalid_leaves_mainline_and_staging(kb: KbService):
         await svc.merge(DS, rec["id"], by="admin")
     assert kb.semantics_path(DS).read_bytes() == before
     assert svc.get(DS, rec["id"]).status == "open"
+    # 名字承诺的另一半：失败不吞快照 —— 合并全程不碰隔离区（可重开、可复验）
+    assert (staged / "after.semantics.yml").read_bytes() == snapshot_before
+    assert (staged / "base.semantics.yml").read_bytes() == before
 
 
 async def test_merge_missing_snapshot_is_loud(kb: KbService):
@@ -261,7 +266,8 @@ async def test_wrapper_commit_counts_unchanged(kb: KbService):
     entry = await mgr.auto_apply(DS, "field", "loan.note", {"expression": "note"})
     n4 = int(_git(repo, "rev-list", "--count", "HEAD").stdout or 0)
     assert entry["status"] == "applied"
-    assert n4 >= n3                          # auto_apply 至多 1 提交（无变更时 0 也合法）
+    assert n4 == n3 + 1                      # auto_apply 恰好 1 提交
+    # （`>=` 会漏掉 A9 真正要防的方向：一次 merge 落两次 git_commit 也通过）
     log = _git(repo, "log", "-1", "--format=%(trailers:unfold)").stdout
     assert "Auto-approved-by: deterministic-gate" in log
 
@@ -282,11 +288,12 @@ async def test_merge_records_frozen_diff_and_auto_trailer(kb: KbService):
     from trove.services.semantic_layer.manage import SemanticManager
 
     mgr = SemanticManager(kb)
-    entry = await mgr.auto_apply(DS, "metric", "auto_metric",
-                                 {"expression": "SUM(loan.amount)"})
+    # auto 记录不带 draft_id（`merge_auto` 合成 ChangeRecord 时就没有这个字段）,
+    # 选择器只看 origin —— 原先的 `r.draft_id == entry["id"]` 是死分支。
+    await mgr.auto_apply(DS, "metric", "auto_metric",
+                         {"expression": "SUM(loan.amount)"})
     svc = _svc(kb)
-    rec = [r for r in svc.list(DS) if r.draft_id == entry["id"]
-           or r.origin == "auto_apply"][-1]
+    rec = [r for r in svc.list(DS) if r.origin == "auto_apply"][-1]
     assert rec.status == "merged" and rec.auto is True
     assert rec.diff is not None and "metrics" in rec.diff["entities"]
     assert rec.diff["entities"]["metrics"]["added"] == ["auto_metric"]

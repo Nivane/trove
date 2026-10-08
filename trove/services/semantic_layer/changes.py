@@ -372,8 +372,11 @@ class ChangeService:
                      fail_prefix: str = "合并失败") -> dict[str, Any]:
         """同步写区（A6：digest 读 → 写盘之间无 await）。
 
-        顺序是承重的：digest 双检 → 应用 payload → 写前门禁 → 依次写
-        semantics / drafts / changes —— 任何一步 raise 时后面都没写。
+        顺序是承重的：digest 双检 → 应用 payload → 写前门禁 → **取齐三份
+        待写内容（含 drafts/changes 的读与查找）** → 依次写 semantics /
+        drafts / changes。所有可能 raise 的读都在第一个字节落盘之前 ——
+        写区只可能「什么都没写」或「三份都写完」（I5；`_find_draft` 的
+        查找失败、`_load_yaml` 的坏文件都算在内）。
 
         ``fail_prefix``:payload 应用失败的报错前缀。草稿确认路径传
         ``草稿确认失败``——收窄为委托 **不改对外消息**（管理端 400 detail
@@ -410,24 +413,33 @@ class ChangeService:
         rec.diff = build_change_diff(base_doc, working, rec.payloads, dialect).to_dict()
         rec.resolved_by = by
 
-        _dump_yaml(semantics, working)
+        # ── 落盘前：取齐三份内容（读/查找都可能 raise —— 放在写盘之前）──
         manager = self._manager
+        applied_write: tuple[Path, list[dict[str, Any]]] | None = None
+        append_write: tuple[Path, list[dict[str, Any]]] | None = None
         if mark_applied:
             draft, path = manager._find_draft(datasource, mark_applied)
             draft["status"] = "applied"
-            manager._save_drafts(path, manager._drafts_with(datasource, draft))
+            applied_write = (path, manager._drafts_with(datasource, draft))
         if append_entry is not None:
             path = manager._drafts_path(datasource)
             drafts_data = _load_yaml(path)
             drafts = (list(drafts_data.get("drafts", []))
                       if isinstance(drafts_data, dict) else [])
             drafts.append(append_entry)
-            manager._save_drafts(path, drafts)
+            append_write = (path, drafts)
         records = self._load(datasource)
         if any(r.id == rec.id for r in records):
             records = [rec if r.id == rec.id else r for r in records]
         else:
             records.append(rec)
+
+        # ── 写盘（此后不再抛已知异常）：semantics → drafts → changes ──
+        _dump_yaml(semantics, working)
+        if applied_write is not None:
+            manager._save_drafts(applied_write[0], applied_write[1])
+        if append_write is not None:
+            manager._save_drafts(append_write[0], append_write[1])
         self._save(datasource, records)
 
         files = ["semantics.yml", "semantic_changes.yml"]
