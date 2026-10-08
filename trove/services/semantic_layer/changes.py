@@ -29,9 +29,8 @@ from trove.services.datasource.naming import is_path_safe
 from trove.services.drift.models import ImpactSet, normalize_subject
 from trove.services.semantic_layer.diff import build_change_diff
 from trove.services.semantic_layer.manage import (
-    # ``_reject_bad_semantics``（写前门禁）由 Task 6 的 ``_write_merge`` 引入：
-    # 记录层不落盘语义模型，现在 import 它只会触发 ruff 的 F401。
     _ACTIONS, _KINDS, _apply_draft, _dump_yaml, _load_yaml,
+    _reject_bad_semantics,
 )
 
 logger = logging.getLogger(__name__)
@@ -361,3 +360,190 @@ class ChangeService:
             files=["semantic_changes.yml"], trailers=trailers)
         metrics.record_semantic_change("rejected", rec.origin)
         return rec.to_dict()
+
+    # ── 合并（★ I1：两条路径唯一写 semantics.yml 的落点）──
+
+    def _write_merge(self, datasource: str, rec: ChangeRecord, *,
+                     dialect: str | None, by: str, warnings: list[dict],
+                     degraded: list[str], generator: str,
+                     extra_trailers: dict[str, str] | None = None,
+                     mark_applied: str | None = None,
+                     append_entry: dict[str, Any] | None = None,
+                     fail_prefix: str = "合并失败") -> dict[str, Any]:
+        """同步写区（A6：digest 读 → 写盘之间无 await）。
+
+        顺序是承重的：digest 双检 → 应用 payload → 写前门禁 → 依次写
+        semantics / drafts / changes —— 任何一步 raise 时后面都没写。
+
+        ``fail_prefix``:payload 应用失败的报错前缀。草稿确认路径传
+        ``草稿确认失败``——收窄为委托 **不改对外消息**（管理端 400 detail
+        是管理员看得见的文本,兼容安全带的一部分）。
+        """
+        semantics = self._kb.semantics_path(datasource)
+        current_text = semantics.read_text(encoding="utf-8") if semantics.exists() else ""
+        current_digest = _digest(current_text)
+        if rec.base_digest and rec.base_digest != current_digest:
+            metrics.record_semantic_merge_conflict()
+            raise ChangeStale("主线已被他人修改,请重开变更(stale_change)")
+        rec.base_digest = rec.base_digest or current_digest
+
+        data = _load_yaml(semantics)
+        base_doc = copy.deepcopy(data) if data else {}
+        working = copy.deepcopy(data) if data else {}
+        for p in rec.payloads:
+            fake = {"id": rec.id, "kind": p.get("kind"), "action": p.get("action"),
+                    "name": p.get("name"), "payload": p.get("payload")}
+            try:
+                _apply_draft(working, fake, dialect)
+            except (ValueError, TypeError) as e:
+                raise ChangeInvalid(f"{fail_prefix}: {e}") from e
+        if "version" not in working and "semantic_model" in working:
+            working["version"] = "0.2.0.dev0"
+        try:
+            _reject_bad_semantics(working, dialect)
+        except ValueError as e:
+            raise ChangeInvalid(str(e)) from e
+
+        rec.status = "merged"
+        rec.warnings = list(warnings)
+        rec.degraded = list(degraded)
+        rec.diff = build_change_diff(base_doc, working, rec.payloads, dialect).to_dict()
+        rec.resolved_by = by
+
+        _dump_yaml(semantics, working)
+        manager = self._manager
+        if mark_applied:
+            draft, path = manager._find_draft(datasource, mark_applied)
+            draft["status"] = "applied"
+            manager._save_drafts(path, manager._drafts_with(datasource, draft))
+        if append_entry is not None:
+            path = manager._drafts_path(datasource)
+            drafts_data = _load_yaml(path)
+            drafts = (list(drafts_data.get("drafts", []))
+                      if isinstance(drafts_data, dict) else [])
+            drafts.append(append_entry)
+            manager._save_drafts(path, drafts)
+        records = self._load(datasource)
+        if any(r.id == rec.id for r in records):
+            records = [rec if r.id == rec.id else r for r in records]
+        else:
+            records.append(rec)
+        self._save(datasource, records)
+
+        files = ["semantics.yml", "semantic_changes.yml"]
+        if mark_applied or append_entry is not None:
+            files.append("semantic_drafts.yml")
+        trailers = {"Generator": generator, **({"Approved-by": by} if by else {}),
+                    **(extra_trailers or {})}
+        rec_dict = rec.to_dict()
+        return {"record": rec_dict, "files": files, "trailers": trailers}
+
+    async def _finish_merge(self, datasource: str, out: dict, *, message: str,
+                            lint_dialect: str | None) -> None:
+        await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, message, files=out["files"],
+            lint=self._kb.semantics_lint(datasource, lint_dialect or "sqlite"),
+            trailers=out["trailers"] or None)
+        metrics.record_semantic_change("merged", out["record"]["origin"])
+
+    async def merge(self, datasource: str, change_id: str, *, by: str,
+                    auto: bool = False) -> dict[str, Any]:
+        """校验并翻转记录：唯一写 semantics.yml 的落点（I1/I2/I5）。
+
+        乐观并发：记录的 ``base_digest`` 与主线现文本不符 → ``ChangeStale``
+        （409）。任何失败都在写盘之前抛出，主线与隔离区零字节变化。
+        """
+        rec = self.get(datasource, change_id)
+        if rec.status != "open":
+            raise ChangeError(f"变更 {change_id} 已 {rec.status}")
+        warnings, degraded = await self.drift_warnings(datasource, rec.subjects)
+        out = self._write_merge(
+            datasource, rec, dialect=rec.dialect, by=by, warnings=warnings,
+            degraded=degraded, generator="semantic.change.merge",
+            extra_trailers={"Auto-approved-by": "deterministic-gate"} if auto else None)
+        await self._finish_merge(
+            datasource, out, message=f"semantic: merge change {rec.id}",
+            lint_dialect=rec.dialect)
+        merged = dict(out["record"])
+        merged["change_id"] = rec.id
+        return merged
+
+    # ── 包装路径（refuse.py / API 现状调用点零改动）────────
+
+    async def merge_draft(self, datasource: str, draft_id: str,
+                          dialect: str | None = None, *,
+                          by: str = "", generator: str = "") -> dict[str, Any]:
+        """pending 草稿 → 合并：（草稿状态守卫 + 冲突守卫 + 写盘 + 单提交）。
+
+        守卫**不搬家**：仍在合并入口（草稿是提货单，合并才是落库那一跳）。
+        返回原 draft dict（status=applied）+ ``change_id`` —— 与
+        ``SemanticManager.confirm_draft`` 原返回形状一致。
+        """
+        # 路径安全闸从被收窄的 ``manage.confirm_draft`` 平移过来：委托不能
+        # 顺手把守卫丢了（本模块的其它入口同样先过 ``_check``）。
+        self._check(datasource)
+        draft, _drafts_path = self._manager._find_draft(datasource, draft_id)
+        if draft.get("status") != "pending":
+            raise ChangeError(f"草稿 {draft_id} 已 {draft.get('status')}")
+        if draft.get("conflict"):
+            raise ChangeError(
+                "该草稿与现有模型冲突,不能直接确认"
+                f"({(draft.get('conflict') or {}).get('message') or '见草稿注解'})"
+                "——请以它为蓝本修正后新建")
+        rec = ChangeRecord(
+            id=f"chg-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:4]}",
+            datasource=datasource, origin="draft_confirm", status="open",
+            note=str(draft.get("note") or ""), author=by, created_at=_now(),
+            subjects=_subjects_of([draft]), draft_id=draft_id,
+            payloads=[{"kind": draft.get("kind"), "action": draft.get("action"),
+                       "name": draft.get("name"), "payload": draft.get("payload")}],
+            dialect=dialect)
+        warnings, degraded = await self.drift_warnings(datasource, rec.subjects)
+        out = self._write_merge(
+            datasource, rec, dialect=dialect, by=by, warnings=warnings,
+            degraded=degraded, generator=generator or "semantic.confirm",
+            mark_applied=draft_id, fail_prefix="草稿确认失败")
+        await self._finish_merge(
+            datasource, out,
+            message=(f"semantic: confirm {draft.get('kind')} {draft.get('name')} "
+                     f"(draft {draft_id})"),
+            lint_dialect=dialect)
+        return {**draft, "status": "applied", "change_id": rec.id}
+
+    async def merge_auto(self, datasource: str, kind: str, name: str,
+                         payload: dict | None = None,
+                         note: str = "refuse-auto-confirm", *,
+                         actor: str = "") -> dict[str, Any]:
+        """A/B 档快速通道：确定性门已过的声明直接入库（I4）。
+
+        与 ``merge_draft`` 的差别只有两处：入队记录 ``status=applied``（从来
+        没 pending 过）与 ``Auto-approved-by: deterministic-gate`` trailer ——
+        **actor 为空也要带**（I4：审计要能区分「人点的」与「门自动放行的」）。
+        """
+        # 同上：``manage.auto_apply`` 原有的路径安全闸随之平移。
+        self._check(datasource)
+        if kind not in _KINDS:
+            raise ValueError(f"kind 必须为 {sorted(_KINDS)} 之一")
+        entry: dict[str, Any] = {
+            "id": uuid4().hex[:12], "kind": kind, "action": "upsert", "name": name,
+            "payload": payload or None, "note": note or "", "status": "applied",
+            "created_at": _now(),
+        }
+        rec = ChangeRecord(
+            id=f"chg-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:4]}",
+            datasource=datasource, origin="auto_apply", status="open",
+            note=note or "", author=actor, created_at=_now(), auto=True,
+            subjects=[{"kind": kind, "name": name}],
+            payloads=[{"kind": kind, "action": "upsert", "name": name,
+                       "payload": payload}])
+        warnings, degraded = await self.drift_warnings(datasource, rec.subjects)
+        out = self._write_merge(
+            datasource, rec, dialect=None, by=actor, warnings=warnings,
+            degraded=degraded, generator="refuse.auto_apply",
+            extra_trailers={"Auto-approved-by": "deterministic-gate"},
+            append_entry=entry)
+        await self._finish_merge(
+            datasource, out, message=f"semantic: auto-apply {kind} {name}",
+            lint_dialect=None)
+        return {**entry, "change_id": rec.id}
