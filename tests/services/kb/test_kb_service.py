@@ -1324,3 +1324,60 @@ examples:
         assert by_sql[self.JOINED].status == "certified"
         assert by_sql[self.COMPOSED].status == "draft"
         assert by_sql[self.COMPOSED].approved_by == ""
+
+
+class TestKbRev:
+    """KB 内容指纹(设计 §3.1):只读镜像 digest,同镜同 rev,判不了给 None。"""
+
+    async def test_rev_stable_and_algorithm_pinned(self, kb, kb_dir):
+        import hashlib
+
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        first = await kb.kb_rev("demo")
+        second = await kb.kb_rev("demo")
+        assert first == second
+        assert first is not None
+        assert len(first["rev"]) == 16
+        assert set(first["files"]) == {"schema_notes.yml", "semantics.yml", "examples.yml"}
+        blob = "\n".join(f"{k}:{first['files'][k]}" for k in sorted(first["files"]))
+        assert first["rev"] == hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    async def test_content_change_moves_rev(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        before = (await kb.kb_rev("demo"))["rev"]
+        (kb_dir / "demo" / "examples.yml").write_text(
+            EXAMPLES + "\n# touched\n", encoding="utf-8")
+        await kb.ensure_synced("demo")
+        assert (await kb.kb_rev("demo"))["rev"] != before
+
+    async def test_unknown_datasource_none(self, kb, kb_dir):
+        write_kb(kb_dir, ds="demo")
+        await kb.ensure_synced("demo")
+        assert await kb.kb_rev("other") is None
+        assert await kb.kb_rev("") is None
+
+    async def test_prefix_isolation_between_datasources(self, kb, kb_dir):
+        """demo 不得吃到 demo2 的行(前缀必须带 /)。"""
+        write_kb(kb_dir, ds="demo")
+        write_kb(kb_dir, ds="demo2")
+        await kb.ensure_synced("demo")
+        snap = await kb.kb_rev("demo")
+        assert set(snap["files"]) == {"schema_notes.yml", "semantics.yml", "examples.yml"}
+        assert snap == await kb.kb_rev("demo")
+
+    async def test_null_digest_skipped_all_null_none(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        async with aiosqlite.connect(kb.db_path) as db:
+            await db.execute(
+                "UPDATE kb_sync SET digest = NULL WHERE file_path = 'demo/examples.yml'")
+            await db.commit()
+        snap = await kb.kb_rev("demo")
+        assert "examples.yml" not in snap["files"]
+        assert set(snap["files"]) == {"schema_notes.yml", "semantics.yml"}
+        async with aiosqlite.connect(kb.db_path) as db:
+            await db.execute("UPDATE kb_sync SET digest = NULL")
+            await db.commit()
+        assert await kb.kb_rev("demo") is None

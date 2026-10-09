@@ -1276,6 +1276,37 @@ class KbService:
             cursor = await db.execute(sql, params)
             return await cursor.fetchall()
 
+    # ── KB 指纹(评测/审计归因)──────────────────────────────
+
+    async def kb_rev(self, datasource: str) -> dict[str, Any] | None:
+        """KB 内容指纹(设计 2026-10-09 §3.1):只读镜像已存的逐文件 sha256。
+
+        不新算哈希(算哈希只有 ``_load_asset`` 一处,单一写点),不触发
+        同步、不缓存 —— 镜像本就是「本次实际读到的那版」,调用时机在
+        查询/跑题之后。``rev`` = sha256(按文件名排序的 ``name:digest``
+        行,``\\n`` 连接)的前 16 位(同 ``rule_rev`` 形状);digest 为空
+        (旧镜像未回填)的行跳过;无任何有效行 → None(绝不拿半份文件集
+        冒充一个 rev)。前缀过滤带 ``/`` —— ``demo`` 不得吃到 ``demo2``。
+        """
+        if not datasource:
+            return None
+        rows = await self._rows("SELECT file_path, digest FROM kb_sync")
+        prefix = f"{datasource}/"
+        files: dict[str, str] = {}
+        for row in rows:
+            file_path = str(row["file_path"] or "")
+            digest = str(row["digest"] or "")
+            if not file_path.startswith(prefix) or not digest:
+                continue
+            files[file_path[len(prefix):]] = digest
+        if not files:
+            return None
+        blob = "\n".join(f"{name}:{files[name]}" for name in sorted(files))
+        return {
+            "rev": hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16],
+            "files": files,
+        }
+
     async def search_terms(
         self,
         question: str,
