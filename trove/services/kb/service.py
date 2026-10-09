@@ -1286,9 +1286,12 @@ class KbService:
         查询/跑题之后。``rev`` = sha256(按文件名排序的 ``name:digest``
         行,``\\n`` 连接)的前 16 位(同 ``rule_rev`` 形状);digest 为空
         (旧镜像未回填)的行跳过;无任何有效行 → None(绝不拿半份文件集
-        冒充一个 rev)。前缀过滤带 ``/`` —— ``demo`` 不得吃到 ``demo2``。
+        冒充一个 rev)。KB 未启用(kb 目录缺失)同样 → None(同其他读取口)。
+        前缀过滤带 ``/`` —— ``demo`` 不得吃到 ``demo2``。
         """
         if not datasource:
+            return None
+        if not self.enabled:
             return None
         rows = await self._rows("SELECT file_path, digest FROM kb_sync")
         prefix = f"{datasource}/"

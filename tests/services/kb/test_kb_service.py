@@ -291,6 +291,7 @@ class TestEnablement:
         assert kb.enabled is False
         assert await kb.search_terms("平均贷款金额", "demo") == []
         assert await kb.search_examples("平均贷款金额", "demo") == []
+        assert await kb.kb_rev("demo") is None
 
     def test_kb_dir_override(self, tmp_path):
         """kb_dir 参数覆盖默认的 <project_root>/.trove/kb 布局(供 eval --kb-dir 使用)。"""
