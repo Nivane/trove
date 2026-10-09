@@ -166,3 +166,66 @@ class TestDeterminism:
             assert r.returncode == 0, r.stderr
             outs.add(r.stdout.strip())
         assert len(outs) == 1, f"跨进程不一致: {outs}"
+
+
+class TestConservation:
+    """聚合守恒(设计 §2.1):和 == 总 → 不违反;受扰 → 违反;判不了 → None。"""
+
+    def test_exact_sum_not_violated(self):
+        from trove.services.analysis.decompose import (
+            conservation_gap,
+            conservation_violated,
+        )
+
+        table = [{"dim": "a", "delta": 6.0}, {"dim": "b", "delta": 4.0}]
+        gap = conservation_gap(table, 10.0)
+        assert gap == 0.0
+        assert conservation_violated(gap, 10.0) is False
+
+    def test_gap_violated(self):
+        from trove.services.analysis.decompose import (
+            conservation_gap,
+            conservation_violated,
+        )
+
+        table = [{"dim": "a", "delta": 9.0}]  # 缺了 1.0 的桶
+        gap = conservation_gap(table, 10.0)
+        assert gap == pytest.approx(1.0)
+        assert conservation_violated(gap, 10.0) is True
+
+    def test_float_noise_not_violated(self):
+        from trove.services.analysis.decompose import (
+            conservation_gap,
+            conservation_violated,
+        )
+
+        table = [{"dim": "a", "delta": 0.1}, {"dim": "b", "delta": 0.2}]
+        gap = conservation_gap(table, 0.3)  # 0.1+0.2 的浮点余差
+        assert gap is not None
+        assert conservation_violated(gap, 0.3) is False
+
+    def test_unjudgeable_inputs_return_none(self):
+        from trove.services.analysis.decompose import conservation_gap
+
+        assert conservation_gap([], 10.0) is None          # 表空
+        assert conservation_gap(None, 10.0) is None         # 表缺
+        assert conservation_gap([{"dim": "a", "delta": 1.0}], None) is None
+        assert conservation_gap([{"dim": "a"}], 10.0) is None       # 缺 delta
+        assert conservation_gap([{"dim": "a", "delta": None}], 10.0) is None
+        assert conservation_gap([{"dim": "a", "delta": "abc"}], 10.0) is None
+
+    def test_relative_tolerance_scales_with_total(self):
+        from trove.services.analysis.decompose import (
+            conservation_gap,
+            conservation_violated,
+        )
+
+        table = [{"dim": "a", "delta": 999_000.0}]
+        gap = conservation_gap(table, 1_000_000.0)  # 缺口 1000.0(一个桶的量级)
+        assert conservation_violated(gap, 1_000_000.0) is True   # > 1e-6 × 1e6 = 1.0
+        # 相对容差的关键另一半:同一量级下,容差内的缺口不报警
+        # (0.5 远超绝对容差 1e-9,只有相对项能让它不触发)
+        noise = conservation_gap([{"dim": "a", "delta": 999_999.5}], 1_000_000.0)
+        assert conservation_violated(noise, 1_000_000.0) is False  # 0.5 < 1e-6 × 1e6 = 1.0
+        small = conservation_gap([{"dim": "a", "delta": 1.0}], 1.0000001)
+        assert conservation_violated(small, 1.0000001) is False  # 落在相对容差内

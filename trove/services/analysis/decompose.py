@@ -181,3 +181,31 @@ def residual(parent_delta: float, child_deltas: list[float]) -> dict[str, Any]:
     """
     gap = float(parent_delta) - sum(float(d) for d in child_deltas)
     return {"value": gap, "exact": abs(gap) <= _EXACT_TOL}
+
+
+# ── 聚合守恒(加性分解的自查,设计 §2.1)─────────────────────────
+# 分解之和必须等于总变化 —— 维度查询没覆盖全量(缺 other 桶)这类缺口
+# 是静默的:表看着齐全,和却对不上。容差 = max(绝对, 相对×|total|):
+# 浮点累加误差不该报警,真实缺口(一个桶的量级)必须落 degraded。
+_CONSERVATION_ABS_TOL = 1e-9
+_CONSERVATION_REL_TOL = 1e-6
+
+
+def conservation_gap(table: list | None, total_delta: float | None) -> float | None:
+    """加性分解的守恒缺口 = ``total_delta − Σ row["delta"]``。
+
+    表空 / total_delta 缺失 / 出现非数值(或缺失)delta → None ——
+    "判不了"绝不冒充 0(0 会被读成"守恒成立")。
+    """
+    if not table or total_delta is None:
+        return None
+    try:
+        return float(total_delta) - sum(float(r["delta"]) for r in table)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def conservation_violated(gap: float, total_delta: float) -> bool:
+    """缺口超出容差 = 违反。容差随 total_delta 缩放(绝对与相对取大)。"""
+    tol = max(_CONSERVATION_ABS_TOL, _CONSERVATION_REL_TOL * abs(float(total_delta)))
+    return abs(float(gap)) > tol
