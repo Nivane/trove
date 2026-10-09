@@ -189,6 +189,22 @@ if _HAVE_CLIENT:
         ["datasource", "reason"],
         registry=_REGISTRY,
     )
+    # 语义变更（评审工作流）的两个信号。标签值域**闭**：status 是状态机的
+    # 转移点（open/merged/rejected），origin 是变更来源三值
+    # （draft_confirm/auto_apply/manual）—— 变更 id / 数据源名一律不进标签
+    # （基数无限，与路由用模板而不是原始 URL 同一条纪律）。合并冲突单列一条：
+    # 它回答的是「并发窗口有多宽」这个**健康信号**，不是变更的一种结局。
+    SEMANTIC_CHANGES = Counter(
+        "trove_semantic_change_total",
+        "Semantic layer changes by terminal status and origin.",
+        ["status", "origin"],
+        registry=_REGISTRY,
+    )
+    SEMANTIC_MERGE_CONFLICTS = Counter(
+        "trove_semantic_merge_conflict_total",
+        "Semantic merges refused by optimistic concurrency (stale_change).",
+        registry=_REGISTRY,
+    )
 
 
 def _short_model(model: str) -> str:
@@ -500,6 +516,27 @@ def record_asset_ledger_failure(datasource: str, reason: str) -> None:
         ).inc()
     except Exception as e:
         logger.debug("asset ledger failure metric record failed: %s", e)
+
+
+def record_semantic_change(status: str, origin: str) -> None:
+    """一次变更状态转移（open/merged/rejected）；标签值域闭（状态机 × origin）。"""
+    if not _HAVE_CLIENT:
+        return
+    try:
+        SEMANTIC_CHANGES.labels(status=status or "unknown",
+                                origin=origin or "unknown").inc()
+    except Exception as e:
+        logger.debug("semantic change metric record failed: %s", e)
+
+
+def record_semantic_merge_conflict() -> None:
+    """乐观并发拒绝一次（409 stale_change）——冲突率是这一层的健康信号。"""
+    if not _HAVE_CLIENT:
+        return
+    try:
+        SEMANTIC_MERGE_CONFLICTS.inc()
+    except Exception as e:
+        logger.debug("merge conflict metric record failed: %s", e)
 
 
 def render_metrics() -> bytes:

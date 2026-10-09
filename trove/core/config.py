@@ -383,6 +383,28 @@ class ExtensionsConfig:
 
 
 @dataclass
+class ChangesConfig:
+    """语义变更评审配置（``agent.semantic_changes.*``，设计 §5.1/§8.4）。
+
+    ``sandbox_by_origin``：**开单即预跑沙箱验证**的来源集合。生效面只覆盖
+    **经 ``open()`` 落快照**的变更（今天唯一入口是 ``origin="manual"``）——
+    ``verify`` 需要 ``base/after`` 快照，而快照只在 ``open()`` 里写。包装
+    路径（``draft_confirm`` / ``auto_apply``）直接构造记录、从不经
+    ``open()``、也**不落快照**（设计 §5.2：唯一写盘点在 merge），因此在
+    构造上无法被沙箱验证——把它们列进来是死配置（永远不会触发），
+    唯一后果是让配置读起来像「开着验证」。默认空 = 不自动预跑（§8.4 的
+    「手工开单默认不跑」）；要开单即预跑就显式设 ``["manual"]``。
+
+    ``retain_staging_days``：``.staging/`` 快照保留天数，``<= 0`` = 不清理
+    （与 assets/events_retention_days 同款语义；清理在 ``open()`` 时顺带做，
+    不依赖调度器）。
+    """
+
+    sandbox_by_origin: list[str] = field(default_factory=list)
+    retain_staging_days: int = 30
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -477,6 +499,7 @@ class AgentConfig:
     # 主动扫描(B6):定时扫描的假设开关(默认关)+ 交互侧假设(默认开)+
     # 预算。见 ScanConfig。
     scan: ScanConfig = field(default_factory=ScanConfig)
+    semantic_changes: ChangesConfig = field(default_factory=ChangesConfig)
     # 行动层:提案/审批/外送(默认关闭)。见 ActionConfig。
     action: ActionConfig = field(default_factory=ActionConfig)
     # 扩展面治理:组织扩展(org skills / validator / 决策规则执行)总开关,
@@ -748,6 +771,24 @@ class ConfigLoader:
             k=scan_k,
         )
 
+        # 语义变更评审（设计 §5.1）。与 extensions/authz/assets 同款纪律:
+        # 加了字段却不在加载器里读 YAML,配置就永远不生效(恒取默认)。
+        changes_raw = (resolved.get("semantic_changes", {})
+                       or agent_section.get("semantic_changes", {}) or {})
+        # ``sandbox_by_origin`` 容忍 YAML 标量（``sandbox_by_origin: manual``）:
+        # 逐字遍历字符串会把它按**字符**展开 —— 来源集合静默变成一个谁也
+        # 匹配不上的值,沙箱于是永不对任何来源触发,而配置看起来是对的。
+        # 缺省与字段默认同字（``[]``）—— 加载器里再写一份别的默认值会让
+        # 「没写配置」读起来像「开了自动预跑」（旧默认 ``[draft_confirm,
+        # auto_apply]`` 正是这种死配置：那两条路径不经 ``open()``,永不触发）。
+        sandbox_raw = changes_raw.get("sandbox_by_origin")
+        if isinstance(sandbox_raw, str):
+            sandbox_raw = [sandbox_raw]
+        changes_conf = ChangesConfig(
+            sandbox_by_origin=[str(o) for o in (sandbox_raw or [])],
+            retain_staging_days=max(0, int(changes_raw.get("retain_staging_days", 30))),
+        )
+
         # Parse action layer (P3; agent.action.* — same top-level-or-nested
         # reading as decision/attribution: a field the loader does not read is
         # a config that silently never applies).
@@ -918,6 +959,7 @@ class ConfigLoader:
             analysis=analysis_conf,
             decision=decision_conf,
             scan=scan_conf,
+            semantic_changes=changes_conf,
             action=action_conf,
             extensions=extensions_conf,
             eval=eval_conf,

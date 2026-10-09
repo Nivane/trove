@@ -361,6 +361,30 @@ class SemanticBatchResponse(BaseModel):
     failed: int = 0
 
 
+# ── 语义变更评审契约（设计 §7.2）───────────────────────────
+# 「变更 = 合并单元」的 HTTP 面；409/422 的机器可读码在路由层，形状在此钉死。
+
+
+class SemanticChangePayload(BaseModel):
+    """一条 payload 变更（与草稿 payload 同形）。"""
+
+    kind: Literal["metric", "field", "dataset", "topic"]
+    action: Literal["upsert", "delete"]
+    name: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    note: str = ""
+
+
+class SemanticChangeCreate(BaseModel):
+    payloads: list[SemanticChangePayload] = Field(min_length=1)
+    question: str = ""
+    note: str = ""
+
+
+class SemanticChangeReject(BaseModel):
+    reason: str = Field(min_length=1)
+
+
 class LoginRequest(BaseModel):
     """POST /v1/auth/login body."""
 

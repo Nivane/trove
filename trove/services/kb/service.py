@@ -2462,6 +2462,11 @@ class KbService:
         OSSIE metric 追加进 semantic_model。守卫:
         - 空 mapping 拒绝(无表达式的 metric 会被 OSSIE 解析器整体丢弃);
         - 旧 flat terms: 文件拒绝写入(不兼容决策,需 /kb init --overwrite)。
+
+        **写入面豁免（设计 2026-09-28-semantic-branch-review §4 I1）**：本方法
+        是**人工命令**（/kb learn 类入口）而非 agent/草稿链路，属 I1 明示的
+        两处豁免之一（AST 守卫白名单）；agent 与草稿路径的写入唯一经
+        ``semantic_layer.changes.ChangeService.merge()``。
         """
         mapping = str(entry.get("mapping", "") or "").strip()
         if not mapping:
@@ -2691,7 +2696,14 @@ class KbService:
         self, terms: list[dict], datasource: str, overwrite: bool = False,
         force: bool = False,
     ) -> bool:
-        """Write a semantics.yml as an OSSIE semantic_model (LLM-assisted /kb init)."""
+        """Write a semantics.yml as an OSSIE semantic_model (LLM-assisted /kb init).
+
+        **写入面豁免（设计 2026-09-28-semantic-branch-review §4 I1）**：初始化
+        路径（``/kb init``）而非 agent/草稿链路，属 I1 的另一处豁免（AST 守卫
+        白名单以本方法为落点：``"semantics.yml"`` 字面量在本体内，``_init_doc``
+        / ``_init_write`` 是其下游助手）；agent 与草稿路径的写入唯一经
+        ``semantic_layer.changes.ChangeService.merge()``。
+        """
         doc = terms_to_ossie_document(terms, model_name=datasource)
         return self._init_doc(
             "semantics.yml", doc, datasource, overwrite, force=force)
@@ -2706,6 +2718,11 @@ class KbService:
         (datasets with fields/primary keys + relationships) plus metrics —
         a superset of what ``init_terms`` writes. See semantic_gen.py.
         顶层键(如 OSSIE ``version``)原样写盘(完整文档)。
+
+        **写入面豁免（设计 2026-09-28-semantic-branch-review §4 I1）**：同
+        ``init_terms`` 的初始化豁免（AST 守卫白名单落点，字面量在本体内）；
+        agent 与草稿路径的写入唯一经
+        ``semantic_layer.changes.ChangeService.merge()``。
         """
         return self._init_doc(
             "semantics.yml", doc, datasource, overwrite, force=force)

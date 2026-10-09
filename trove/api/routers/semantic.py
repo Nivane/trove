@@ -25,6 +25,8 @@ from trove.api.deps import get_principal, require_admin, require_admin_or_analys
 from trove.api.schemas import (
     SemanticBatchRequest,
     SemanticBatchResponse,
+    SemanticChangeCreate,
+    SemanticChangeReject,
     SemanticDraftCreate,
     SemanticPreviewRequest,
     SemanticPreviewResponse,
@@ -149,7 +151,7 @@ async def _drift_view(request: Request, ds: str, dialect: str) -> dict[str, Any]
                     (row.level, normalize_subject(row.subject)), row)
         except Exception:
             stored = {}
-    empty_impact = {"metrics": [], "examples": [], "rules": [], "lessons": []}
+    empty_impact = ImpactSet().to_dict()
     items: list[dict[str, Any]] = []
     for item in adapted.items:
         row = stored.get((item.level, normalize_subject(item.subject)))
@@ -506,3 +508,129 @@ async def batch_semantic_drafts(
         details["name"] = draft.get("name") if draft else None
         await _audit(request, f"semantic.draft.{action}", admin, 200, details)
     return {"results": results, "applied": applied, "failed": failed}
+
+
+def _changes(request: Request):
+    from trove.services.semantic_layer.changes import ChangeService
+
+    config = getattr(getattr(request.app.state, "config", None),
+                     "semantic_changes", None)
+    return ChangeService(_kb(request), config=config)
+
+
+# ── 语义变更评审（设计 §7.2；声明顺序：静态段在前，{change_id} 在后）──
+
+
+@router.post("/admin/semantic/{name}/changes", status_code=201)
+async def open_semantic_change(
+    name: str, body: SemanticChangeCreate, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """显式开单：快照 .staging/ + 记录 status=open（主线不动）。"""
+    ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
+    payloads = [p.model_dump() for p in body.payloads]
+    try:
+        change = await _changes(request).open(
+            ds, origin="manual", payloads=payloads, question=body.question,
+            note=body.note, author=actor, dialect=await _dialect(request, ds))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "semantic.change.open", admin, 201, {
+        "datasource": ds, "id": change["id"],
+        "subjects": change["subjects"]})
+    return {"change": change}
+
+
+@router.get("/admin/semantic/{name}/changes")
+async def list_semantic_changes(
+    name: str, request: Request, status: str = "",
+    admin: dict = Depends(require_admin_or_analyst),
+) -> dict:
+    ds = _resolve_datasource(request, name)
+    records = _changes(request).list(ds, status=status or None)
+    return {"changes": [r.to_dict() for r in records]}
+
+
+@router.get("/admin/semantic/{name}/changes/{change_id}")
+async def semantic_change_detail(
+    name: str, change_id: str, request: Request,
+    admin: dict = Depends(require_admin_or_analyst),
+) -> dict:
+    ds = _resolve_datasource(request, name)
+    try:
+        detail = _changes(request).detail(ds, change_id,
+                                          dialect=await _dialect(request, ds))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"change not found: {change_id}")
+    return {"change": detail}
+
+
+@router.post("/admin/semantic/{name}/changes/{change_id}/verify")
+async def verify_semantic_change(
+    name: str, change_id: str, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    ds = _resolve_datasource(request, name)
+    try:
+        verification = _changes(request).verify(ds, change_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"change not found: {change_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "semantic.change.verify", admin, 200, {
+        "datasource": ds, "id": change_id,
+        "verdict": verification.get("verdict")})
+    return {"verification": verification}
+
+
+@router.post("/admin/semantic/{name}/changes/{change_id}/merge")
+async def merge_semantic_change(
+    name: str, change_id: str, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """合并（★ I1 的唯一写入口的 HTTP 面）。冲突 409 / 门禁不过 422。
+
+    无 ``auto`` 入参（设计 §8.2）：``Auto-approved-by: deterministic-gate``
+    只能由确定性门自己触发 —— 客户端可控的查询参数会让审计标记可伪造。
+    """
+    from trove.services.semantic_layer.changes import ChangeInvalid, ChangeStale
+
+    ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
+    try:
+        change = await _changes(request).merge(ds, change_id, by=actor)
+    except ChangeStale as e:
+        raise HTTPException(status_code=409, detail={"code": "stale_change",
+                                                     "message": str(e)})
+    except ChangeInvalid as e:
+        raise HTTPException(status_code=422, detail={"code": "change_invalid",
+                                                     "message": str(e)})
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"change not found: {change_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "semantic.change.merge", admin, 200, {
+        "datasource": ds, "id": change_id,
+        "auto": bool(change.get("auto")),
+        "warnings": change.get("warnings"), "degraded": change.get("degraded")})
+    return {"change": change}
+
+
+@router.post("/admin/semantic/{name}/changes/{change_id}/reject")
+async def reject_semantic_change(
+    name: str, change_id: str, body: SemanticChangeReject, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
+    try:
+        change = await _changes(request).reject(
+            ds, change_id, by=actor, reason=body.reason)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"change not found: {change_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "semantic.change.reject", admin, 200, {
+        "datasource": ds, "id": change_id})
+    return {"change": change}

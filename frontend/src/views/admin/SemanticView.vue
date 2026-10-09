@@ -34,6 +34,8 @@ import { ChevronDown, Copy, Plus, RefreshCw, Search, TriangleAlert } from 'lucid
 import type {
   DatasourceInfo,
   SemanticBatchResult,
+  SemanticChangeDetail,
+  SemanticChangeRecord,
   SemanticDatasetInfo,
   SemanticDetail,
   SemanticDraft,
@@ -51,6 +53,7 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
 import { copyText, fmtDateTime, trunc } from '../../utils/format'
+import { changeStatusTone, impactLines, verdictKey } from '../../utils/semantic-changes'
 import { useListQuery } from '../../composables/useListQuery'
 import PageHeader from '../../components/base/PageHeader.vue'
 import KpiTile from '../../components/base/KpiTile.vue'
@@ -61,6 +64,9 @@ import DataTable, {
 } from '../../components/base/DataTable.vue'
 import DetailDrawer from '../../components/base/DetailDrawer.vue'
 import ConfirmDialog from '../../components/base/ConfirmDialog.vue'
+
+/** 动态键（纯函数返回的 i18n 键名）无法被字面量类型收窄，按仓库既有写法回铸。 */
+type I18nKey = Parameters<typeof t>[0]
 
 type Kind = 'metric' | 'field' | 'dataset'
 type FieldRow = SemanticFieldInfo & { dataset: string }
@@ -89,6 +95,8 @@ const { values } = useListQuery({
   page: '',
   prob: '',
   draft: '',
+  // 变更单评审的深链(?change=<id>)
+  change: '',
 })
 
 /* ── load ─────────────────────────────────────────────────────── */
@@ -170,6 +178,11 @@ function resetViewState() {
   historyLoaded.value = false
   trailError.value = false
   checkError.value = ''
+  changesLoaded.value = false
+  changeDetail.value = null
+  changeDetailError.value = ''
+  changeRejectReason.value = ''
+  changeRejectError.value = ''
 }
 
 onMounted(async () => {
@@ -211,6 +224,7 @@ const tabDefs = computed(() => [
   { key: 'datasets', label: t('semDatasets', ui.lang), count: datasets.value.length },
   { key: 'fields', label: t('semFields', ui.lang), count: fields.value.length },
   { key: 'pending', label: t('semPending', ui.lang), count: pending.value.length },
+  { key: 'changes', label: t('semTabChanges', ui.lang), count: openChanges.value.length },
 ])
 
 const problemCount = computed(() => issueItems.value.length + driftItems.value.length)
@@ -315,6 +329,11 @@ const filteredDatasets = computed(() =>
 const filteredPending = computed(() =>
   pending.value.filter((d) => matchesQ(q.value, d.name, d.kind, d.action, d.note)),
 )
+const filteredChanges = computed(() =>
+  changes.value.filter((c) =>
+    matchesQ(q.value, c.id, c.note, c.question, c.origin, c.status, changeSummary(c)),
+  ),
+)
 
 const METRIC_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'name', label: t('semName', ui.lang), sortable: true },
@@ -345,6 +364,13 @@ const PENDING_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'action', label: t('semUpsert', ui.lang) },
   { key: 'name', label: t('semName', ui.lang), sortable: true },
   { key: 'note', label: t('semNote', ui.lang) },
+  { key: 'created_at', label: t('semCreatedAt', ui.lang), sortable: true, defaultDir: 'desc' as const },
+])
+const CHANGE_COLUMNS = computed<DataTableColumn[]>(() => [
+  { key: 'status', label: t('status', ui.lang), sortable: true },
+  { key: 'origin', label: t('semChangeOrigin', ui.lang), sortable: true },
+  { key: 'summary', label: t('semChangeSummary', ui.lang) },
+  { key: 'subjects', label: t('semChangeSubjects', ui.lang), align: 'right' as const },
   { key: 'created_at', label: t('semCreatedAt', ui.lang), sortable: true, defaultDir: 'desc' as const },
 ])
 
@@ -386,6 +412,15 @@ const sortedPending = computed(() => {
   }[s.key] ?? ((d: SemanticDraft) => d.name)
   return sortWith(filteredPending.value, get, s.dir)
 })
+const sortedChanges = computed(() => {
+  const s = sortOf('created_at', 'desc')
+  const get = {
+    status: (c: SemanticChangeRecord) => changeStatusLabel(c.status),
+    origin: (c: SemanticChangeRecord) => c.origin ?? '',
+    created_at: (c: SemanticChangeRecord) => c.created_at ?? '',
+  }[s.key] ?? ((c: SemanticChangeRecord) => c.created_at ?? '')
+  return sortWith(filteredChanges.value, get, s.dir)
+})
 
 function pageOf<T>(rows: T[]): T[] {
   const total = rows.length
@@ -401,11 +436,13 @@ const pageNum = computed(() => {
 const visibleMetrics = computed(() => pageOf(sortedMetrics.value))
 const visibleFields = computed(() => pageOf(sortedFields.value))
 const visibleDatasets = computed(() => pageOf(sortedDatasets.value))
+const visibleChanges = computed(() => pageOf(sortedChanges.value))
 
 const currentTotal = computed(() => {
   if (values.tab === 'datasets') return sortedDatasets.value.length
   if (values.tab === 'fields') return sortedFields.value.length
   if (values.tab === 'pending') return sortedPending.value.length
+  if (values.tab === 'changes') return sortedChanges.value.length
   return sortedMetrics.value.length
 })
 const filtersActive = computed(() => !!q.value.trim())
@@ -628,6 +665,7 @@ function retryBatchItem(id: string) {
 type ConfirmCtx =
   | { mode: 'batch'; action: 'confirm' | 'reject' }
   | { mode: 'single'; draft: SemanticDraft }
+  | { mode: 'change'; change: SemanticChangeDetail }
   | { mode: 'delete'; kind: Kind; name: string }
 
 const confirmCtx = ref<ConfirmCtx | null>(null)
@@ -648,6 +686,7 @@ const confirmTitle = computed(() => {
       : t('semConfirmRejectTitle', ui.lang, n)
   }
   if (ctx.mode === 'single') return t('semConfirmRejectTitle', ui.lang, 1)
+  if (ctx.mode === 'change') return `${t('semChangeReject', ui.lang)} · ${ctx.change.id}`
   return t('semDeleteAssetTitle', ui.lang, ctx.name)
 })
 const confirmTextLabel = computed(() => {
@@ -657,6 +696,7 @@ const confirmTextLabel = computed(() => {
     return ctx.action === 'confirm' ? t('semBulkApply', ui.lang) : t('semBulkReject', ui.lang)
   }
   if (ctx.mode === 'single') return t('semRejectDraft', ui.lang)
+  if (ctx.mode === 'change') return t('semChangeReject', ui.lang)
   return t('semDelete', ui.lang)
 })
 const confirmDanger = computed(() => {
@@ -670,6 +710,10 @@ const confirmImpactNames = computed(() => {
   if (!ctx) return []
   if (ctx.mode === 'batch') return selected.value.map(draftNameOf)
   if (ctx.mode === 'single') return [ctx.draft.name]
+  if (ctx.mode === 'change') {
+    const names = (ctx.change.subjects ?? []).map((s) => `${s.kind}:${s.name}`)
+    return names.length ? names : [ctx.change.id]
+  }
   return [ctx.name]
 })
 
@@ -690,6 +734,26 @@ async function runConfirm() {
       confirmCtx.value = null
       values.draft = ''
       await loadDetail()
+    } else if (ctx.mode === 'change') {
+      const reason = changeRejectReason.value.trim()
+      if (!reason) {
+        // 服务端也拒空理由 —— 前端先把这一步挡住,不发必被 400 的请求
+        changeRejectError.value = t('semChangeRejectReason', ui.lang)
+        return
+      }
+      changeAction.value = 'reject'
+      try {
+        await apiPost(
+          `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(ctx.change.id)}/reject`,
+          { reason },
+        )
+        notifySuccess(t('semChangeRejectedOk', ui.lang))
+        confirmCtx.value = null
+        values.change = ''
+        await Promise.all([loadChanges(), loadDetail()])
+      } finally {
+        changeAction.value = null
+      }
     } else {
       const ok = await createDraft(ctx.kind, 'delete', ctx.name, {}, '')
       if (ok) confirmCtx.value = null
@@ -793,6 +857,200 @@ async function applyDraft() {
 
 function openDraftDrawer(d: SemanticDraft) {
   values.draft = d.id
+}
+
+/* ── changes（变更评审）─────────────────────────────────────── */
+
+const changes = ref<SemanticChangeRecord[]>([])
+const changesLoaded = ref(false)
+const changeDetail = ref<SemanticChangeDetail | null>(null)
+const changeDetailError = ref('')
+const changeAction = ref<'merge' | 'verify' | 'reject' | null>(null)
+const changesLoading = ref(false)
+const changeRejectReason = ref('')
+const changeRejectError = ref('')
+
+async function loadChanges() {
+  const ds = values.ds
+  if (!ds) return
+  changesLoading.value = true
+  try {
+    const body = await apiGet<{ changes: SemanticChangeRecord[] }>(
+      `/v1/admin/semantic/${encodeURIComponent(ds)}/changes`)
+    if (values.ds !== ds) return // raced with a datasource switch
+    changes.value = body.changes ?? []
+    changesLoaded.value = true
+  } catch (e) {
+    if (values.ds !== ds) return
+    toastError(e)
+  } finally {
+    if (values.ds === ds) changesLoading.value = false
+  }
+}
+
+const openChanges = computed(() => changes.value.filter((c) => c.status === 'open'))
+
+watch(
+  () => [values.ds, values.tab],
+  () => {
+    if (!values.ds) return
+    // 徽标显示未合并数 —— 没加载过的列表渲染成 0 与「没有未合并变更」同形,
+    // 所以列表跟着数据源走(进入 tab 再取一次保鲜)。
+    if (values.tab === 'changes' || !changesLoaded.value) void loadChanges()
+  },
+  { immediate: true },
+)
+
+// 详情跟随 (变更 id, 数据源) 双键:composable 的 immediate watcher 先把 URL 里的
+// `change` 灌进 values(在本次 setup 之前),immediate 缺省会让深链首绘永远不发详情请求;
+// ds 切换时 resetViewState 清了 changeDetail 但 id 没变,不带 ds 键同样不重取。
+watch(
+  [() => values.change, () => values.ds],
+  async ([id]) => {
+    changeDetail.value = null
+    changeDetailError.value = ''
+    if (!id) return
+    const ds = values.ds
+    if (!ds) return
+    try {
+      const body = await apiGet<{ change: SemanticChangeDetail }>(
+        `/v1/admin/semantic/${encodeURIComponent(ds)}/changes/${encodeURIComponent(id)}`,
+      )
+      if (values.ds !== ds || values.change !== id) return // raced
+      changeDetail.value = body.change
+    } catch (e) {
+      if (values.ds !== ds || values.change !== id) return
+      // 只 toast 会把抽屉永远留在 Loading(空态与失败同形) —— 页面内也要说
+      changeDetailError.value = errMsg(e)
+      toastError(e)
+    }
+  },
+  { immediate: true },
+)
+
+const changeOpen = computed({
+  get: () => !!values.change,
+  set: (v: boolean) => {
+    if (!v) values.change = ''
+  },
+})
+
+function openChangeRow(row: unknown) {
+  values.change = (row as SemanticChangeRecord).id
+}
+
+function changeStatusLabel(status: string): string {
+  const map: Record<
+    string,
+    'semChangeOpen' | 'semChangeMerged' | 'semChangeRejected' | 'semChangeStale' | 'semChangeApproved'
+  > = {
+    open: 'semChangeOpen',
+    merged: 'semChangeMerged',
+    rejected: 'semChangeRejected',
+    stale: 'semChangeStale',
+    approved: 'semChangeApproved',
+  }
+  const key = map[status]
+  // 认不出的状态是数据不是文案,原样带出(色调已按 danger/muted 表态)
+  return key ? t(key, ui.lang) : status || '—'
+}
+
+/** tone → pill 类名（'muted' 没有对应的 pill-muted,落中性色）。 */
+function tonePill(tone: 'ok' | 'warn' | 'danger' | 'muted'): string {
+  return tone === 'muted' ? 'pill-neutral' : `pill-${tone}`
+}
+
+const changeSummary = (c: SemanticChangeRecord): string => c.note || c.question || c.id
+
+const changeImpact = computed(() =>
+  changeDetail.value?.impact
+    ? impactLines(changeDetail.value.impact, (k) => t(k as I18nKey, ui.lang))
+    : [],
+)
+
+/** 实体级 diff(按 kind 一行:增/删/改名字)。 */
+const changeDiffEntities = computed<
+  Array<{ kind: string; added: string[]; removed: string[]; modified: string[] }>
+>(() =>
+  Object.entries(changeDetail.value?.diff?.entities ?? {}).map(([kind, e]) => ({
+    kind,
+    added: e.added ?? [],
+    removed: e.removed ?? [],
+    modified: e.modified ?? [],
+  })),
+)
+
+const changeDiffDetails = computed(() => changeDetail.value?.diff?.details ?? [])
+
+/** verdict 的色调:improves 绿 / regresses 红 / neutral 中性 / 其余琥珀 ——
+ *  「判不了」与「无可回放产物」都不许渲染成通过。 */
+function verifyPill(verdict: string): string {
+  if (verdict === 'improves') return 'pill-ok'
+  if (verdict === 'regresses') return 'pill-danger'
+  if (verdict === 'neutral') return 'pill-neutral'
+  return 'pill-warn'
+}
+
+/** 已知原因码译人话;认不出的码原样带出(不吞也不编)。 */
+function changeWarningLabel(code: string): string {
+  return code === 'open_drift' ? t('semChangeWarnDrift', ui.lang) : code
+}
+const DEGRADED_KEYS: Record<string, I18nKey> = {
+  drift_unavailable: 'semChangeDegradedDrift',
+  snapshot_missing: 'semChangeDegradedSnapshot',
+  impact_unavailable: 'semChangeDegradedImpact',
+}
+function changeDegradedLabel(code: string): string {
+  const key = DEGRADED_KEYS[code]
+  return key ? t(key, ui.lang) : code
+}
+
+function subjectLabel(i: number): string {
+  const s = changeDetail.value?.subjects?.[i]
+  return s ? `${s.kind}:${s.name}` : ''
+}
+
+function payloadJson(p: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(p, null, 2)
+  } catch {
+    return String(p)
+  }
+}
+
+async function mergeChange(rec: SemanticChangeDetail) {
+  changeAction.value = 'merge'
+  try {
+    await apiPost(`/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(rec.id)}/merge`)
+    notifySuccess(t('semChangeMergedOk', ui.lang))
+    values.change = ''
+    await Promise.all([loadChanges(), loadDetail()])
+  } catch (e) {
+    // 409 stale_change 的 message 逐字由 http 层带出(detail 是 {code,message} 对象)
+    toastError(e)
+  } finally {
+    changeAction.value = null
+  }
+}
+
+async function runChangeVerify(rec: SemanticChangeDetail) {
+  changeAction.value = 'verify'
+  try {
+    const out = await apiPost<{ verification: SemanticChangeDetail['verification'] }>(
+      `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes/${encodeURIComponent(rec.id)}/verify`)
+    if (changeDetail.value) changeDetail.value.verification = out.verification
+  } catch (e) {
+    toastError(e)
+  } finally {
+    changeAction.value = null
+  }
+}
+
+/** 驳回要先有理由(服务端也拒空理由)——理由输入挂在确认对话框里。 */
+function askRejectChange(rec: SemanticChangeDetail) {
+  changeRejectReason.value = ''
+  changeRejectError.value = ''
+  confirmCtx.value = { mode: 'change', change: rec }
 }
 
 /* ── asset drawer ─────────────────────────────────────────────── */
@@ -1987,6 +2245,43 @@ const pageTitle = computed(() =>
             </template>
           </DataTable>
 
+          <!-- ── changes（变更评审）── -->
+          <DataTable
+            v-else-if="values.tab === 'changes'"
+            :columns="CHANGE_COLUMNS"
+            :rows="visibleChanges"
+            row-key="id"
+            row-clickable
+            :sort="sortState"
+            :loading="loading || changesLoading"
+            :empty-text="t('emptyData', ui.lang)"
+            @row-click="openChangeRow"
+            @update:sort="onSort"
+          >
+            <template #cell-status="{ row }">
+              <span
+                class="pill"
+                :class="tonePill(changeStatusTone((row as SemanticChangeRecord).status))"
+              >
+                {{ changeStatusLabel((row as SemanticChangeRecord).status) }}
+              </span>
+            </template>
+            <template #cell-origin="{ row }">
+              <span class="cell-muted">{{ (row as SemanticChangeRecord).origin || '—' }}</span>
+            </template>
+            <template #cell-summary="{ row }">
+              <span class="cell-muted">{{ trunc(changeSummary(row as SemanticChangeRecord), 48) || '—' }}</span>
+            </template>
+            <template #cell-subjects="{ row }">
+              <span class="cell-mono">{{ ((row as SemanticChangeRecord).subjects ?? []).length }}</span>
+            </template>
+            <template #cell-created_at="{ row }">
+              <span class="cell-muted" :title="(row as SemanticChangeRecord).created_at || ''">
+                {{ fmtDateTime((row as SemanticChangeRecord).created_at) || '—' }}
+              </span>
+            </template>
+          </DataTable>
+
           <!-- ── pending drafts ── -->
           <template v-else>
             <div v-if="selected.length" class="bulk-bar" role="status">
@@ -2411,6 +2706,153 @@ const pageTitle = computed(() =>
       </template>
     </DetailDrawer>
 
+    <!-- ── change drawer: 评审(快照 diff / 影响面 / 编译回放 / 合并·驳回) ── -->
+    <DetailDrawer
+      v-model="changeOpen"
+      :title="`${t('semTabChanges', ui.lang)} · ${changeDetail?.id ?? values.change}`"
+      width="620px"
+      :close-label="t('cancel', ui.lang)"
+    >
+      <div v-if="changeDetail" class="sem-drawer">
+        <div class="sem-drawer-meta">
+          <span class="pill" :class="tonePill(changeStatusTone(changeDetail.status))">
+            {{ changeStatusLabel(changeDetail.status) }}
+          </span>
+          <span class="pill pill-neutral">{{ changeDetail.origin }}</span>
+          <span v-if="changeDetail.auto" class="pill pill-accent">{{ t('semChangeAuto', ui.lang) }}</span>
+          <span class="cell-muted">{{ fmtDateTime(changeDetail.created_at) || '—' }}</span>
+        </div>
+        <p v-if="changeDetail.question" class="sem-block-text">{{ changeDetail.question }}</p>
+        <p v-if="changeDetail.note" class="sem-block-text">{{ changeDetail.note }}</p>
+        <p v-if="changeDetail.author" class="cell-muted">{{ changeDetail.author }}</p>
+
+        <!-- 漂移警示:开单不阻断,但必须说出来 -->
+        <div v-for="(w, i) in changeDetail.warnings ?? []" :key="`${w.code}-${i}`" class="sem-bad-draft" role="alert">
+          <strong>{{ changeWarningLabel(w.code) }}</strong>
+          <p v-if="w.subjects?.length" class="cell-muted">{{ (w.subjects ?? []).join(' · ') }}</p>
+        </div>
+        <!-- 降级如实:「读不到」不等于「没有」 -->
+        <p v-for="(d, i) in changeDetail.degraded ?? []" :key="`${d}-${i}`" class="cell-muted" role="status">
+          {{ changeDegradedLabel(d) }}
+        </p>
+
+        <!-- payloads:这次要改的内容(冻结在开单时) -->
+        <div v-for="(p, i) in changeDetail.payloads ?? []" :key="i" class="sem-payload">
+          <div class="sem-payload-head">
+            <span class="pill pill-accent">{{ subjectLabel(i) || '#' + (i + 1) }}</span>
+          </div>
+          <pre>{{ payloadJson(p) }}</pre>
+        </div>
+
+        <!-- 快照 diff:实体级摘要 + 逐字段的改前/改后(与草稿抽屉同一渲染) -->
+        <div v-if="changeDiffEntities.length" class="sem-diff">
+          <div v-for="e in changeDiffEntities" :key="e.kind" class="sem-diff-row">
+            <span class="sem-diff-f">{{ e.kind }}</span>
+            <span class="sem-diff-cell">
+              <span v-for="n in e.added" :key="`+${n}`" class="cell-mono">+{{ n }} </span>
+              <span v-for="n in e.removed" :key="`-${n}`" class="cell-mono">−{{ n }} </span>
+              <span v-for="n in e.modified" :key="`~${n}`" class="cell-mono">~{{ n }} </span>
+            </span>
+          </div>
+        </div>
+
+        <div v-if="changeDiffDetails.length" class="sem-diff">
+          <div class="sem-diff-head">
+            <span>{{ t('semDiffBefore', ui.lang) }}</span>
+            <span>{{ t('semDiffAfter', ui.lang) }}</span>
+          </div>
+          <div
+            v-for="(row, i) in changeDiffDetails.flatMap((d) => d.fields ?? [])"
+            :key="`${row.f}-${i}`"
+            class="sem-diff-row"
+            :class="{ 'is-changed': row.changed }"
+          >
+            <span class="sem-diff-f">{{ row.f }}</span>
+            <span class="sem-diff-cell">{{ row.before || '—' }}</span>
+            <span class="sem-diff-cell">{{ row.after || '—' }}</span>
+          </div>
+        </div>
+        <div v-for="(d, i) in changeDiffDetails.filter((x) => !!x.error)" :key="`err-${i}`" class="sem-bad-draft" role="alert">
+          <strong>{{ t('semBadDraft', ui.lang) }}</strong>
+          <p class="form-error">{{ d.error }}</p>
+        </div>
+
+        <!-- 影响面(确定性解析,带依据强度) -->
+        <section v-if="changeImpact.length" class="sem-block">
+          <h4>{{ t('semImpactTitle', ui.lang) }}</h4>
+          <ul class="sem-check-list">
+            <li v-for="(line, i) in changeImpact" :key="`${line}-${i}`">{{ line }}</li>
+          </ul>
+        </section>
+
+        <!-- 合入前验证(编译回放)—— 没有结论就整节不渲染 -->
+        <section v-if="changeDetail.verification" class="sem-block">
+          <h4>{{ t('semVerifyTitle', ui.lang) }}</h4>
+          <p>
+            <span class="pill" :class="verifyPill(changeDetail.verification.verdict)">
+              {{ t(verdictKey(changeDetail.verification.verdict) as I18nKey, ui.lang) }}
+            </span>
+          </p>
+          <ul v-if="changeDetail.verification.now_broken?.length" class="sem-check-list">
+            <li v-for="(b, i) in changeDetail.verification.now_broken" :key="`brk-${b}-${i}`">
+              <span class="pill pill-danger">{{ t('semVerifyNowBroken', ui.lang) }}</span>
+              <span class="cell-mono">{{ b }}</span>
+            </li>
+          </ul>
+          <ul v-if="changeDetail.verification.was_broken_now_compiles?.length" class="sem-check-list">
+            <li v-for="(b, i) in changeDetail.verification.was_broken_now_compiles" :key="`fix-${b}-${i}`">
+              <span class="pill pill-ok">{{ t('semVerifyFixed', ui.lang) }}</span>
+              <span class="cell-mono">{{ b }}</span>
+            </li>
+          </ul>
+          <!-- 回放不了的原因原样带出(服务端串是数据不是文案) -->
+          <p v-if="changeDetail.verification.not_applicable_reason" class="cell-muted">
+            {{ changeDetail.verification.not_applicable_reason }}
+          </p>
+        </section>
+
+        <!-- 驳回理由(已驳回的记录保留理由,可回看) -->
+        <section v-if="changeDetail.reject_reason" class="sem-block">
+          <h4>{{ t('semChangeReject', ui.lang) }}</h4>
+          <p class="sem-block-text">{{ changeDetail.reject_reason }}</p>
+        </section>
+      </div>
+      <p v-else-if="changeDetailError" class="form-error" role="alert">
+        {{ t('semChangeDetailFailed', ui.lang) }} · {{ changeDetailError }}
+      </p>
+      <p v-else class="cell-muted">{{ t('semLoading', ui.lang) }}</p>
+
+      <template #footer>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="changeAction === 'merge'"
+          :disabled="!!changeAction || changeDetail?.status !== 'open'"
+          @click="changeDetail && mergeChange(changeDetail)"
+        >
+          {{ t('semChangeMerge', ui.lang) }}
+        </el-button>
+        <el-button
+          size="small"
+          :loading="changeAction === 'verify'"
+          :disabled="!!changeAction || !changeDetail"
+          @click="changeDetail && runChangeVerify(changeDetail)"
+        >
+          {{ t('semChangeVerify', ui.lang) }}
+        </el-button>
+        <el-button
+          size="small"
+          type="danger"
+          plain
+          :loading="changeAction === 'reject'"
+          :disabled="!!changeAction || changeDetail?.status !== 'open'"
+          @click="changeDetail && askRejectChange(changeDetail)"
+        >
+          {{ t('semChangeReject', ui.lang) }}
+        </el-button>
+      </template>
+    </DetailDrawer>
+
     <!-- ── confirms: batch apply/reject, reject-one, delete asset ── -->
     <ConfirmDialog
       v-model="confirmOpen"
@@ -2421,6 +2863,17 @@ const pageTitle = computed(() =>
       :loading="confirmBusy"
       @confirm="runConfirm"
     >
+      <!-- 变更驳回:理由必填(服务端也拒空理由),前端先挡一道 -->
+      <el-input
+        v-if="confirmCtx?.mode === 'change'"
+        v-model="changeRejectReason"
+        size="small"
+        :placeholder="t('semChangeRejectReason', ui.lang)"
+        :aria-label="t('semChangeRejectReason', ui.lang)"
+      />
+      <p v-if="confirmCtx?.mode === 'change' && changeRejectError" class="form-error">
+        {{ changeRejectError }}
+      </p>
       <template #impact>
         <ul class="sem-confirm-list">
           <li v-for="n in confirmImpactNames.slice(0, 8)" :key="n">{{ n }}</li>
@@ -3276,6 +3729,27 @@ const pageTitle = computed(() =>
 }
 .sem-diff-cell {
   font-family: var(--font-mono);
+}
+/* ── change payloads(评审抽屉:冻结的变更内容) ── */
+.sem-payload {
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+.sem-payload-head {
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sem-payload pre {
+  margin: 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-primary);
+  white-space: pre;
 }
 .sem-confirm-list {
   list-style: none;

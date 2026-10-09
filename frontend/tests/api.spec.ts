@@ -108,3 +108,44 @@ describe('apiDelete — tolerates 204 No Content body', () => {
     expect(res).toBeUndefined()
   })
 })
+
+describe('apiError — structured detail objects ({code, message})', () => {
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    vi.resetModules()
+    vi.unstubAllGlobals()
+  })
+
+  function errorFetch(status: number, body: unknown) {
+    return vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      statusText: 'Conflict',
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+      json: vi.fn().mockResolvedValue(body),
+    })
+  }
+
+  it('uses detail.message instead of the raw JSON', async () => {
+    globalThis.fetch = errorFetch(409, {
+      detail: { code: 'stale_change', message: '主线已被他人修改,请重开变更' },
+    })
+    const { apiGet, ApiError } = await import('../src/api/http')
+    const err = (await apiGet('/v1/admin/semantic/demo/changes/c1').catch(
+      (e: unknown) => e,
+    )) as InstanceType<typeof ApiError>
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(409)
+    expect(err.message).toBe('主线已被他人修改,请重开变更')
+  })
+
+  it('falls back to detail.code when the message is missing', async () => {
+    globalThis.fetch = errorFetch(422, { detail: { code: 'change_invalid' } })
+    const { apiGet } = await import('../src/api/http')
+    const err = (await apiGet('/v1/admin/semantic/demo/changes/c1').catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(err.message).toBe('change_invalid')
+  })
+})

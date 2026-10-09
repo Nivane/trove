@@ -48,6 +48,11 @@ ANALYST_READ_SURFACE = {
     ("GET", "/v1/admin/drift/{drift_id}"),
     ("GET", "/v1/admin/semantic/{name}"),
     ("GET", "/v1/admin/semantic/{name}/history"),
+    # 变更评审(设计 §7.2):列表/详情是治理中心的只读回看面,analyst 端到端
+    # 可见;开单/验证/合并/驳回四条写动作仍在 require_admin(见
+    # test_write_endpoints_never_enter_analyst_surface)。
+    ("GET", "/v1/admin/semantic/{name}/changes"),
+    ("GET", "/v1/admin/semantic/{name}/changes/{change_id}"),
 }
 
 #: 无参即可调用的读面(HTTP 直测 200;带路径/必填参数的另测「非 403」)。
@@ -171,6 +176,9 @@ async def test_analyst_reads_param_surface_not_forbidden(analyst_client, api_kb)
         "/v1/admin/decisions?datasource=test_db",
         "/v1/admin/semantic/test_db",
         "/v1/admin/semantic/test_db/history",
+        # 变更评审:列表空队列 200;详情 id 不存在 404(守卫已过,不是 403)。
+        "/v1/admin/semantic/test_db/changes",
+        "/v1/admin/semantic/test_db/changes/chg-nope",
         # drift 系列要求显式 datasource(400 属参数校验,守卫已过)。
         "/v1/admin/drift?datasource=test_db",
         "/v1/admin/drift/runs?datasource=test_db",

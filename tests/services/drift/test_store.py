@@ -254,9 +254,10 @@ async def test_get_item_round_trips_detail_and_affected(store):
     got = await store.get_item(row.id)
     assert got is not None
     assert got.detail == {"relationship": "r1", "problems": "t gone"}
-    # affected 存的是 ImpactSet.to_dict() 的四个键,不是 {} —— 形状稳定,
+    # affected 存的是 ImpactSet.to_dict() 的六个键,不是 {} —— 形状稳定,
     # 读回来的人不必先判空再取键。
-    assert got.affected == {"metrics": [], "examples": [], "rules": [], "lessons": []}
+    assert got.affected == {"metrics": [], "examples": [], "rules": [],
+                            "lessons": [], "topics": [], "basis": {}}
 
 
 async def test_get_item_returns_none_for_missing(store):

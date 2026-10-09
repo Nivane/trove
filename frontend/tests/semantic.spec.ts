@@ -186,10 +186,25 @@ const AUDIT = [
 
 let DETAIL: Record<string, unknown>
 let FAIL_DETAIL: ApiError | null = null
+let FAIL_CHANGE_DETAIL: ApiError | null = null
 let DRIFT_CHECK_ERROR: ApiError | null = null
 let VALIDATE: (body: Record<string, any>) => Record<string, unknown>
 let PREVIEW: (body: Record<string, any>) => Record<string, unknown>
 let BATCH: (body: Record<string, any>) => Record<string, unknown>
+/** 深链首绘测试用:变更列表一条 + 详情一条(评审端点形状)。 */
+const CHANGE_DETAIL = {
+  id: 'c1',
+  datasource: 'demo',
+  origin: 'manual',
+  status: 'open',
+  question: '为什么退款率上升?',
+  note: 'refund_rate 口径调整',
+  author: 'bob',
+  created_at: '2026-10-05T09:00:00Z',
+  subjects: [{ kind: 'metric', name: 'refund_rate' }],
+  impact: { metrics: [], examples: [], rules: [], lessons: [] },
+  verification: null,
+}
 
 const OK_VALIDATE = {
   ok: true,
@@ -234,6 +249,7 @@ function resetFixtures() {
     },
   }
   FAIL_DETAIL = null
+  FAIL_CHANGE_DETAIL = null
   DRIFT_CHECK_ERROR = null
   VALIDATE = () => OK_VALIDATE
   PREVIEW = () => ({
@@ -257,6 +273,11 @@ function mockApi() {
       return { semantic: clone(DETAIL) }
     }
     if (path.includes('/history')) return { history: clone(HISTORY) }
+    if (/\/changes\/[^/]+$/.test(path)) {
+      if (FAIL_CHANGE_DETAIL) throw FAIL_CHANGE_DETAIL
+      return { change: clone(CHANGE_DETAIL) }
+    }
+    if (/\/changes$/.test(path)) return { changes: [clone(CHANGE_DETAIL)] }
     if (path.startsWith('/v1/admin/audit')) return clone({ audit: AUDIT, total: AUDIT.length })
     return {}
   })
@@ -924,5 +945,34 @@ describe('SemanticView', () => {
     await settle()
     expect(router.currentRoute.value.query.q).toBeUndefined()
     expect(view.findAll('.dt-row').length).toBeGreaterThan(0)
+  })
+
+  it('a failed change-detail GET shows an error line, not a permanent Loading', async () => {
+    // 只 toast 会把抽屉永远留在 Loading —— 而「空态」与「取失败」同形。
+    mockApi()
+    FAIL_CHANGE_DETAIL = new ApiError(500, 'change detail exploded')
+    await mountView('/admin/semantic?ds=demo&tab=changes&change=c1')
+    await settle()
+
+    const panel = drawer()
+    expect(panel.textContent).toContain('Could not load the change detail')
+    expect(panel.textContent).toContain('change detail exploded')
+    expect(panel.textContent).not.toContain('Loading…')
+  })
+
+  it('?change=<id> deep link fetches the change detail on first paint', async () => {
+    // Regression: the composable hydrates `change` from the URL before the
+    // view's own watcher is set up, so a non-immediate watcher missed the
+    // first transition — refresh / shared link opened the drawer empty.
+    mockApi()
+    await mountView('/admin/semantic?ds=demo&tab=changes&change=c1')
+    await settle()
+
+    const paths = (apiGet as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(paths).toContain('/v1/admin/semantic/demo/changes/c1')
+    // 抽屉离开空载态:正文渲染出详情内容
+    const panel = drawer()
+    expect(panel.textContent).toContain('为什么退款率上升?')
+    expect(panel.textContent).toContain('refund_rate 口径调整')
   })
 })

@@ -1,0 +1,47 @@
+"""ChangesConfig 的加载器接线：顶层与 agent: 内嵌两种写法都认，缺省与字段默认逐字一致。"""
+from __future__ import annotations
+
+from trove.core.config import AgentConfig, ChangesConfig, ConfigLoader
+
+
+def _load(tmp_path, body: str) -> AgentConfig:
+    path = tmp_path / "agent.yml"
+    path.write_text(body, encoding="utf-8")
+    # ``load_agent_config`` 在 ``ConfigLoader`` 上,参数名是 ``config_path``
+    # （``explicit_path`` 是 ``find_config_file`` 的参数）。
+    return ConfigLoader.load_agent_config(str(path))
+
+
+def test_defaults_match_field_defaults(tmp_path):
+    conf = _load(tmp_path, "target: mock/model\n")
+    assert conf.semantic_changes == ChangesConfig()
+    assert conf.semantic_changes.retain_staging_days == 30
+    # 默认空 = 开单不自动预跑（旧默认 [draft_confirm, auto_apply] 是死配置:
+    # 两条包装路径不经 open()、不落快照,永远触发不了沙箱）。
+    assert conf.semantic_changes.sandbox_by_origin == []
+
+
+def test_top_level_spelling(tmp_path):
+    conf = _load(tmp_path, (
+        "target: mock/model\n"
+        "semantic_changes:\n"
+        "  retain_staging_days: 7\n"
+        "  sandbox_by_origin: [manual]\n"
+    ))
+    assert conf.semantic_changes.retain_staging_days == 7
+    assert conf.semantic_changes.sandbox_by_origin == ["manual"]
+
+
+def test_nested_agent_spelling(tmp_path):
+    conf = _load(tmp_path, (
+        "agent:\n  semantic_changes:\n    retain_staging_days: 3\n"
+    ))
+    assert conf.semantic_changes.retain_staging_days == 3
+
+
+def test_scalar_sandbox_origin_is_tolerated(tmp_path):
+    """YAML 标量不是列表：逐字遍历会按字符展开,来源集合静默失效。"""
+    conf = _load(tmp_path, (
+        "semantic_changes:\n  sandbox_by_origin: manual\n"
+    ))
+    assert conf.semantic_changes.sandbox_by_origin == ["manual"]

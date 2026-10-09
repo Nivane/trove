@@ -16,6 +16,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,10 +61,36 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
+    """原子替换落盘：临时文件写全 + fsync → ``os.replace`` 覆盖目标。
+
+    ``path.write_text`` 是截断再写 —— 中途失败（磁盘满/中断）会留下半份
+    YAML，下一次 ``_load_yaml`` 只看到半个字典，而「半写状态」正是设计
+    §10 指名要防的。临时文件与目标**同目录**（同一文件系统,``os.replace``
+    才是原子重命名而不是跨设备拷贝）。失败时临时文件必被清理、目标逐字节
+    保持原样。序列化在 ``mkstemp`` **之前** —— yaml 自己抛错时根本没建过
+    临时文件（无残留路径）。
+
+    清理**不得掩盖原异常**：unlink 自己失败（权限/目录被撤）时吞掉它并
+    原样抛出真正的失败原因 —— 一次 I/O 失败报成另一条错误信息比它本身
+    更难排查。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.safe_dump(data, **_DUMP_KWARGS), encoding="utf-8",
-    )
+    text = yaml.safe_dump(data, **_DUMP_KWARGS)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _check_expr(expr: str, dialect: str | None, label: str) -> None:
@@ -885,51 +913,15 @@ class SemanticManager:
         self, datasource: str, draft_id: str, dialect: str | None = None,
         actor: str = "", generator: str = "",
     ) -> dict[str, Any]:
-        """审批通过:应用到 semantics.yml → 标记 applied → 刷新镜像。
+        """审批通过 —— 自 v2 起唯一经 ``ChangeService.merge_draft()``（I1）。
 
-        ``generator`` 覆盖 git trailer 的 ``Generator``(批量审批走
-        ``semantic.batch``,单条默认 ``semantic.confirm``)—— 审计要能分清
-        「逐条点的」与「批量点的」,否则批量入口是审计盲区。
+        本方法只剩委托：草稿状态守卫 / 冲突守卫 / 合并写盘 / 单提交全在
+        ``changes.py``；对外签名与返回形状不变（增量 ``change_id``）。
         """
-        self._check_datasource(datasource)
-        draft, path = self._find_draft(datasource, draft_id)
-        if draft.get("status") != "pending":
-            raise ValueError(f"草稿 {draft_id} 已 {draft.get('status')}")
-        if draft.get("conflict"):
-            # 落库时已判定与现有模型冲突(重名/表达式/数据集引用):确认是
-            # 快捷入口,不是绕过校验的后门——先修正再新建,不在这里放行。
-            raise ValueError(
-                "该草稿与现有模型冲突,不能直接确认"
-                f"({(draft.get('conflict') or {}).get('message') or '见草稿注解'})"
-                "——请以它为蓝本修正后新建")
-        semantics = self._semantics_path(datasource)
-        data = _load_yaml(semantics) if semantics.exists() else {}
-        try:
-            _apply_draft(data, draft, dialect)
-        except ValueError as e:
-            raise ValueError(f"草稿确认失败: {e}") from e
-        # 新建文档补齐 OSSIE v0.2.0.dev0 文档级 version(已存在则保留)
-        if "version" not in data and "semantic_model" in data:
-            data["version"] = "0.2.0.dev0"
-        _reject_bad_semantics(data, dialect)
-        _dump_yaml(semantics, data)
-        draft["status"] = "applied"
-        drafts = self._drafts_with(datasource, draft)
-        self._save_drafts(path, drafts)
-        await self._kb.force_sync(datasource)
-        trailers: dict[str, str] = {}
-        if actor or generator:
-            trailers["Generator"] = generator or "semantic.confirm"
-        if actor:
-            trailers["Approved-by"] = actor
-        await self._kb.git_commit(
-            datasource,
-            f"semantic: confirm {draft.get('kind')} {draft.get('name')} "
-            f"(draft {draft_id})",
-            files=["semantics.yml", "semantic_drafts.yml"],
-            lint=self._kb.semantics_lint(datasource, dialect or "sqlite"),
-            trailers=trailers or None)
-        return dict(draft)
+        from trove.services.semantic_layer.changes import ChangeService
+
+        return await ChangeService(self._kb).merge_draft(
+            datasource, draft_id, dialect, by=actor, generator=generator)
 
     async def auto_apply(
         self, datasource: str, kind: str, name: str,
@@ -938,46 +930,18 @@ class SemanticManager:
     ) -> dict[str, Any]:
         """A/B 档:机械声明(物理列字段 / 机械聚合指标)直接应用,跳过 pending。
 
-        refuse 节点对通过确定性验证门(物理列存在 / 聚合可编译+真实执行
-        shape 过)的 metric/field 草稿直接入库——无需人工确认。复用
-        _apply_draft 的全部校验(表达式解析/数据集存在),并在
-        semantic_drafts.yml 留 status=applied 的审计记录(可回滚可追溯)。
+        改写为快速通道 merge（I4）：与草稿确认同一写区,差别只有「入队记录
+        直接 ``status=applied``」与恒带的 ``Auto-approved-by:
+        deterministic-gate`` trailer —— **actor 为空也要带**,否则审计分不清
+        「人点的」与「确定性门自动放行的」。refuse 节点对通过确定性验证门
+        (物理列存在 / 聚合可编译+真实执行 shape 过)的 metric/field 草稿调用
+        它——无需人工确认,并在 semantic_drafts.yml 留 applied 审计记录
+        (可回滚可追溯)。
         """
-        self._check_datasource(datasource)
-        if kind not in _KINDS:
-            raise ValueError(f"kind 必须为 {sorted(_KINDS)} 之一")
-        semantics = self._semantics_path(datasource)
-        data = _load_yaml(semantics) if semantics.exists() else {}
-        entry: dict[str, Any] = {
-            "id": uuid.uuid4().hex[:12],
-            "kind": kind,
-            "action": "upsert",
-            "name": name,
-            "payload": payload or None,
-            "note": note or "",
-            "status": "applied",
-            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
-        try:
-            _apply_draft(data, entry, None)
-        except ValueError as e:
-            raise ValueError(f"{kind} 自动确认失败: {e}") from e
-        if "version" not in data and "semantic_model" in data:
-            data["version"] = "0.2.0.dev0"
-        _reject_bad_semantics(data, None)
-        _dump_yaml(semantics, data)
-        path = self._drafts_path(datasource)
-        drafts_data = _load_yaml(path)
-        drafts = list(drafts_data.get("drafts", [])) if isinstance(drafts_data, dict) else []
-        drafts.append(entry)
-        _dump_yaml(path, {"drafts": drafts})
-        await self._kb.force_sync(datasource)
-        await self._kb.git_commit(
-            datasource, f"semantic: auto-apply {kind} {name}",
-            files=["semantics.yml", "semantic_drafts.yml"],
-            lint=self._kb.semantics_lint(datasource),
-            trailers={"Generator": "refuse.auto_apply", "Approved-by": actor} if actor else None)
-        return dict(entry)
+        from trove.services.semantic_layer.changes import ChangeService
+
+        return await ChangeService(self._kb).merge_auto(
+            datasource, kind, name, payload, note, actor=actor)
 
     async def auto_apply_field(
         self, datasource: str, name: str, payload: dict[str, Any] | None = None,
