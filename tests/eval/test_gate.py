@@ -585,3 +585,33 @@ class TestCaliberBlockGate:
         report = compare_metrics({"caliber_n": 10.0}, {"caliber_n": 20.0})
         assert all(mr.metric != "caliber_n" for mr in report.metrics)
         assert "caliber_n" not in report.unpaired
+
+
+class TestKbRevBucket:
+    """KB 指纹分桶(设计 §3.3 行 3):照 ex_by_path 款式,缺数据不发,unpaired 不拦。"""
+
+    def test_bucket_by_kb_rev(self):
+        rows = [
+            _eval_entry("MATCH", kb_rev="revA"),
+            _eval_entry("MISMATCH", kb_rev="revA"),
+            _eval_entry("MATCH", kb_rev="revB"),
+        ]
+        m = metrics_from_entries(rows)
+        assert m["ex_by_kb_rev:revA"] == 0.5
+        assert m["ex_by_kb_rev:revB"] == 1.0
+
+    def test_guard_absent_without_full_coverage(self):
+        rows = [_eval_entry("MATCH", kb_rev="revA"), _eval_entry("MATCH")]  # 半份
+        m = metrics_from_entries(rows)
+        assert not any(k.startswith("ex_by_kb_rev:") for k in m)
+
+    def test_old_files_never_emit(self):
+        m = metrics_from_entries([_eval_entry("MATCH")])  # 旧文件无 kb_rev 键
+        assert not any(k.startswith("ex_by_kb_rev:") for k in m)
+
+    def test_first_appearance_unpaired_never_blocks(self):
+        report = compare_metrics({"ex_by_kb_rev:revOld": 0.9},
+                                 {"ex_by_kb_rev:revNew": 0.9})
+        assert "ex_by_kb_rev:revOld" in report.unpaired
+        assert "ex_by_kb_rev:revNew" in report.unpaired
+        assert report.passed is True

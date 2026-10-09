@@ -307,6 +307,20 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
                 metrics[f"ex_by_path:{tier}"] = round(
                     sum(1 for e in tier_rows if e.get("verdict") == "MATCH") / len(tier_rows), 4
                 )
+    # KB 指纹分桶:与 ex_by_path 同款式 —— judged 且**全部条目** kb_rev
+    # 非空才发(半份指纹的分桶是把"缺数据"当某一版);旧文件无 kb_rev
+    # 键 → 不发(零位移)。`ex_` 前缀无 lower 关键词 → 方向 higher 兜底;
+    # 首次出现的 rev 在对比时落 unpaired(never blocks)。
+    if judged and all((e.get("kb_rev") or "").strip() for e in rows):
+        by_kb: dict[str, list] = {}
+        for e in rows:
+            by_kb.setdefault(str(e.get("kb_rev") or ""), []).append(e)
+        for rev in sorted(by_kb):
+            rev_rows = [e for e in by_kb[rev] if e.get("verdict") in _VERDICTS_JUDGED]
+            if rev_rows:
+                metrics[f"ex_by_kb_rev:{rev}"] = round(
+                    sum(1 for e in rev_rows if e.get("verdict") == "MATCH") / len(rev_rows), 4
+                )
     return metrics
 
 
