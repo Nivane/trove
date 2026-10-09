@@ -1,4 +1,6 @@
 """SemanticManager OSSIE 序列化测试(metric type round-trip)。"""
+from pathlib import Path
+
 import pytest
 
 from trove.services.semantic_layer.manage import (
@@ -68,3 +70,21 @@ def test_dump_yaml_leaves_target_untouched_when_replace_fails(tmp_path, monkeypa
     assert target.read_bytes() == before
     # 临时文件必须被清理（同目录 mkstemp，残留会污染 KB 目录）
     assert [p.name for p in tmp_path.iterdir()] == ["semantics.yml"]
+
+
+def test_dump_yaml_cleanup_failure_does_not_mask_the_original_error(
+        tmp_path, monkeypatch):
+    """unlink 自己失败时仍报真正的失败原因 —— 清理是善后,不是新错误源。"""
+    target = tmp_path / "semantics.yml"
+    target.write_text("datasets: []\n", encoding="utf-8")
+
+    def boom(*_a, **_kw):
+        raise OSError("disk full")
+
+    def unlink_boom(*_a, **_kw):
+        raise OSError("cannot unlink")
+
+    monkeypatch.setattr("os.replace", boom)
+    monkeypatch.setattr(Path, "unlink", unlink_boom)
+    with pytest.raises(OSError, match="disk full"):
+        _dump_yaml(target, {"datasets": []})

@@ -67,7 +67,12 @@ def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
     YAML，下一次 ``_load_yaml`` 只看到半个字典，而「半写状态」正是设计
     §10 指名要防的。临时文件与目标**同目录**（同一文件系统,``os.replace``
     才是原子重命名而不是跨设备拷贝）。失败时临时文件必被清理、目标逐字节
-    保持原样。
+    保持原样。序列化在 ``mkstemp`` **之前** —— yaml 自己抛错时根本没建过
+    临时文件（无残留路径）。
+
+    清理**不得掩盖原异常**：unlink 自己失败（权限/目录被撤）时吞掉它并
+    原样抛出真正的失败原因 —— 一次 I/O 失败报成另一条错误信息比它本身
+    更难排查。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(data, **_DUMP_KWARGS)
@@ -81,7 +86,10 @@ def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
             os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
