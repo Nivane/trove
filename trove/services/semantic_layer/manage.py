@@ -16,6 +16,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,10 +61,28 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
+    """原子替换落盘：临时文件写全 + fsync → ``os.replace`` 覆盖目标。
+
+    ``path.write_text`` 是截断再写 —— 中途失败（磁盘满/中断）会留下半份
+    YAML，下一次 ``_load_yaml`` 只看到半个字典，而「半写状态」正是设计
+    §10 指名要防的。临时文件与目标**同目录**（同一文件系统,``os.replace``
+    才是原子重命名而不是跨设备拷贝）。失败时临时文件必被清理、目标逐字节
+    保持原样。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.safe_dump(data, **_DUMP_KWARGS), encoding="utf-8",
-    )
+    text = yaml.safe_dump(data, **_DUMP_KWARGS)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _check_expr(expr: str, dialect: str | None, label: str) -> None:

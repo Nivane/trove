@@ -374,9 +374,15 @@ class ChangeService:
 
         顺序是承重的：digest 双检 → 应用 payload → 写前门禁 → **取齐三份
         待写内容（含 drafts/changes 的读与查找）** → 依次写 semantics /
-        drafts / changes。所有可能 raise 的读都在第一个字节落盘之前 ——
-        写区只可能「什么都没写」或「三份都写完」（I5；`_find_draft` 的
-        查找失败、`_load_yaml` 的坏文件都算在内）。
+        drafts / changes。所有**确定性**失败都在第一个字节落盘之前
+        （`_find_draft` 的查找失败、`_load_yaml` 的坏文件都算在内,已由
+        测试钉住）。
+
+        **原子性到此为止（不夸大）**：每个文件经 ``manage._dump_yaml`` 的
+        临时文件 + ``os.replace`` **单文件**原子替换落盘 —— 但三份文件之间
+        **不是事务**：I/O 失败（磁盘满/权限/中断）可留下部分已写的文件,
+        记录也可能仍是 ``open``（changes 是最后一份,还没轮到它）。恢复凭
+        git —— 已提交的主线版本是权威,工作树与它不一致时以提交为准。
 
         ``fail_prefix``:payload 应用失败的报错前缀。草稿确认路径传
         ``草稿确认失败``——收窄为委托 **不改对外消息**（管理端 400 detail
