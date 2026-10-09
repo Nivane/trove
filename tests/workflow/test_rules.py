@@ -898,3 +898,48 @@ class TestF2DateBucket:
             q, "SELECT account_id FROM loan",
             ["account_id"], [["1"], ["2"]], 2, lang="en",
         ) == (None, [])
+
+
+class TestRuleFamilies:
+    """口径级评测的家族映射:注册 ⊆ 映射表 + 逐条钉死(设计 §1.2)。"""
+
+    #: (规则名, 家族) 全表 —— 新增规则必须同时在这里登记,否则本测试红。
+    EXPECTED = {
+        "F1-a": "shape", "F1-b": "shape", "F1-d": "shape",
+        "count-multirow": "shape", "count-shape": "shape",
+        "list-zero-rows": "shape", "rate-shape": "shape",
+        "F2-a": "filter", "F2-b": "filter", "F2-c": "filter", "F2-d": "filter",
+        "scope-ambiguity": "filter",
+        "F3-a": "values", "F3-b": "values", "F3-c": "values",
+        "percent-range": "values", "ratio-int-division": "values",
+        "F4-a": "ordering", "F4-b": "ordering", "limit-without-order": "ordering",
+    }
+
+    def test_registered_rules_all_mapped(self):
+        from trove.workflow.rules import _RULES, RULE_FAMILIES
+
+        registered = {r.name for r in _RULES}
+        assert registered <= set(RULE_FAMILIES), (
+            f"未登记家族: {sorted(registered - set(RULE_FAMILIES))}"
+        )
+
+    def test_mapping_verbatim(self):
+        from trove.workflow.rules import RULE_FAMILIES
+
+        assert RULE_FAMILIES == self.EXPECTED
+
+    def test_rule_family_lookup(self):
+        from trove.workflow.rules import rule_family
+
+        assert rule_family("F1-a") == "shape"
+        assert rule_family("F2-b") == "filter"
+        assert rule_family("F3-c") == "values"
+        assert rule_family("F4-a") == "ordering"
+        assert rule_family("ratio-int-division") == "values"
+
+    def test_unknown_is_other(self):
+        from trove.workflow.rules import rule_family
+
+        assert rule_family("sql_gate") == "other"
+        assert rule_family("") == "other"
+        assert rule_family("不存在的规则") == "other"

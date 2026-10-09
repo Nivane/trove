@@ -239,6 +239,41 @@ REWRITE_RULES: frozenset[str] = frozenset({
 })
 
 
+#: 结果校验规则的家族划分(口径级评测的聚合单位,2026-10-09 设计 §1.2)。
+#: 单一定义处:评测聚合按家族归并 validation_hits;replay.py 持有本地
+#: 副本(它不能 import 本模块,见 replay._RULE_FAMILIES 注释),由测试
+#: 钉住相等。tests/workflow/test_rules.py 的元测试钉「注册表 ⊆ 本表」——
+#: 新增规则不登记家族会被拦下,而不是静默落进 other。
+#: 注意 F1-c 不存在(注册表里只有 a/b/d),清单以 :313-881 的 20 条注册为准。
+RULE_FAMILIES: dict[str, str] = {
+    "F1-a": "shape",
+    "F1-b": "shape",
+    "F1-d": "shape",
+    "count-multirow": "shape",
+    "count-shape": "shape",
+    "list-zero-rows": "shape",
+    "rate-shape": "shape",
+    "F2-a": "filter",
+    "F2-b": "filter",
+    "F2-c": "filter",
+    "F2-d": "filter",
+    "scope-ambiguity": "filter",
+    "F3-a": "values",
+    "F3-b": "values",
+    "F3-c": "values",
+    "percent-range": "values",
+    "ratio-int-division": "values",
+    "F4-a": "ordering",
+    "F4-b": "ordering",
+    "limit-without-order": "ordering",
+}
+
+
+def rule_family(name: str) -> str:
+    """规则名 → 家族;未登记(含 sql_gate 等非规则 hit)→ ``"other"``。"""
+    return RULE_FAMILIES.get(name, "other")
+
+
 def _rule(name: str):
     """Register a rule (definition order = evaluation order)."""
 
