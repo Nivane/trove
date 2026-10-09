@@ -30,7 +30,7 @@ _QUESTION_KEYS = {"qid", "db_id", "question", "evidence", "gold_sql"}
 #: 结果条目的记录完整度字段。缺字段不会让任何指标报错,只会让它**算在半份
 #: 样本上**(tokens 缺 → 成本指标只剩老条目;path 缺 → 分档 EX 把缺数据当
 #: llm 档)。补录后由 --require-fields 强制 100%,今天只报告。
-RESULT_FIELDS = ("tokens", "elapsed_ms", "compile_meta", "path", "plan", "matched_tables")
+RESULT_FIELDS = ("tokens", "elapsed_ms", "compile_meta", "path", "plan", "matched_tables", "kb_rev")
 
 
 def _recorded(value: Any) -> bool:

@@ -473,8 +473,13 @@ def format_entry(
     tokens: dict[str, int] | None = None, elapsed_ms: int = 0,
     gold_sql: str = "", kb_hits: list | None = None,
     qid: str = "",
+    kb_rev: str = "", kb_files: dict | None = None,
 ) -> dict[str, Any]:
-    """把一次运行折叠成回放条目(录制侧最小契约)。"""
+    """把一次运行折叠成回放条目(录制侧最小契约)。
+
+    ``kb_rev``/``kb_files``:本 run 的 KB 内容指纹(设计 2026-10-09
+    §3.3);老调用点不传 → 空值(旧条目无键的缺席容忍由消费侧负责)。
+    """
     return {
         "run_id": run_id, "question": question,
         "pred_sql": pred_sql, "row_count": row_count, "verdict": verdict,
@@ -485,6 +490,7 @@ def format_entry(
         "n_candidates": n_candidates, "tokens": tokens or {},
         "elapsed_ms": elapsed_ms, "gold_sql": gold_sql,
         "kb_hits": kb_hits or [], "qid": qid,
+        "kb_rev": kb_rev, "kb_files": kb_files or {},
     }
 
 

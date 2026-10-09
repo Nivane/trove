@@ -501,3 +501,18 @@ class TestCaliberBlock:
         """caliber_n 同 avg_tokens_n:分母元信息不进快照(冻结基线零位移)。"""
         m = scorecard_metrics(score_replay([_entry()]))
         assert "caliber_n" not in m
+
+
+class TestFormatEntryKbRev:
+    """kb_rev 盖章的录制侧契约(设计 §3.3 行 2):新 kwargs 老调用不变。"""
+
+    def test_kwargs_stamped(self):
+        e = format_entry("r1", "q", kb_rev="abc123",
+                         kb_files={"semantics.yml": "d1"})
+        assert e["kb_rev"] == "abc123"
+        assert e["kb_files"] == {"semantics.yml": "d1"}
+
+    def test_defaults_empty_absent_tolerant(self):
+        e = format_entry("r1", "q")
+        assert e["kb_rev"] == ""
+        assert e["kb_files"] == {}

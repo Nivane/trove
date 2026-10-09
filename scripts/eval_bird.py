@@ -177,6 +177,8 @@ def _result_entry(
                          链路归因的离线复算输入)
       matched_tables   — schema_linking 命中的表(非空才写;
                          链路归因第一环:schema_linking 是否先算对)
+      kb_rev/kb_files  — 本 run 的 KB 内容指纹:两键由 done() 统一盖章
+                         (全程同一份快照;KB 取不到时两键缺席,设计 §3.3)
     """
     entry: dict[str, Any] = {
         "run_id": run_id, "question": question, "evidence": evidence,
@@ -492,6 +494,12 @@ async def main() -> None:
     )
     graph = build_graphs(services, scaling=args.scaling)["reflection"]
 
+    # KB 指纹(设计 2026-10-09 §3.3 盖章点 1):跑题前确保镜像同步,取
+    # **一次**快照全程共用(避免逐题读表);取不到(None)→ done() 不盖
+    # 两键(缺席容忍)。
+    await kb.ensure_synced(args.db_id)
+    kb_snap = await kb.kb_rev(args.db_id)
+
     matched = 0
     failures = {"generation": 0, "execution": 0, "mismatch": 0, "refused": 0,
                 "gold_error": 0, "crash": 0}
@@ -519,6 +527,10 @@ async def main() -> None:
         stamp_elapsed(entry, t0)
         entry.setdefault("oracle", bool(state.oracle_tables))
         entry.setdefault("scaling", args.scaling)
+        # KB 指纹:哪一版 KB 给出的这份判定(全程同一份快照)。
+        if kb_snap:
+            entry.setdefault("kb_rev", kb_snap["rev"])
+            entry.setdefault("kb_files", kb_snap["files"])
         results.append(entry)
         record_result(entry)
         return entry

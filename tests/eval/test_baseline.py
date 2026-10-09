@@ -131,6 +131,7 @@ def test_field_coverage_empty_results():
     cov = field_coverage([])
     assert set(cov) == {
         "tokens", "elapsed_ms", "compile_meta", "path", "plan", "matched_tables",
+        "kb_rev",
     }
     assert all(v == 0.0 for v in cov.values())
 
@@ -174,3 +175,10 @@ def test_check_integrity_require_fields_unknown_name(tmp_path):
     report = check_integrity(qp, rp, require_fields=["nope"])
     assert report["ok"] is False
     assert any("未知" in p for p in report["problems"])
+
+
+def test_result_fields_include_kb_rev():
+    """kb_rev 进记录完整度清单:补录后由 --require-fields 强制 100%(今天只报告)。"""
+    from trove.eval.baseline import RESULT_FIELDS
+
+    assert "kb_rev" in RESULT_FIELDS

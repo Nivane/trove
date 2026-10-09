@@ -145,6 +145,11 @@ async def cmd_record(args) -> int:
         print(f"datasource error: {e}", file=sys.stderr)
         return 2
     kb = KbService(Path.cwd())
+    # KB 指纹(与 eval_bird 同款):镜像同步后取一次快照,全程共用;
+    # 取不到(None)→ 不盖两键(缺席容忍)。
+    await kb.ensure_synced(registry.default_name)
+    kb_snap = await kb.kb_rev(registry.default_name or "")
+    kb_kw = {"kb_rev": kb_snap["rev"], "kb_files": kb_snap["files"]} if kb_snap else {}
     services = GraphServices(
         llm=LLMGateway(providers=config.providers),
         catalog=CatalogService(registry),
@@ -174,6 +179,7 @@ async def cmd_record(args) -> int:
             append_entry(args.output, format_entry(
                 run_id, question, verdict="ERROR", gold_sql=gold.get(question, ""),
                 elapsed_ms=int((time.monotonic() - t0) * 1000),
+                **kb_kw,
             ))
             print(f"  [{i}/{len(questions)}] CRASH: {e}", flush=True)
             continue
@@ -196,6 +202,7 @@ async def cmd_record(args) -> int:
             gold_sql=gold.get(question, ""),
             kb_hits=final.kb_hits or [],
             qid=qids.get(question, ""),
+            **kb_kw,
         )
         append_entry(args.output, entry)
         print(f"  [{i}/{len(questions)}] {entry['verdict']} "
