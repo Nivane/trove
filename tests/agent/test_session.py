@@ -2096,3 +2096,96 @@ class TestConfidenceInSummary:
                 steps[event["node"]] = event
 
         assert steps["select"]["detail"]["confidence"] == pytest.approx(1.0)
+
+
+class TestKbRevAudit:
+    """KB 指纹进审计 details(设计 §3.3 行 4):best-effort、缺席容忍。"""
+
+    def _auth(self):
+        class _Store:
+            async def get_user_by_id(self, uid):
+                return {"id": 7, "username": "bob"}
+
+        class _Auth:
+            def __init__(self):
+                self.entries = []
+                self.store = _Store()
+
+            async def record_audit(self, action, user=None, method="",
+                                   path="", status=None, details=None):
+                self.entries.append({"action": action, "user": user,
+                                     "details": details})
+
+        return _Auth()
+
+    def _manager(self, auth, kb=None, connectors=None):
+        from trove.agent.session import SessionManager
+
+        return SessionManager(None, None, None, None,
+                              kb=kb, connectors=connectors, auth=auth)
+
+    def _session(self):
+        return type("S", (), {"user_id": "7"})()
+
+    async def test_audit_query_carries_kb_kwarg(self):
+        auth = self._auth()
+        manager = self._manager(auth)
+        final = WorkflowState(session_id="s1", question="q", run_id="r1",
+                              datasource="demo")
+        await manager._audit_query(
+            self._session(), final,
+            kb={"kb_rev": "abc123", "kb_files": {"semantics.yml": "d1"}})
+        d = auth.entries[0]["details"]
+        assert d["kb_rev"] == "abc123"
+        assert d["kb_files"] == {"semantics.yml": "d1"}
+
+    async def test_audit_refusal_carries_kb_kwarg(self):
+        auth = self._auth()
+        manager = self._manager(auth)
+        final = WorkflowState(session_id="s1", question="q", run_id="r1",
+                              datasource="demo",
+                              refusal={"reason": "no_model"})
+        await manager._audit_refusal(
+            self._session(), final, kb={"kb_rev": "abc123", "kb_files": {}})
+        assert auth.entries[0]["details"]["kb_rev"] == "abc123"
+
+    async def test_audit_without_kb_kwarg_unchanged(self):
+        """缺省 kwarg ⇒ details 不含两键(老调用点零位移)。"""
+        auth = self._auth()
+        manager = self._manager(auth)
+        final = WorkflowState(session_id="s1", question="q", run_id="r1",
+                              datasource="demo")
+        await manager._audit_query(self._session(), final)
+        d = auth.entries[0]["details"]
+        assert "kb_rev" not in d and "kb_files" not in d
+
+    async def test_snapshot_missing_kb_is_empty(self):
+        manager = self._manager(None)
+        final = WorkflowState(session_id="s1", question="q", datasource="demo")
+        assert await manager._kb_rev_snapshot(final) == {}
+
+    async def test_snapshot_failure_is_empty(self):
+        class _Kb:
+            async def kb_rev(self, datasource):
+                raise RuntimeError("mirror down")
+
+        manager = self._manager(None, kb=_Kb())
+        final = WorkflowState(session_id="s1", question="q", datasource="demo")
+        assert await manager._kb_rev_snapshot(final) == {}
+
+    async def test_snapshot_falls_back_to_default_name(self):
+        seen = {}
+
+        class _Kb:
+            async def kb_rev(self, datasource):
+                seen["ds"] = datasource
+                return {"rev": "r1", "files": {"semantics.yml": "d1"}}
+
+        class _Connectors:
+            default_name = "demo"
+
+        manager = self._manager(None, kb=_Kb(), connectors=_Connectors())
+        final = WorkflowState(session_id="s1", question="q")  # datasource 空
+        snap = await manager._kb_rev_snapshot(final)
+        assert snap == {"kb_rev": "r1", "kb_files": {"semantics.yml": "d1"}}
+        assert seen["ds"] == "demo"

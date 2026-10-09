@@ -1678,11 +1678,14 @@ class SessionManager:
         # 语义生长候选(补丁 3「候选收件箱」):软 MISS 的未声明组件 →
         # pending 语义草稿(确定性、零 LLM;管理员在收件箱确认)。
         await self._capture_candidates(final)
+        # KB 指纹快照(设计 2026-10-09 §3.3):归因增强 ——「这条回答是哪
+        # 一版 KB 给的」在管理端审计里可查。best-effort,取不到不盖键。
+        kb_snap = await self._kb_rev_snapshot(final)
         # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
-        await self._audit_query(session, final)
+        await self._audit_query(session, final, kb=kb_snap)
         # 拒绝审计(独立 action):拒绝轮为什么被拒 —— 报表的可靠信号。
         # 紧跟 query.execute:同一汇合点,四条运行路径都走 _record_exchange。
-        await self._audit_refusal(session, final)
+        await self._audit_refusal(session, final, kb=kb_snap)
         # 授权与脱敏审计:被拦了 / 改了哪些字段 / 谁看了原文(设计 §6.3)。
         # 与上一行同一个汇合点 —— 四条运行路径都走 _record_exchange。
         await self._audit_authz(session, final)
@@ -1777,7 +1780,33 @@ class SessionManager:
             return None
         return {"id": row["id"], "username": row["username"]}
 
-    async def _audit_query(self, session: Session, final: WorkflowState) -> None:
+    async def _kb_rev_snapshot(self, final: WorkflowState) -> dict[str, Any]:
+        """本 run 的 KB 指纹快照(审计 details 的归因键;best-effort)。
+
+        数据源解析与记忆/候选消费同款(``final.datasource or
+        connectors.default_name``);KB 指纹只读镜像(``KbService.kb_rev``),
+        取不到 / 无 ds → {} → 审计两键省略,绝不阻断回答。
+        """
+        if self._kb is None:
+            return {}
+        datasource = final.datasource or (
+            self._connectors.default_name if self._connectors is not None else None
+        ) or ""
+        if not datasource:
+            return {}
+        try:
+            snap = await self._kb.kb_rev(datasource)
+        except Exception as e:  # 指纹失败绝不阻断回答/审计
+            logger.debug("kb_rev snapshot skipped (%s): %s", type(e).__name__, e)
+            return {}
+        if not snap:
+            return {}
+        return {"kb_rev": snap["rev"], "kb_files": snap["files"]}
+
+    async def _audit_query(
+        self, session: Session, final: WorkflowState, *,
+        kb: dict[str, Any] | None = None,
+    ) -> None:
         """查询执行审计 —— ``query.execute`` 写入 audit_log。
 
         管理端 /admin/audit 可据此回答「谁在什么时候查了什么」。
@@ -1803,6 +1832,8 @@ class SessionManager:
             # 才知道当时的身份。
             if (final.principal or {}).get("on_behalf_of"):
                 details["on_behalf_of"] = final.principal["on_behalf_of"]
+            if kb:  # KB 指纹(设计 2026-10-09 §3.3):这条 SQL 是哪一版 KB 给的
+                details.update(kb)
             await self._auth.record_audit(
                 "query.execute",
                 user=await self._audit_user(session, final),
@@ -1811,7 +1842,10 @@ class SessionManager:
         except Exception as e:  # 审计失败绝不影响查询链路
             logger.debug("query audit skipped (%s): %s", type(e).__name__, e)
 
-    async def _audit_refusal(self, session: Session, final: WorkflowState) -> None:
+    async def _audit_refusal(
+        self, session: Session, final: WorkflowState, *,
+        kb: dict[str, Any] | None = None,
+    ) -> None:
         """拒绝审计 —— ``query.refused`` 写入 audit_log。
 
         ``query.execute`` 对拒绝轮也会写一行,但它答不了「**为什么**被拒」:
@@ -1846,6 +1880,8 @@ class SessionManager:
                     details["miss_reason"] = str(miss["reason"])[:120]
                 if miss.get("component"):
                     details["miss_component"] = str(miss["component"])[:300]
+            if kb:  # KB 指纹(设计 2026-10-09 §3.3):这条 SQL 是哪一版 KB 给的
+                details.update(kb)
             await self._auth.record_audit(
                 "query.refused",
                 user=await self._audit_user(session, final),
