@@ -16,7 +16,9 @@ def test_defaults_match_field_defaults(tmp_path):
     conf = _load(tmp_path, "target: mock/model\n")
     assert conf.semantic_changes == ChangesConfig()
     assert conf.semantic_changes.retain_staging_days == 30
-    assert conf.semantic_changes.sandbox_by_origin == ["draft_confirm", "auto_apply"]
+    # 默认空 = 开单不自动预跑（旧默认 [draft_confirm, auto_apply] 是死配置:
+    # 两条包装路径不经 open()、不落快照,永远触发不了沙箱）。
+    assert conf.semantic_changes.sandbox_by_origin == []
 
 
 def test_top_level_spelling(tmp_path):

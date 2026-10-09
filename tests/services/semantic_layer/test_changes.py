@@ -77,6 +77,19 @@ async def test_open_auto_verify_by_origin(kb: KbService):
     assert v["verdict"] in ("neutral", "not_applicable", "improves")
 
 
+async def test_open_default_config_does_not_auto_verify(kb: KbService):
+    """默认 ``[]`` = 开单不自动预跑（上一条的负方向）。
+
+    生效面只覆盖经 ``open()`` 的 ``manual``;旧默认 ``[draft_confirm,
+    auto_apply]`` 与之不相交 —— 永不触发却读起来像开着验证。默认值的
+    负方向必须钉住,否则「配了但永不生效」换一种形式就会回来。
+    """
+    svc = _svc(kb)
+    assert svc._config.sandbox_by_origin == []
+    rec = await svc.open(DS, origin="manual", payloads=[PAYLOAD])
+    assert svc.detail(DS, rec["id"]).get("verification") is None
+
+
 async def test_list_filters_by_status(kb: KbService):
     svc = _svc(kb)
     a = await svc.open(DS, origin="manual", payloads=[PAYLOAD])
