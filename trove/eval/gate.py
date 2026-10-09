@@ -66,7 +66,7 @@ LOWER_BETTER = {
 #: = token 均值**实际覆盖**的条目数 —— 两侧覆盖不同时均值是分母假象下的
 #: 数,2026-10 实测过一次:基线 32 条只有 19 条录了 tokens,gate 报
 #: avg_tokens −38%,同 19 题配对口径的真值是 −20.3%。
-_COUNT_ONLY_KEYS = frozenset({"n", "n_judged", "avg_tokens_n"})
+_COUNT_ONLY_KEYS = frozenset({"n", "n_judged", "avg_tokens_n", "caliber_n"})
 
 #: 同一个 ``avg_tokens_n`` 计数支撑的两个成本指标(均值与总和都只在
 #: "有 token 数据的条目"上有意义)—— 行内标注覆盖数时两者都标。
@@ -279,6 +279,14 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     cache_stats = cache_hit_stats(rows)
     if cache_stats is not None:
         metrics["cache_hit_rate"] = round(float(cache_stats["cache_hit_rate"]), 4)
+    # 口径拦截率:与 score_replay 走**同一个函数**(import 复用,不抄一遍)。
+    # 分母 = 载有 validation_hits 键 且 pred_sql 非空 且 path != "refused"
+    # 的行;一行都没测过 → 不发键(旧格式文件零位移)。
+    from trove.eval.replay import caliber_block_stats
+
+    caliber = caliber_block_stats(rows)
+    if caliber is not None:
+        metrics.update(caliber)
     # 墙钟:与 score_replay 同规则(有条目带 elapsed_ms 才发键)。
     # 冻结基线无 elapsed → 不发;补录后自动入基线并被门覆盖。
     elapsed = [int(e.get("elapsed_ms") or 0) for e in rows]
@@ -379,8 +387,8 @@ def _direction_of(metric: str) -> str:
     """指标方向:known set 优先,否则按名称启发式(rate 后缀默认 higher)。"""
     if metric in HIGHER_BETTER or metric in LOWER_BETTER:
         return "higher" if metric in HIGHER_BETTER else "lower"
-    # 成本/失败关键词 → lower;其余按名称启发
-    if any(k in metric for k in ("token", "elapsed", "retry", "fail", "zero", "cost")):
+    # 成本/失败/拦截关键词 → lower;其余按名称启发
+    if any(k in metric for k in ("token", "elapsed", "retry", "fail", "zero", "cost", "block")):
         return "lower"
     return "higher"
 

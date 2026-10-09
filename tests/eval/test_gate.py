@@ -12,6 +12,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 from trove.eval.gate import (
     DEFAULT_TOLERANCE,
     HIGHER_BETTER,
+    _direction_of,
     compare_metrics,
     load_entries,
     metrics_from_entries,
@@ -213,6 +214,24 @@ class TestMetricParity:
         replay_m2 = scorecard_metrics(score_replay(rows2))
         assert gate_m2["cache_hit_rate"] == 0.3
         assert replay_m2["cache_hit_rate"] == 0.3
+
+    def test_caliber_metrics_paired_or_absent(self):
+        """caliber_* 不进 SHARED(条件发键:无 validation_hits 键的新旧文件不发),
+        但两侧必须**同时缺席/同时相等** —— 单侧发键会让门与基线错位。
+        注:caliber_n 是分子分母元信息,gate 发、scorecard 快照过滤(同
+        avg_tokens_n),不在此断言逐项相等。"""
+        rows = [_eval_entry("MATCH"), _eval_entry("MISMATCH")]
+        gate_m = metrics_from_entries(rows)
+        replay_m = scorecard_metrics(score_replay(rows))
+        for key in ("caliber_block", "caliber_block:shape", "caliber_block:filter"):
+            assert key in gate_m, f"门侧缺 {key}"
+            assert key in replay_m, f"回放侧缺 {key}"
+            assert gate_m[key] == replay_m[key]
+
+        bare = [{"run_id": "e1", "question": "q", "verdict": "MATCH",
+                 "pred_sql": "SELECT 1"}]
+        assert "caliber_block" not in metrics_from_entries(bare)
+        assert "caliber_block" not in scorecard_metrics(score_replay(bare))
 
 
 def _tok_entry(key: str, total: int) -> dict:
@@ -519,3 +538,50 @@ class TestFileIO:
                      json.dumps(_eval_entry("MISMATCH")) + "\n", encoding="utf-8")
         s = score_from_file(p)
         assert s["ex"] == 0.5
+
+
+class TestCaliberBlockGate:
+    """口径拦截率过 gate(设计 §1.4):发键守卫 + 方向更低 + 计数键跳过。"""
+
+    def test_guard_absent_without_hits_key(self):
+        """旧格式文件(条目无 validation_hits 键)→ 不发任何键(零位移)。"""
+        rows = [{"run_id": "e1", "question": "q", "verdict": "MATCH",
+                 "pred_sql": "SELECT 1"}]
+        m = metrics_from_entries(rows)
+        assert not any(k.startswith("caliber_") for k in m)
+
+    def test_emits_block_rate_and_families(self):
+        rows = [
+            _eval_entry("MATCH", validation_hits=[{"name": "F1-a"}]),
+            _eval_entry("MISMATCH", validation_hits=[{"rule": "validator:no_null"}]),
+        ]
+        m = metrics_from_entries(rows)
+        assert m["caliber_block"] == 1.0
+        assert m["caliber_block:shape"] == 0.5
+        assert m["caliber_block:validator"] == 0.5
+        assert m["caliber_n"] == 2
+
+    def test_refused_and_no_sql_rows_excluded(self):
+        rows = [
+            _eval_entry("REFUSED", pred_sql="", path="refused",
+                        validation_hits=[{"name": "F2-a"}]),
+            _eval_entry("MATCH", pred_sql="", validation_hits=[{"name": "F2-a"}]),
+            _eval_entry("MATCH", validation_hits=[]),
+        ]
+        m = metrics_from_entries(rows)
+        assert m["caliber_n"] == 1
+        assert m["caliber_block"] == 0.0
+
+    def test_direction_is_lower_and_rise_regresses(self):
+        assert _direction_of("caliber_block") == "lower"
+        assert _direction_of("caliber_block:filter") == "lower"
+        report = compare_metrics({"caliber_block": 0.10}, {"caliber_block": 0.30})
+        by = {mr.metric: mr for mr in report.metrics}
+        assert by["caliber_block"].ok is False
+        assert by["caliber_block"] in report.regressions
+
+    def test_caliber_n_is_count_only(self):
+        """计数键既不入判定也不入 unpaired(同 n / avg_tokens_n)。"""
+        report = compare_metrics({"caliber_n": 10.0}, {"caliber_n": 20.0})
+        assert all(mr.metric != "caliber_n" for mr in report.metrics)
+        assert "caliber_n" not in report.unpaired
