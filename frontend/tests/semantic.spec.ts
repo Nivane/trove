@@ -186,6 +186,7 @@ const AUDIT = [
 
 let DETAIL: Record<string, unknown>
 let FAIL_DETAIL: ApiError | null = null
+let FAIL_CHANGE_DETAIL: ApiError | null = null
 let DRIFT_CHECK_ERROR: ApiError | null = null
 let VALIDATE: (body: Record<string, any>) => Record<string, unknown>
 let PREVIEW: (body: Record<string, any>) => Record<string, unknown>
@@ -248,6 +249,7 @@ function resetFixtures() {
     },
   }
   FAIL_DETAIL = null
+  FAIL_CHANGE_DETAIL = null
   DRIFT_CHECK_ERROR = null
   VALIDATE = () => OK_VALIDATE
   PREVIEW = () => ({
@@ -271,7 +273,10 @@ function mockApi() {
       return { semantic: clone(DETAIL) }
     }
     if (path.includes('/history')) return { history: clone(HISTORY) }
-    if (/\/changes\/[^/]+$/.test(path)) return { change: clone(CHANGE_DETAIL) }
+    if (/\/changes\/[^/]+$/.test(path)) {
+      if (FAIL_CHANGE_DETAIL) throw FAIL_CHANGE_DETAIL
+      return { change: clone(CHANGE_DETAIL) }
+    }
     if (/\/changes$/.test(path)) return { changes: [clone(CHANGE_DETAIL)] }
     if (path.startsWith('/v1/admin/audit')) return clone({ audit: AUDIT, total: AUDIT.length })
     return {}
@@ -940,6 +945,19 @@ describe('SemanticView', () => {
     await settle()
     expect(router.currentRoute.value.query.q).toBeUndefined()
     expect(view.findAll('.dt-row').length).toBeGreaterThan(0)
+  })
+
+  it('a failed change-detail GET shows an error line, not a permanent Loading', async () => {
+    // 只 toast 会把抽屉永远留在 Loading —— 而「空态」与「取失败」同形。
+    mockApi()
+    FAIL_CHANGE_DETAIL = new ApiError(500, 'change detail exploded')
+    await mountView('/admin/semantic?ds=demo&tab=changes&change=c1')
+    await settle()
+
+    const panel = drawer()
+    expect(panel.textContent).toContain('Could not load the change detail')
+    expect(panel.textContent).toContain('change detail exploded')
+    expect(panel.textContent).not.toContain('Loading…')
   })
 
   it('?change=<id> deep link fetches the change detail on first paint', async () => {

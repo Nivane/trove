@@ -5,6 +5,8 @@ describe('semantic changes helpers', () => {
   it('maps statuses to tones', () => {
     expect(changeStatusTone('open')).toBe('warn')
     expect(changeStatusTone('merged')).toBe('ok')
+    // approved 是后端 _STATUSES 里声明得出来的状态(不应落 muted 灰)
+    expect(changeStatusTone('approved')).toBe('ok')
     expect(changeStatusTone('rejected')).toBe('muted')
     expect(changeStatusTone('stale')).toBe('danger')
     expect(changeStatusTone('whatever')).toBe('muted')

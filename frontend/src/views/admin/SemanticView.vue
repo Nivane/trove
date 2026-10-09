@@ -180,6 +180,7 @@ function resetViewState() {
   checkError.value = ''
   changesLoaded.value = false
   changeDetail.value = null
+  changeDetailError.value = ''
   changeRejectReason.value = ''
   changeRejectError.value = ''
 }
@@ -863,22 +864,27 @@ function openDraftDrawer(d: SemanticDraft) {
 const changes = ref<SemanticChangeRecord[]>([])
 const changesLoaded = ref(false)
 const changeDetail = ref<SemanticChangeDetail | null>(null)
+const changeDetailError = ref('')
 const changeAction = ref<'merge' | 'verify' | 'reject' | null>(null)
 const changesLoading = ref(false)
 const changeRejectReason = ref('')
 const changeRejectError = ref('')
 
 async function loadChanges() {
-  if (!values.ds) return
+  const ds = values.ds
+  if (!ds) return
   changesLoading.value = true
   try {
-    changes.value = (await apiGet<{ changes: SemanticChangeRecord[] }>(
-      `/v1/admin/semantic/${encodeURIComponent(values.ds)}/changes`)).changes ?? []
+    const body = await apiGet<{ changes: SemanticChangeRecord[] }>(
+      `/v1/admin/semantic/${encodeURIComponent(ds)}/changes`)
+    if (values.ds !== ds) return // raced with a datasource switch
+    changes.value = body.changes ?? []
     changesLoaded.value = true
   } catch (e) {
+    if (values.ds !== ds) return
     toastError(e)
   } finally {
-    changesLoading.value = false
+    if (values.ds === ds) changesLoading.value = false
   }
 }
 
@@ -902,14 +908,20 @@ watch(
   [() => values.change, () => values.ds],
   async ([id]) => {
     changeDetail.value = null
+    changeDetailError.value = ''
     if (!id) return
     const ds = values.ds
     if (!ds) return
     try {
-      changeDetail.value = (await apiGet<{ change: SemanticChangeDetail }>(
+      const body = await apiGet<{ change: SemanticChangeDetail }>(
         `/v1/admin/semantic/${encodeURIComponent(ds)}/changes/${encodeURIComponent(id)}`,
-      )).change
+      )
+      if (values.ds !== ds || values.change !== id) return // raced
+      changeDetail.value = body.change
     } catch (e) {
+      if (values.ds !== ds || values.change !== id) return
+      // 只 toast 会把抽屉永远留在 Loading(空态与失败同形) —— 页面内也要说
+      changeDetailError.value = errMsg(e)
       toastError(e)
     }
   },
@@ -2805,6 +2817,9 @@ const pageTitle = computed(() =>
           <p class="sem-block-text">{{ changeDetail.reject_reason }}</p>
         </section>
       </div>
+      <p v-else-if="changeDetailError" class="form-error" role="alert">
+        {{ t('semChangeDetailFailed', ui.lang) }} · {{ changeDetailError }}
+      </p>
       <p v-else class="cell-muted">{{ t('semLoading', ui.lang) }}</p>
 
       <template #footer>

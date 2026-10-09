@@ -92,6 +92,7 @@ export const messages = {
     semChangeOrigin: '来源',
     semChangeSummary: '摘要',
     semChangeSubjects: '主体数',
+    semChangeDetailFailed: '变更详情读取失败 —— 读不到不等于变更不存在',
     semVerifyTitle: '合入前验证(编译回放)',
     semVerifyNowBroken: '将失效',
     semVerifyFixed: '修复',
@@ -2202,6 +2203,8 @@ export const messages = {
     semChangeOrigin: 'Source',
     semChangeSummary: 'Summary',
     semChangeSubjects: 'Subjects',
+    semChangeDetailFailed:
+      'Could not load the change detail — unreadable here is not the same as missing',
     semVerifyTitle: 'Pre-merge verification (compile replay)',
     semVerifyNowBroken: 'Will break',
     semVerifyFixed: 'Fixed',

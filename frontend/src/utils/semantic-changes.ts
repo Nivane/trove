@@ -5,7 +5,7 @@
 import type { SemanticImpact } from '../api/types'
 
 export function changeStatusTone(status: string): 'ok' | 'warn' | 'danger' | 'muted' {
-  if (status === 'merged') return 'ok'
+  if (status === 'merged' || status === 'approved') return 'ok'
   if (status === 'open') return 'warn'
   if (status === 'stale') return 'danger'
   return 'muted'
