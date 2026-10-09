@@ -170,6 +170,33 @@ _CACHE_FIELDS = (
     "cached_tokens",
 )
 
+#: 规则家族表的本地副本:**replay 不 import 任何 trove 模块**(同
+#: ``_CACHE_FIELDS``,gate 依赖 replay,反向依赖会成环;离线回放要能
+#: 脱离 runtime 独立跑)。权威定义在 ``trove.workflow.rules.RULE_FAMILIES``,
+#: 由测试钉住相等 —— 家族漂移了「门算的拦截率」与「基线钉的」就对不上。
+_RULE_FAMILIES: dict[str, str] = {
+    "F1-a": "shape",
+    "F1-b": "shape",
+    "F1-d": "shape",
+    "count-multirow": "shape",
+    "count-shape": "shape",
+    "list-zero-rows": "shape",
+    "rate-shape": "shape",
+    "F2-a": "filter",
+    "F2-b": "filter",
+    "F2-c": "filter",
+    "F2-d": "filter",
+    "scope-ambiguity": "filter",
+    "F3-a": "values",
+    "F3-b": "values",
+    "F3-c": "values",
+    "percent-range": "values",
+    "ratio-int-division": "values",
+    "F4-a": "ordering",
+    "F4-b": "ordering",
+    "limit-without-order": "ordering",
+}
+
 
 def _tokens(e: dict[str, Any]) -> dict[str, int]:
     t = e.get("tokens") or {}
@@ -219,6 +246,68 @@ def cache_hit_stats(entries: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
         "cache_hit_tokens": hit_total,
         "cache_prompt_tokens": prompt_total,
     }
+
+
+#: 口径拦截率的家族清单(固定键序;``caliber_block`` 全家族合并 + 每族一枚)。
+_CALIBER_FAMILIES = ("filter", "shape", "values", "ordering", "plan", "validator", "other")
+
+
+def _rule_family(name: str) -> str:
+    return _RULE_FAMILIES.get(name, "other")
+
+
+def hit_family(hit: dict) -> str:
+    """一次 validation hit → 家族(口径拦截率的分组单位,设计 §1.1)。
+
+    四种形状:规则链 ``{"name": <rule_name>}`` / 计划检查 ``{"rule":
+    "answer-columns"|"extra-columns"}`` / org validator ``{"rule":
+    "validator:<name>"}`` / sql_gate 等未知名 → other。``name`` 分支优先。
+    形状残缺(非 dict / 两字段全缺)→ other,绝不抛异常(评测聚合不许因
+    一条坏 hit 整段崩)。
+    """
+    if not isinstance(hit, dict):
+        return "other"
+    name = str(hit.get("name") or "")
+    if name:
+        return _rule_family(name)
+    rule = str(hit.get("rule") or "")
+    if rule in ("answer-columns", "extra-columns"):
+        return "plan"
+    if rule.startswith("validator:"):
+        return "validator"
+    return "other"
+
+
+def caliber_block_stats(rows) -> dict | None:
+    """口径拦截率(设计 §1.3):分母 = 载有 ``validation_hits`` 键 且
+    ``pred_sql`` 非空 且 ``path != "refused"`` 的行 —— 拒绝轮没有 SQL
+    可言(eval_bird 警告过 compiled 标志/state.sql 可能是上一轮残留,
+    双条件保险);没有 SQL 就谈不上口径,不入分母。
+
+    返回键固定(零也发 —— 0 → 非 0 的回归才有基线可比);一行都没测过
+    (分母为空)→ None,消费侧不发键(旧格式文件零位移)。
+    """
+    covered = [
+        r for r in rows
+        if "validation_hits" in r
+        and str(r.get("pred_sql") or "").strip()
+        and r.get("path") != "refused"
+    ]
+    if not covered:
+        return None
+
+    def rate(fams: tuple) -> float:  # 该行任一 hit 命中 fams 即算
+        return round(
+            sum(
+                1 for r in covered
+                if any(hit_family(h) in fams for h in r["validation_hits"] or [])
+            ) / len(covered),
+            4,
+        )
+
+    out: dict = {"caliber_block": rate(_CALIBER_FAMILIES), "caliber_n": len(covered)}
+    out.update({f"caliber_block:{fam}": rate((fam,)) for fam in _CALIBER_FAMILIES})
+    return out
 
 
 def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -299,6 +388,11 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
     cache_stats = cache_hit_stats(rows)
     if cache_stats is not None:
         out.update(cache_stats)
+    # 口径拦截率:与 gate 走**同一个函数**(import 复用,门与基线同一份
+    # 口径);一行都没测过 → None → 不发键(旧录制零位移)。
+    caliber = caliber_block_stats(rows)
+    if caliber is not None:
+        out.update(caliber)
     # 一次通过率只在有可判题时发键:replay.jsonl 的 OK 词表下它恒 0,
     # 发出来是"测不了"冒充"测得是零"。
     if ex_judged:
@@ -353,6 +447,12 @@ def scorecard_metrics(score: dict[str, Any]) -> dict[str, float]:
     # 缓存命中率只进这个键(tokens 明细留给 score_replay 的输出侧)
     if score.get("cache_hit_rate") is not None:
         metrics["cache_hit_rate"] = float(score["cache_hit_rate"])
+    # 口径拦截率:家族分解的 rate 键全进;**caliber_n 是分母元信息,不进**
+    # 口径快照(同 avg_tokens_n 先例 —— 冻结基线靠它的缺席保持零位移)。
+    if score.get("caliber_block") is not None:
+        for key, value in score.items():
+            if key == "caliber_block" or key.startswith("caliber_block:"):
+                metrics[key] = float(value)
     for key in ("avg_elapsed_ms", "total_elapsed_ms"):
         if score.get(key) is not None:
             metrics[key] = float(score[key])

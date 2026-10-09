@@ -7,11 +7,14 @@ import json
 import pytest
 
 from trove.eval.replay import (
+    _CALIBER_FAMILIES,
     append_entry,
     cache_hit_stats,
+    caliber_block_stats,
     completed,
     first_pass,
     format_entry,
+    hit_family,
     load_entries,
     normalize_sql,
     recovered,
@@ -417,3 +420,84 @@ class TestScorecardMetrics:
         assert "first_pass" not in m    # OK 词表无判题
         assert "gold_match" not in m    # 无 gold
         assert "avg_elapsed_ms" not in m  # 未测墙钟
+
+
+class TestCaliberBlock:
+    """口径拦截率聚合(设计 §1.3):四形状归族 + 双条件分母 + 零也发键。"""
+
+    def test_hit_family_four_shapes(self):
+        assert hit_family({"name": "F1-a", "reason": "[F1-a] …"}) == "shape"
+        assert hit_family({"rule": "answer-columns", "reason": "…"}) == "plan"
+        assert hit_family({"rule": "extra-columns", "reason": "…"}) == "plan"
+        assert hit_family({"rule": "validator:no_null", "reason": "…"}) == "validator"
+        assert hit_family({"name": "sql_gate", "reason": "…"}) == "other"
+        assert hit_family({"rule": "未知-rule"}) == "other"
+        assert hit_family({}) == "other"
+
+    def test_hit_family_malformed_never_crashes(self):
+        """形状残缺(非 dict / 两字段全缺)→ other,不崩。"""
+        assert hit_family("F1-a") == "other"      # 不是 dict
+        assert hit_family(None) == "other"
+        assert hit_family({"why": "?"}) == "other"
+
+    def test_local_family_map_pinned_to_rules(self):
+        """replay 不 import trove,家族表靠测试钉住同源(同 _CACHE_FIELDS)。"""
+        from trove.eval import replay as replay_mod
+        from trove.workflow.rules import RULE_FAMILIES
+
+        assert replay_mod._RULE_FAMILIES == RULE_FAMILIES
+
+    def test_no_measurable_rows_returns_none(self):
+        assert caliber_block_stats([]) is None
+        # 没有 validation_hits 键的旧格式行 → 分母为空
+        assert caliber_block_stats([{"pred_sql": "SELECT 1", "verdict": "MATCH"}]) is None
+        # 有键但无 SQL → 不入分母
+        assert caliber_block_stats([{"validation_hits": [], "pred_sql": ""}]) is None
+        # 拒绝轮 → 不入分母(双条件保险)
+        assert caliber_block_stats([_entry(path="refused")]) is None
+
+    def test_zero_hits_emits_zeros_with_count(self):
+        stats = caliber_block_stats([_entry(), _entry()])
+        assert stats is not None
+        assert stats["caliber_block"] == 0.0
+        assert stats["caliber_n"] == 2
+        assert set(stats) == {"caliber_block", "caliber_n"} | {
+            f"caliber_block:{fam}" for fam in _CALIBER_FAMILIES
+        }
+
+    def test_family_rates_and_double_condition(self):
+        rows = [
+            _entry(validation_hits=[{"name": "F2-a", "reason": "[F2-a] …"}]),
+            _entry(validation_hits=[{"rule": "answer-columns", "reason": "…"}]),
+            _entry(validation_hits=[], pred_sql=""),                     # 无 SQL → 不入
+            _entry(validation_hits=[{"name": "F2-b"}], path="refused"),  # 拒绝轮 → 不入
+            {"run_id": "x", "question": "q", "verdict": "MATCH",
+             "pred_sql": "SELECT 1"},                                    # 无键 → 不入
+        ]
+        stats = caliber_block_stats(rows)
+        assert stats["caliber_n"] == 2
+        assert stats["caliber_block"] == 1.0
+        assert stats["caliber_block:filter"] == 0.5
+        assert stats["caliber_block:plan"] == 0.5
+        assert stats["caliber_block:shape"] == 0.0
+
+    def test_score_replay_emits_caliber(self):
+        s = score_replay([_entry(validation_hits=[{"name": "F1-a"}])])
+        assert s["caliber_block"] == 1.0
+        assert s["caliber_block:shape"] == 1.0
+        assert s["caliber_n"] == 1
+
+    def test_score_replay_absent_without_hits_key(self):
+        s = score_replay([{"run_id": "r", "question": "q", "verdict": "OK",
+                           "pred_sql": "SELECT 1"}])
+        assert "caliber_block" not in s
+
+    def test_scorecard_rate_keys_in_snapshot(self):
+        m = scorecard_metrics(score_replay([_entry(validation_hits=[{"name": "F3-a"}])]))
+        assert m["caliber_block"] == 1.0
+        assert m["caliber_block:values"] == 1.0
+
+    def test_caliber_count_not_in_pinned_vocabulary(self):
+        """caliber_n 同 avg_tokens_n:分母元信息不进快照(冻结基线零位移)。"""
+        m = scorecard_metrics(score_replay([_entry()]))
+        assert "caliber_n" not in m

@@ -14,6 +14,14 @@
     "n_judged": 32.0,
     "gold_match": 0.0,
     "first_pass": 0.4062,
-    "cache_hit_rate": 0.8403
+    "cache_hit_rate": 0.8403,
+    "caliber_block": 0.2727,
+    "caliber_block:filter": 0.1818,
+    "caliber_block:shape": 0.1364,
+    "caliber_block:values": 0.0455,
+    "caliber_block:ordering": 0.0,
+    "caliber_block:plan": 0.0,
+    "caliber_block:validator": 0.0,
+    "caliber_block:other": 0.0
   }
 }
