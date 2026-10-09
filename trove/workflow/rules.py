@@ -244,7 +244,7 @@ REWRITE_RULES: frozenset[str] = frozenset({
 #: 副本(它不能 import 本模块,见 replay._RULE_FAMILIES 注释),由测试
 #: 钉住相等。tests/workflow/test_rules.py 的元测试钉「注册表 ⊆ 本表」——
 #: 新增规则不登记家族会被拦下,而不是静默落进 other。
-#: 注意 F1-c 不存在(注册表里只有 a/b/d),清单以 :313-881 的 20 条注册为准。
+#: 注意 F1-c 不存在(注册表里只有 a/b/d),清单以 :348-916 的 20 条注册为准。
 RULE_FAMILIES: dict[str, str] = {
     "F1-a": "shape",
     "F1-b": "shape",

@@ -289,7 +289,7 @@ flowchart LR
 
     <p>
       校验还会打印<strong>字段覆盖</strong>（<code>tokens</code> / <code>elapsed_ms</code> /
-      <code>compile_meta</code> / <code>path</code> / <code>plan</code> / <code>matched_tables</code>）。
+      <code>compile_meta</code> / <code>path</code> / <code>plan</code> / <code>matched_tables</code> / <code>kb_rev</code>）。
       缺字段不会让任何指标报错，只会让它<strong>算在半份样本上</strong>——
       tokens 缺则成本指标只剩老条目，path 缺则分档 EX 把缺数据当 llm 档。
       <code>--require-fields tokens,elapsed_ms</code> 把任一字段覆盖不足钉成硬问题；

@@ -431,8 +431,10 @@ class _GapRunner(FakeRunner):
 
     只截**加性路径**的区域查询:比率 hop 的 SQL 同样含
     ``GROUP BY sales.region``,但它以 ``__num`` 双列标志(形状
-    ``[region, __num, __den]`` 三列)——放行给 super,否则比率路径
-    会拿到两列行、以形状错误而非「不检查」失败,测试就测错了事。
+    ``[region, __num, __den]`` 三列)——放行给 super。缺 ``__num``
+    守卫的失败模式是**静默**的:比率路径拿到两列行后退化成空表,
+    测试 3 的「不检查」断言照样通过(空洞通过,评审实测)——
+    这道守卫正是让该分支被真跑到的那道闸。
     (驱动器树的 SQL 不含 GROUP BY:engine.py 的 ``_compile_one`` 对
     含 GROUP BY 的编译结果直接返回 None,天然不入此分支。)
     """

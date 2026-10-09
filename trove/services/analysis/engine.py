@@ -1209,7 +1209,7 @@ class AnalysisEngine:
         outcome.base_total = base_total
         outcome.cur_total = cur_total
         # 聚合守恒自查(设计 2026-10-09 §2.2):加性分解的和必须等于总变化。
-        # **顺序是承重的** —— 必须在 degraded → partial 赋值(:1214-1215)之前,
+        # **顺序是承重的** —— 必须在 degraded → partial 赋值(:1227-1228)之前,
         # 违例才会把 partial 置真(产物不自洽 = 这次分析按部分降级呈现)。
         # 只查加性分支:比率路径的守恒由 shift_share 结构自带,重算只会假警。
         if not is_ratio and base_period is not None:

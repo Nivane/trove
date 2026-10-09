@@ -5,7 +5,7 @@
   - questions.jsonl 问题集字段完整、qid 稳定
   - results.jsonl 能算指标、覆盖问题集(缺题默认仅警告)
   - qid 无"问题集外"与"重复判定"(硬问题)
-  - 字段覆盖(tokens/elapsed_ms/compile_meta/path/plan/matched_tables)
+  - 字段覆盖(tokens/elapsed_ms/compile_meta/path/plan/matched_tables/kb_rev)
     始终打印;--require-fields 列出者必须 100% 覆盖(补录后切严格档)
 
 默认只要求基线可解析;--require-full 要求问题集全覆盖(收基线 / CI
