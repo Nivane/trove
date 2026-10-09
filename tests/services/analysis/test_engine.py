@@ -424,3 +424,44 @@ class TestPeriodDegradation:
         out = await _engine(FakeRunner()).run(_req(time_context="", baseline="share"))
         assert out is not None
         assert not any(d.get("stage") == "period" for d in out.degraded)
+
+
+class _GapRunner(FakeRunner):
+    """区域行之和 != 总量(缺桶):West 基期被抬到 25 → Δ=0,ΣΔ=9 ≠ 10。
+
+    只截**加性路径**的区域查询:比率 hop 的 SQL 同样含
+    ``GROUP BY sales.region``,但它以 ``__num`` 双列标志(形状
+    ``[region, __num, __den]`` 三列)——放行给 super,否则比率路径
+    会拿到两列行、以形状错误而非「不检查」失败,测试就测错了事。
+    (驱动器树的 SQL 不含 GROUP BY:engine.py 的 ``_compile_one`` 对
+    含 GROUP BY 的编译结果直接返回 None,天然不入此分支。)
+    """
+
+    async def __call__(self, sql: str, datasource: str):
+        if "__num" not in sql and "GROUP BY sales.region" in sql:
+            self.calls.append(sql)
+            cur = ">= '2024-02-01'" in sql
+            rows = [["East", 45.0], ["West", 25.0]]
+            if not cur:
+                rows = [["East", 36.0], ["West", 25.0]]
+            return ["region", "net"], [list(r) for r in rows]
+        return await super().__call__(sql, datasource)
+
+
+class TestConservation:
+    """聚合守恒挂点(设计 §2.2):缺口落 degraded 且 partial 置真;比率不查。"""
+
+    async def test_gap_lands_in_degraded_and_partial(self):
+        out = await _engine(_GapRunner()).run(_req())
+        assert out is not None
+        assert any(d.get("stage") == "conservation" for d in out.degraded)
+        assert out.partial is True
+
+    async def test_consistent_sum_no_degraded(self):
+        out = await _engine(FakeRunner()).run(_req())
+        assert all(d.get("stage") != "conservation" for d in out.degraded)
+        assert out.partial is False
+
+    async def test_ratio_path_not_checked(self):
+        out = await _engine(_GapRunner()).run(_req(metric="avg_amount"))
+        assert all(d.get("stage") != "conservation" for d in out.degraded)
