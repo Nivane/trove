@@ -15,6 +15,7 @@ import math
 import aiosqlite
 import pytest
 
+from trove.services.kb.backends.fts import fts_index_text
 from trove.services.kb.governance import CERTIFIED, DEPRECATED
 from trove.services.kb.service import KbService
 from trove.services.retrieval import RetrievalDoc, SqliteHybridStore
@@ -156,9 +157,11 @@ async def test_legacy_v2_db_adopts_authority_column(tmp_path):
             "(doc_id, datasource, kind, source_file, content, embedding) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("e1", "ds", "kb", "a.yml", "贷款 金额", _pack(emb)))
+        # doc_fts 侧按**写侧约定**写入(fts_index_text 预分词):存量行是
+        # Indexer 产出的文本,查询侧 fts_query 与之成对,两侧同拆才有命中。
         await db.execute(
             "INSERT INTO doc_fts (rowid, content) VALUES (?, ?)",
-            (cur.lastrowid, "贷款 金额"))
+            (cur.lastrowid, fts_index_text("贷款 金额")))
         await db.commit()
 
     store = SqliteHybridStore(db_path, FakeEmbedder(), None)

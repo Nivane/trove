@@ -385,3 +385,31 @@ class TestAbsorbedSites:
             assert "sparse" in await columns_of(db, "documents", dialect=SQLITE)
             assert (await read_version(db, "retrieval", dialect=SQLITE)
                     == RETRIEVAL_MIGRATIONS[-1].version)
+
+    async def test_legacy_retrieval_db_drops_orphan_fts_rows(self, tmp_path):
+        """v4:老重索引 bug 留下的 doc_fts 孤儿行(join 不回 documents 的
+        rowid)在打开库时清除;与主子行同 rowid 的活行必须留下。"""
+        from trove.services.retrieval.sqlite_store import SqliteHybridStore
+
+        db_path = tmp_path / "retrieval.sqlite"
+        await self._legacy_retrieval_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO documents "
+                "(doc_id, datasource, kind, source_file, content, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("e1", "ds", "kb", "a.yml", "loan", None))
+            live_rowid = cur.lastrowid
+            await db.execute(
+                "INSERT INTO doc_fts (rowid, content) VALUES (?, ?)",
+                (live_rowid, "loan"))
+            await db.execute(
+                "INSERT INTO doc_fts (rowid, content) VALUES (?, ?)",
+                (999, "orphan"))
+            await db.commit()
+
+        await SqliteHybridStore(db_path, None, None)._ensure()
+
+        async with aiosqlite.connect(db_path) as db:
+            cur = await db.execute("SELECT rowid FROM doc_fts ORDER BY rowid")
+            assert [r[0] for r in await cur.fetchall()] == [live_rowid]
