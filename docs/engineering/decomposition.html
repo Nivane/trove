@@ -237,10 +237,10 @@ flowchart TB
       解析不了（<code>unresolvable</code>）、裸名被<strong>字段遮蔽</strong>
       （编译器「字段优先」会把裸名当维度投影，值变成分组列）、结果带
       <code>GROUP BY</code>（维度混入）。按解析后的度量名去重——编译器投影按度量名去重，
-      同名会少列、位置映射会错位（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L619">engine.py:619 <span class="ref-line">预检</span></a>）。</li>
+      同名会少列、位置映射会错位（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L621">engine.py:621 <span class="ref-line">预检</span></a>）。</li>
       <li><strong>组合路径：每期一条多度量 SQL</strong>——所有存活组件合成一次查询、两期各一次
       （<code>metrics=[...]</code> 一次投影多列）。这决定成本上界：<strong>树是 O(期数) 条 SQL，不是 O(组件数)</strong>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L736">engine.py:736 <span class="ref-line">组合路径</span></a>）。</li>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L738">engine.py:738 <span class="ref-line">组合路径</span></a>）。</li>
       <li><strong>组合编译失败 → 逐候选回退</strong>——回退也逐条数预算，超预算的候选截断记账，
       宁缺勿错（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L748">engine.py:748 <span class="ref-line">回退路径</span></a>）。</li>
       <li><strong>预算不足 → 只留骨架</strong>+<code>degraded{"stage":"driver_tree","reason":"query_budget_exceeded"}</code>——
@@ -250,7 +250,7 @@ flowchart TB
 
     <p>
       预算由 <code>AnalysisLimits</code> 装配
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L281">engine.py:281 <span class="ref-line">AnalysisLimits</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L283">engine.py:283 <span class="ref-line">AnalysisLimits</span></a>：
       <code>max_dimensions=3</code>、<code>max_hops=2</code>、<code>max_components=4</code>、
       <code>max_queries=12</code>、<code>tree_max_depth=5</code>；
       每个阶段用 <code>QueryLedger</code>
@@ -290,7 +290,7 @@ flowchart LR
 
     <p>
       树根的值有一个刻意的优先级
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L683">engine.py:683 <span class="ref-line">_finish</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L685">engine.py:685 <span class="ref-line">_finish</span></a>：
       <strong>优先用主跳（hop0）的官方口径</strong>——树卡头条的数字必须与页面头条一致，
       哪怕树的查询自己算出的根值有细微差别（过滤条件构造路径不同）。
       hop0 没跑成时才回落到树查询自己的值（<code>value_source="tree_query"</code>），
@@ -314,7 +314,7 @@ agent:
 
     <p>
       结果落到 <code>state.analysis</code>（结构化 payload，<code>version=1</code>，
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1230">engine.py:1230 <span class="ref-line">analysis_payload</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1243">engine.py:1243 <span class="ref-line">analysis_payload</span></a>），
       与旧的 <code>state.attribution</code> <strong>双写</strong>兼容
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L460">attribution.py:460 <span class="ref-line">双写</span></a>）——
       归因节点本体已瘦身为适配器（<code>make_attribution</code> 签名不变，
@@ -412,7 +412,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 43caf0f</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ee812fb</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
