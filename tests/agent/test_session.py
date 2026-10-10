@@ -2189,3 +2189,81 @@ class TestKbRevAudit:
         snap = await manager._kb_rev_snapshot(final)
         assert snap == {"kb_rev": "r1", "kb_files": {"semantics.yml": "d1"}}
         assert seen["ds"] == "demo"
+
+
+class TestKbRevWiring:
+    """接线回归:``_record_exchange`` 取**一次**快照,两条审计盖同一份指纹。
+
+    T9 评审 Minor 1:``TestKbRevAudit`` 只证明 ``_audit_*`` 收得下 ``kb``、
+    ``_kb_rev_snapshot`` 取得出值 —— 证明不了**它们真的被接上**。把
+    ``kb=kb_snap`` 从两个调用点删掉,上面那一整类测试照样全绿,而本特性的
+    唯一用户可见效果(管理端审计里的归因键)会静默消失。所以这条用真
+    ``_record_exchange``(四条运行路径的唯一汇合点)钉住接线本身。
+    """
+
+    def _auth(self):
+        class _Store:
+            async def get_user_by_id(self, uid):
+                return {"id": 7, "username": "bob"}
+
+        class _Auth:
+            def __init__(self):
+                self.entries = []
+                self.store = _Store()
+
+            async def record_audit(self, action, user=None, method="",
+                                   path="", status=None, details=None):
+                self.entries.append({"action": action, "user": user,
+                                     "details": details})
+
+        return _Auth()
+
+    def _kb(self):
+        class _Kb:
+            def __init__(self):
+                self.seen = []
+
+            async def kb_rev(self, datasource):
+                self.seen.append(datasource)
+                return {"rev": "r9", "files": {"semantics.yml": "d1"}}
+
+        return _Kb()
+
+    @pytest.fixture
+    async def _wired(self, tmp_home, agent_config, graphs):
+        """真 store + 假 kb/假 auth 的 manager;teardown **无论成败**都 dispose。
+
+        必须 yield + dispose(不能用「测试末尾 await store.dispose()」):
+        aiosqlite 的 worker 线程常驻非 daemon —— 断言失败跳过 dispose 时,
+        进程退出会挂住(本仓已知坑,这条测试的 RED 阶段实测过)。
+        """
+        from trove.agent.session import SessionManager
+        from trove.storage.session_store import SessionStore
+
+        store = SessionStore(home_dir=str(tmp_home))
+        auth = self._auth()
+        kb = self._kb()
+        manager = SessionManager(
+            config=agent_config, session_store=store, graphs=graphs,
+            llm_gateway=None, kb=kb, auth=auth,
+        )
+        yield manager, auth, kb
+        await store.dispose()
+
+    async def test_record_exchange_snapshots_once_and_stamps_both(self, _wired):
+        manager, auth, kb = _wired
+        session = await manager.start_session(project_cwd="/tmp/p", user_id="7")
+        final = WorkflowState(
+            session_id=session.session_id, question="q", user_id="7",
+            run_id="r1", datasource="demo", final_response="ok",
+            refusal={"reason": "no_model"},
+        )
+
+        await manager._record_exchange(session, "reflection", final)
+
+        # 快照只取一次,且查的就是这次回答的数据源(不是 default_name)。
+        assert kb.seen == ["demo"]
+        details = {e["action"]: e["details"] for e in auth.entries}
+        for action in ("query.execute", "query.refused"):
+            assert details[action]["kb_rev"] == "r9"
+            assert details[action]["kb_files"] == {"semantics.yml": "d1"}
