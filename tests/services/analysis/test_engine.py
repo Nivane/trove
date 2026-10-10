@@ -467,3 +467,45 @@ class TestConservation:
     async def test_ratio_path_not_checked(self):
         out = await _engine(_GapRunner()).run(_req(metric="avg_amount"))
         assert all(d.get("stage") != "conservation" for d in out.degraded)
+
+
+class _FocusRunner(FakeRunner):
+    """像真库一样分工:含 focus 等值谓词的 hop1 **只**回被点名段。
+
+    focus="East" 时 hop1 的 SQL 带 ``sales.region = 'East'``(见
+    ``compile_hop`` 的谓词拼装)→ 单段口径;hop0/探测/树不含该谓词 →
+    全体口径(委托 super)。真库语义:WHERE 命中一行东区行,不是把
+    全体行改名成 East。
+    """
+
+    async def __call__(self, sql: str, datasource: str):
+        if "sales.region = 'East'" in sql:
+            self.calls.append(sql)
+            cur = ">= '2024-02-01'" in sql
+            rows = [["East", 45.0]] if cur else [["East", 36.0]]
+            return ["region", "net"], [list(r) for r in rows]
+        return await super().__call__(sql, datasource)
+
+
+class TestConservationFocusScope:
+    """focus 在场跳过守恒自查(最终评审 Important 1)。
+
+    focus 下两口径不可比:hop1 表只覆盖被点名的段(ΣΔ=9),``total_delta``
+    出自未过滤的 hop0(全体 Δ=10)——跨口径相减必留缺口,自查会把每次
+    focus 归因都误报成「decomposition sum != total_delta」+ partial 置真
+    (设计 §2.3「不假警」的反面)。
+
+    判别力:删掉 ``engine.py`` 守卫里的 ``and not focus``,本用例必红
+    —— ``_FocusRunner`` 的分段回行会让缺口真实发生(旧的 `_GapRunner`
+    用例回全体口径,删守卫也照样守恒成立,抓不住这条回归)。
+    """
+
+    async def test_focus_skips_cross_scope_check(self):
+        out = await _engine(_FocusRunner()).run(_req(focus="East"))
+        assert out is not None
+        # 段口径本身正确:表只有 East,delta 9(45 − 36)
+        assert [r["dim"] for r in out.table] == ["East"]
+        assert out.table[0]["delta"] == 9.0
+        assert out.total_delta == 10.0  # 全体口径(hop0),口径不同才对
+        assert all(d.get("stage") != "conservation" for d in out.degraded)
+        assert out.partial is False
