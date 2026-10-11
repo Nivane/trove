@@ -468,10 +468,17 @@ function roleLabel(role: string): string {
   return key ? t(key, ui.lang) : role || '—'
 }
 function kindLabel(kind: string): string {
-  const map: Record<string, 'semMetric' | 'semField' | 'semDataset'> = {
+  const map: Record<
+    string,
+    'semMetric' | 'semField' | 'semDataset' | 'entitySectionTitle' | 'srcRelations'
+  > = {
     metric: 'semMetric',
     field: 'semField',
     dataset: 'semDataset',
+    // 本体形态(O1):草稿 kind 与资产 kind 都不是新词汇,复用既有名词
+    // (「本体实体」/「连接关系」),没有第五种叫法。
+    entity: 'entitySectionTitle',
+    relationship: 'srcRelations',
   }
   const key = map[kind]
   return key ? t(key, ui.lang) : kind
@@ -767,12 +774,17 @@ async function runConfirm() {
 
 /* ── draft creation / drawer ──────────────────────────────────── */
 
+/** 草稿 kind = 三种资产 + 本体形态(O1)的 entity / relationship。两者走
+ *  的都是**同一条** draft 通道(同一个确认门),这里只是把写面的类型放宽;
+ *  资产视角的 `Kind` 不动(资产表、引用、抽屉仍只有那三种)。 */
+type DraftKind = Kind | 'entity' | 'relationship'
+
 function draftsUrl(): string {
   return `/v1/admin/semantic/${encodeURIComponent(values.ds)}`
 }
 
 async function createDraft(
-  kind: Kind,
+  kind: DraftKind,
   action: 'upsert' | 'delete',
   name: string,
   payload: Record<string, unknown>,
@@ -790,7 +802,7 @@ async function createDraft(
 }
 
 async function validatePayload(
-  kind: Kind,
+  kind: DraftKind,
   action: 'upsert' | 'delete',
   name: string,
   payload: Record<string, unknown>,
@@ -1608,6 +1620,12 @@ interface Blueprint {
   synonyms: string[]
   definition: string
   datatype: string
+  /** 关系蓝本(O1):两端数据集 + 连接列对。列对可以为空(没有唯一确定性
+   *  的 *_id 同名匹配时,后端就只给两端 —— 「机器不猜」在这里的兑现)。 */
+  fromDataset: string
+  toDataset: string
+  fromColumns: string[]
+  toColumns: string[]
   /** Conflict diagnostic (server text, transcribed verbatim — data, not copy). */
   note: string
   /** confirm_draft deep link: open the draft drawer instead of a dialog. */
@@ -1670,6 +1688,16 @@ function applyBlueprint(bp: Blueprint) {
     fieldForm.datatype = bp.datatype
     fieldForm.synonyms = bp.synonyms.join(', ')
     fieldForm.description = bp.definition
+  } else if (bp.kind === 'relationship') {
+    openRelationDialog()
+    relationForm.from = bp.fromDataset
+    relationForm.to = bp.toDataset
+    relationForm.from_columns = bp.fromColumns.join(', ')
+    relationForm.to_columns = bp.toColumns.join(', ')
+    // 蓝本没带名字时给一个确定性的默认(现场可改):关系名是草稿身份
+    // (kind,name) 的一半,缺了它这扇门就只剩「手打一个名字」这一步了。
+    relationForm.name =
+      bp.name || (bp.fromDataset && bp.toDataset ? `${bp.fromDataset}_${bp.toDataset}` : '')
   } else {
     return // unknown kind: nothing to prefill (params still get cleared)
   }
@@ -1678,7 +1706,8 @@ function applyBlueprint(bp: Blueprint) {
 
 /** The URL half: refuse → next_actions → bp_* (kind/name/expression/
  *  datasets/conflict_message; the richer draft payload fields — synonyms,
- *  definition, datatype — only exist on the in-console drawer path). */
+ *  definition, datatype — only exist on the in-console drawer path;
+ *  relationship blueprints carry from/to datasets + column pairs, O1). */
 function consumeBlueprint() {
   const kind = bpParam('draft_kind')
   const draftId = bpParam('draft_id')
@@ -1691,6 +1720,10 @@ function consumeBlueprint() {
     synonyms: bpList('synonyms'),
     definition: bpParam('definition'),
     datatype: bpParam('datatype'),
+    fromDataset: bpParam('from_dataset'),
+    toDataset: bpParam('to_dataset'),
+    fromColumns: bpList('from_columns'),
+    toColumns: bpList('to_columns'),
     note: bpParam('conflict_message'),
     draftId,
   })
@@ -1712,6 +1745,12 @@ function blueprintFromDraft() {
     synonyms: list(p.synonyms),
     definition: str(p.definition ?? p.description),
     datatype: str(p.datatype),
+    // 关系草稿的两端:模型侧字段是 from/to,拒绝侧蓝本键是 from_dataset——
+    // 两种写法都认(同一个事实的两种落点,不是两套语义)。
+    fromDataset: str(p.from_dataset ?? p.from),
+    toDataset: str(p.to_dataset ?? p.to),
+    fromColumns: list(p.from_columns),
+    toColumns: list(p.to_columns),
     note: str(d.conflict?.message),
     draftId: '',
   }
@@ -1773,6 +1812,154 @@ async function saveDataset() {
     toastError(e)
   } finally {
     datasetBusy.value = false
+  }
+}
+
+/* ── 本体实体声明(O1,设计 §4.1) ─────────────────────────────────
+   数据集抽屉里的「本体实体」节:显示名 / 自然键(可多列) / 别名三个字段。
+   保存走**既有** semantic draft 通道(kind=entity,name=数据集名,payload 带
+   dataset)—— 不新开写面,确认门不变:这里落的是 pending 草稿,管理端确认
+   之后才进 semantics.yml。空字段**不写进 payload**:缺席 = 没声明,不是
+   「声明为空串」——两者在模型里是不同的事实。 */
+
+const entityIssues = ref<SemanticIssueItem[]>([])
+const entityBusy = ref(false)
+const entityForm = reactive({ display_name: '', natural_keys: '', aliases: '' })
+
+/** 抽屉当前资产是不是数据集(实体节的唯一开关)。 */
+const isDatasetAsset = computed(() => assetSel.value?.kind === 'dataset')
+
+const entityDataset = computed<SemanticDatasetInfo | null>(() => {
+  const a = assetSel.value
+  return a && a.kind === 'dataset' ? a.dataset : null
+})
+
+/** 该数据集最新的待审 entity 草稿(草稿态徽标 + 冲突横幅的数据源)。
+ *  name 与 payload.dataset 两处都认:草稿身份按数据集命名,但别赌单一形状。 */
+const entityDraft = computed<SemanticDraft | null>(() => {
+  const ds = entityDataset.value
+  if (!ds) return null
+  return (
+    pending.value.find(
+      (d) =>
+        d.kind === 'entity' &&
+        (d.name === ds.name || (d.payload?.dataset as string | undefined) === ds.name),
+    ) ?? null
+  )
+})
+
+/** 按模型现值重填(每次进抽屉都是「现在这份模型」)。 */
+function resetEntityForm() {
+  const e = entityDataset.value?.entity ?? null
+  entityIssues.value = []
+  Object.assign(entityForm, {
+    display_name: e?.display_name ?? '',
+    natural_keys: (e?.natural_keys ?? []).join(', '),
+    aliases: (e?.aliases ?? []).join(', '),
+  })
+}
+
+// 只在**打开/换资产**时重填(assetKey 的每次赋值都是新对象):跟模型刷新
+// 联动的话,存完草稿那一次 reload 会把刚输入的值抹回去,读起来像没保存。
+watch(
+  () => assetKey.value,
+  () => {
+    if (assetKey.value?.kind === 'dataset') resetEntityForm()
+  },
+)
+
+async function saveEntity() {
+  const ds = entityDataset.value
+  if (!ds) return
+  entityIssues.value = []
+  const payload: Record<string, unknown> = { dataset: ds.name }
+  if (entityForm.display_name.trim()) payload.display_name = entityForm.display_name.trim()
+  if (splitCsv(entityForm.natural_keys).length) payload.natural_keys = splitCsv(entityForm.natural_keys)
+  if (splitCsv(entityForm.aliases).length) payload.aliases = splitCsv(entityForm.aliases)
+  entityBusy.value = true
+  try {
+    const check = await validatePayload('entity', 'upsert', ds.name, payload)
+    if (!check.ok) {
+      entityIssues.value = [...check.errors, ...check.warnings]
+      return
+    }
+    await createDraft('entity', 'upsert', ds.name, payload)
+  } catch (e) {
+    toastError(e)
+  } finally {
+    entityBusy.value = false
+  }
+}
+
+/* ── 连接关系声明(O1,设计 §4 行 2 / tech-plan E5) ──────────────────
+   声明一条 join 关系:两端数据集 + 连接列对(可空)+ 可选的显示名与基数。
+   写路径照旧是 draft 通道(kind=relationship,name=关系名);拒绝卡的
+   bp_* 深链把两端与列对带进来,这里只负责呈现与提交。 */
+
+const relationOpen = ref(false)
+const relationIssues = ref<SemanticIssueItem[]>([])
+const relationBusy = ref(false)
+const relationForm = reactive({
+  name: '',
+  from: '',
+  to: '',
+  from_columns: '',
+  to_columns: '',
+  cardinality: '',
+  display_name: '',
+  note: '',
+})
+/** 基数闭集 = 模型自己的记法(models.py: "" 安全默认 | "1:N" | "1:1" | "M:N")。
+ *  空 = 未声明 —— 编译器按 unknown_cardinality 处理,是有意义的状态,不是
+ *  「没填」。 */
+const CARDINALITY_OPTIONS = ['1:N', 'N:1', '1:1', 'M:N'] as const
+
+const relationReady = computed(
+  () => !!relationForm.name.trim() && !!relationForm.from && !!relationForm.to,
+)
+
+function openRelationDialog() {
+  menuOpen.value = false
+  relationIssues.value = []
+  blueprintNote.value = '' // a plain open is never a blueprint prefill
+  Object.assign(relationForm, {
+    name: '',
+    from: '',
+    to: '',
+    from_columns: '',
+    to_columns: '',
+    cardinality: '',
+    display_name: '',
+    note: '',
+  })
+  relationOpen.value = true
+}
+
+async function saveRelation() {
+  const f = relationForm
+  if (!relationReady.value) return
+  relationIssues.value = []
+  // 空字段不写进 payload(缺席 = 没声明):显示名留空 = **不写该键**,
+  // 列对为空同理 —— 契约两端(前端 / E2·E5)对这条同款。
+  const payload: Record<string, unknown> = { from: f.from, to: f.to }
+  if (splitCsv(f.from_columns).length) payload.from_columns = splitCsv(f.from_columns)
+  if (splitCsv(f.to_columns).length) payload.to_columns = splitCsv(f.to_columns)
+  if (f.cardinality) payload.cardinality = f.cardinality
+  if (f.display_name.trim()) payload.display_name = f.display_name.trim()
+  relationBusy.value = true
+  try {
+    const check = await validatePayload('relationship', 'upsert', f.name.trim(), payload)
+    if (!check.ok) {
+      relationIssues.value = [...check.errors, ...check.warnings]
+      return
+    }
+    if (await createDraft('relationship', 'upsert', f.name.trim(), payload, f.note.trim())) {
+      relationOpen.value = false
+    }
+  } catch (e) {
+    toastError(e)
+  } finally {
+    relationBusy.value = false
   }
 }
 
@@ -1867,6 +2054,9 @@ const pageTitle = computed(() =>
             </button>
             <button type="button" role="menuitem" class="sem-menu-item" @click="openDatasetDialog">
               {{ t('semAddDataset', ui.lang) }}
+            </button>
+            <button type="button" role="menuitem" class="sem-menu-item" @click="openRelationDialog">
+              {{ t('semAddRelation', ui.lang) }}
             </button>
           </div>
         </div>
@@ -2536,6 +2726,41 @@ const pageTitle = computed(() =>
           </div>
         </section>
 
+        <!-- 本体实体(O1):只有数据集有实体节。三字段编辑 + 保存提示 +
+             草稿态徽标;冲突横幅复用既有 sem-bad-draft(草稿自己带的冲突
+             注记,逐字展示)。写路径 = 既有 draft 通道,不新开写面。 -->
+        <section v-if="isDatasetAsset" class="sem-block">
+          <h4>
+            {{ t('entitySectionTitle', ui.lang) }}
+            <span v-if="entityDraft" class="pill pill-neutral">{{ t('semPending', ui.lang) }}</span>
+          </h4>
+          <div class="sem-entity-form">
+            <label class="sem-entity-label">{{ t('entityDisplayName', ui.lang) }}</label>
+            <el-input v-model="entityForm.display_name" size="small" />
+            <label class="sem-entity-label">{{ t('entityNaturalKeysLabel', ui.lang) }}</label>
+            <el-input v-model="entityForm.natural_keys" size="small" class="mono-input" />
+            <label class="sem-entity-label">{{ t('entityAliasesLabel', ui.lang) }}</label>
+            <el-input v-model="entityForm.aliases" size="small" />
+          </div>
+          <ul v-if="entityIssues.length" class="sem-check-list">
+            <li v-for="(it, i) in entityIssues" :key="`e-${it.code}-${i}`">
+              <span class="pill" :class="severityPill(it.severity)">{{ severityLabel(it.severity) }}</span>
+              <span>{{ it.message }}</span>
+              <span v-if="it.hint" class="cell-muted">{{ it.hint }}</span>
+            </li>
+          </ul>
+          <div v-if="entityDraft?.conflict" class="sem-bad-draft" role="alert">
+            <strong>{{ t('semDraftConflict', ui.lang) }}</strong>
+            <p>{{ entityDraft.conflict.message || t('semDraftConflictHint', ui.lang) }}</p>
+          </div>
+          <div class="sem-entity-actions">
+            <el-button size="small" :loading="entityBusy" @click="saveEntity">
+              {{ t('semSaveDraft', ui.lang) }}
+            </el-button>
+            <span class="form-hint">{{ t('entityDraftHint', ui.lang) }}</span>
+          </div>
+        </section>
+
         <section class="sem-block">
           <h4>{{ t('semAnchoredDatasets', ui.lang) }}</h4>
           <p v-if="assetAnchors.length" class="sem-chips">
@@ -3037,6 +3262,86 @@ const pageTitle = computed(() =>
       <template #footer>
         <el-button @click="datasetOpen = false">{{ t('cancel', ui.lang) }}</el-button>
         <el-button type="primary" :loading="datasetBusy" @click="saveDataset">
+          {{ t('semSaveDraft', ui.lang) }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── relationship (O1):声明一条连接关系;拒绝卡的 bp_* 深链预填两端 ── -->
+    <el-dialog
+      v-model="relationOpen"
+      :title="t('semAddRelation', ui.lang)"
+      width="560"
+      class="admin-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top" @submit.prevent="saveRelation">
+        <p v-if="blueprintNote" class="sem-blueprint-note" role="status">
+          {{ t('semBlueprintPrefill', ui.lang, blueprintNote) }}
+        </p>
+        <el-form-item :label="t('semName', ui.lang)">
+          <el-input v-model="relationForm.name" class="mono-input" />
+        </el-form-item>
+        <el-form-item :label="t('semTables', ui.lang)">
+          <div class="sem-rel-pair">
+            <el-select
+              v-model="relationForm.from"
+              filterable
+              allow-create
+              default-first-option
+              class="sem-dialog-select"
+            >
+              <el-option v-for="d in datasetNames" :key="d" :value="d" :label="d" />
+            </el-select>
+            <span class="sem-rel-arrow" aria-hidden="true">→</span>
+            <el-select
+              v-model="relationForm.to"
+              filterable
+              allow-create
+              default-first-option
+              class="sem-dialog-select"
+            >
+              <el-option v-for="d in datasetNames" :key="d" :value="d" :label="d" />
+            </el-select>
+          </div>
+        </el-form-item>
+        <el-form-item :label="t('semFields', ui.lang)">
+          <div class="sem-rel-pair">
+            <el-input v-model="relationForm.from_columns" class="mono-input" />
+            <span class="sem-rel-arrow" aria-hidden="true">→</span>
+            <el-input v-model="relationForm.to_columns" class="mono-input" />
+          </div>
+        </el-form-item>
+        <el-form-item :label="t('displayName', ui.lang)">
+          <el-input
+            v-model="relationForm.display_name"
+            :placeholder="t('displayNameOptional', ui.lang)"
+          />
+        </el-form-item>
+        <el-form-item :label="t('semCardinality', ui.lang)">
+          <el-select v-model="relationForm.cardinality" clearable class="sem-dialog-select">
+            <el-option v-for="c in CARDINALITY_OPTIONS" :key="c" :value="c" :label="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('semNote', ui.lang)">
+          <el-input v-model="relationForm.note" :placeholder="t('semNoteHint', ui.lang)" />
+        </el-form-item>
+        <ul v-if="relationIssues.length" class="sem-check-list">
+          <li v-for="(it, i) in relationIssues" :key="`r-${it.code}-${i}`">
+            <span class="pill" :class="severityPill(it.severity)">{{ severityLabel(it.severity) }}</span>
+            <span>{{ it.message }}</span>
+            <span v-if="it.hint" class="cell-muted">{{ it.hint }}</span>
+          </li>
+        </ul>
+      </el-form>
+      <template #footer>
+        <el-button @click="relationOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button
+          type="primary"
+          :loading="relationBusy"
+          :disabled="!relationReady"
+          @click="saveRelation"
+        >
           {{ t('semSaveDraft', ui.lang) }}
         </el-button>
       </template>
@@ -3763,5 +4068,37 @@ const pageTitle = computed(() =>
 }
 .sem-dialog-select {
   width: 100%;
+}
+
+/* ── 本体实体节(O1) ─────────────────────────────────────────── */
+.sem-entity-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.sem-entity-label {
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
+.sem-entity-form :deep(.el-input) {
+  margin-bottom: var(--sp-2);
+}
+.sem-entity-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+/* ── 关系对话框两端并排(数据源/列对同款) ────────────────────── */
+.sem-rel-pair {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+.sem-rel-arrow {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
 }
 </style>
