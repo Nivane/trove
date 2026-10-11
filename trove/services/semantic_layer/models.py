@@ -162,6 +162,31 @@ class SemanticField:
 
 
 @dataclass
+class SemanticEntity:
+    """数据集上的**业务实体**声明(Trove 扩展,非 OSSIE —— 设计 §4.1)。
+
+    「对象 = 已声明实体的数据集」:实体与数据集 1:1,所以它挂在数据集的
+    ``entity`` 子块上而不是另开一张模型级名单(声明/校验/合并全走既有的
+    dataset 路径,不产生第二份名单的漂移面)。
+
+    display_name: 对象显示名 —— 可选,**缺省回退数据集 name 发生在读侧**
+        (投影/文案),声明层保持缺失即缺失:往声明里填默认值会让
+        「作者写了什么」在往返里失真。
+    natural_keys: 自然键字段名(本数据集的业务键,如 ``loan_id``);缺省回退
+        ``primary_key``(同一读侧纪律)。须解析到本数据集已声明字段,lint 拦。
+    aliases: 对象词汇/业务别名(供词法锚定消费,与 ``synonyms`` 并入同一
+        通道,消费在 E4 —— 本层只负责声明存活)。
+
+    空块(三键全空)与缺席同义:都归一为 ``None``(未声明),不产生
+    「声明了但全是默认」的中间态 —— 投影的 ``declared`` 只看这一件事。
+    """
+
+    display_name: str = ""
+    natural_keys: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SemanticRelationship:
     """A declared join edge: ``from_`` = many side, ``to`` = one side.
 
@@ -181,6 +206,11 @@ class SemanticRelationship:
         ``bridge:<dataset>`` 保留(未来:走已预聚合桥表,支持同键多行)。
         genuinely 多对多(同键多行且每行语义不同)应建模为 1:N + 中间
         表(编译器完全支持),而不是豁免。
+
+    display_name: 边的业务显示名(可选,如 ``属于``,描述 from→to 的动词)。
+        纯展示字段:不进 SQL 生成、不改 JoinResolver 语义(设计 §4.2);
+        缺省回退是**读侧**的列名连接串(投影/拒绝文案里给),声明层同样
+        保持缺失即缺失。
     """
 
     name: str
@@ -192,6 +222,8 @@ class SemanticRelationship:
     fan_out: str = ""  # "" | "dedup" | "bridge:<dataset>"
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
+    #: 边显示名(见类文档);缺省空串 = 未声明(读侧回退列名连接串)
+    display_name: str = ""
 
 
 @dataclass
@@ -207,6 +239,10 @@ class SemanticDataset:
         顶层过滤与联前过滤等价)。列须解析到本数据集的已声明字段(lint
         拦截);空 = 无行级限制。这是**声明层**授权,不替代数据库侧只读
         角色/行级安全(执行期 allowlist 仍兜底)。
+
+    entity: 业务实体声明(见 SemanticEntity,设计 §4.1);``None`` = 未声明
+        (存量模型走这条,投影里该数据集以 ``declared:false`` 的「表」节点
+        出现)。
     """
 
     name: str
@@ -219,6 +255,8 @@ class SemanticDataset:
     fields: list[SemanticField] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
+    #: 业务实体声明(见 SemanticEntity);缺省 = 未声明
+    entity: SemanticEntity | None = None
 
 
 @dataclass
@@ -291,6 +329,28 @@ class TopicDomain:
 
 
 @dataclass
+class Hierarchy:
+    """钻取层级 —— 级别字段的**有序链**(Trove 扩展,非 OSSIE —— 设计 §4.3)。
+
+    层级跨越多个字段(级别 = 字段的有序序列),字段级属性表达不了这种链式
+    结构,所以它是模型级块(与 TopicDomain 同一形态模板:顶层数组、扁平
+    YAML、lint 对同文档解析)。
+
+    name: 层级标识(草稿/引用用);display_name: 展示名(可选,读侧保持
+        声明原样 —— 没有文档化的回退就不发明)。
+    dataset: 层级归属数据集 —— **级别字段都来自它**(跨数据集的层级在
+        声明上就无处安放,lint 拦悬空)。
+    levels: 有序级别字段名,**粗 → 细**(如 ``[product_class, product_name]``);
+        须能在 dataset 的 fields 里解析,lint 拦。
+    """
+
+    name: str = ""
+    display_name: str = ""
+    dataset: str = ""
+    levels: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SemanticModel:
     """One parsed semantic model (OSSIE `semantic_model` entry).
 
@@ -300,6 +360,7 @@ class SemanticModel:
     time_spine: 模型级时间轴声明(见 TimeSpine);空 = 不启用空档填充。
     topics: 业务主题域(见 TopicDomain);空 = 未分组(存量模型走这条,
         行为与不启用主题域完全一致)。
+    hierarchies: 钻取层级(见 Hierarchy);空 = 未声明(存量模型走这条)。
     """
 
     name: str = ""
@@ -316,3 +377,5 @@ class SemanticModel:
     masking: MaskingPolicy = field(default_factory=MaskingPolicy)
     #: 业务主题域(见 TopicDomain);空 = 未启用主题分组(存量模型走这条)
     topics: list[TopicDomain] = field(default_factory=list)
+    #: 钻取层级(见 Hierarchy);空 = 未声明(存量模型走这条)
+    hierarchies: list[Hierarchy] = field(default_factory=list)

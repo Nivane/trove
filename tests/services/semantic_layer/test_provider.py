@@ -390,6 +390,143 @@ def test_merge_preserves_model_level_fields(tmp_path, semantic_dir):
     assert {x.name for x in m.metrics} == {"total_loan_amount", "avg_loan_per_account", "total_amount"}
 
 
+# ── 对象视图声明的合并存活(N11 最高危:有 override 时被静默丢弃)──
+
+ONTOLOGY_BASE = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: loan
+        source: financial.loan
+        primary_key: [loan_id]
+        entity:
+          display_name: 贷款
+          natural_keys: [loan_id]
+          aliases: [借款]
+        fields:
+          - name: loan_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+      - name: account
+        source: financial.account
+        primary_key: [account_id]
+        fields:
+          - name: account_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+    relationships:
+      - name: loan_to_account
+        from: loan
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        display_name: 属于
+    metrics:
+      - name: total_loan_amount
+        description: demo asset (should lose)
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+    hierarchies:
+      - name: product_hierarchy
+        display_name: 产品层级
+        dataset: loan
+        levels: [loan_id]
+      - name: time_hierarchy
+        dataset: loan
+        levels: [loan_id]
+"""
+
+#: KB(override):只改其他字段(metric 定义 + 新增数据集),不碰三块声明 ——
+#: 合并后三块必须原样存活。
+ONTOLOGY_OVERLAY = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: district
+        source: financial.district
+        primary_key: [district_id]
+        fields:
+          - name: district_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
+    metrics:
+      - name: total_loan_amount
+        description: KB authoritative
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount) * 2}]}
+"""
+
+
+def _ontology_provider(tmp_path, semantic_dir, overlay_yaml: str):
+    kb_path = Path(tmp_path) / "kb" / "financial" / "semantics.yml"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(overlay_yaml, encoding="utf-8")
+    _write(semantic_dir, ONTOLOGY_BASE)
+    return SemanticLayerProvider(semantic_dir, "financial", kb_semantics_path=kb_path)
+
+
+def test_merge_preserves_object_view_declarations(tmp_path, semantic_dir):
+    """base 带三块声明 + overlay 改其他字段 → 合并后三块仍在(N11)。"""
+    p = _ontology_provider(tmp_path, semantic_dir, ONTOLOGY_OVERLAY)
+    m = p.model()
+    assert m is not None
+    # 覆盖真的发生了(否则下面的断言在测一条没跑合并的路径)
+    metrics = {x.name: x for x in m.metrics}
+    assert metrics["total_loan_amount"].definition == "KB authoritative"
+    assert {d.name for d in m.datasets} == {"loan", "account", "district"}
+    # 数据集级 entity 随对象整体存活
+    loan = next(d for d in m.datasets if d.name == "loan")
+    assert loan.entity is not None
+    assert loan.entity.display_name == "贷款"
+    assert loan.entity.natural_keys == ["loan_id"]
+    assert loan.entity.aliases == ["借款"]
+    # relationship.display_name 存活
+    rel = next(r for r in m.relationships if r.name == "loan_to_account")
+    assert rel.display_name == "属于"
+    # 模型级 hierarchies 存活(显式重建漏掉这一行 = 整段静默丢弃)
+    assert [h.name for h in m.hierarchies] == [
+        "product_hierarchy", "time_hierarchy"]
+    assert m.hierarchies[0].display_name == "产品层级"
+    assert m.hierarchies[0].levels == ["loan_id"]
+
+
+def test_merge_of_hierarchies_is_by_name_override_wins(tmp_path, semantic_dir):
+    """overlay 同名层级整体替换 base 版本,不同名并列(与 topics 同一条规则)。
+
+    字段级并集在这里会得到一条谁都没写过的链 —— 所以是整体替换。
+    """
+    overlay = """
+semantic_model:
+  - name: financial_analytics
+    hierarchies:
+      - name: product_hierarchy
+        display_name: KB 产品层级
+        dataset: account
+        levels: [account_id]
+      - name: new_hierarchy
+        dataset: account
+        levels: [account_id]
+"""
+    p = _ontology_provider(tmp_path, semantic_dir, overlay)
+    m = p.model()
+    assert m is not None
+    by_name = {h.name: h for h in m.hierarchies}
+    assert set(by_name) == {"product_hierarchy", "time_hierarchy", "new_hierarchy"}
+    assert by_name["product_hierarchy"].display_name == "KB 产品层级"
+    assert by_name["product_hierarchy"].dataset == "account"
+    assert by_name["time_hierarchy"].levels == ["loan_id"]  # base 独有名目保留
+
+
+def test_merge_without_overlay_keeps_base_declarations(tmp_path, semantic_dir):
+    """KB 文件缺席(纯配置目录)→ 三块声明原样(合并路径的另一侧)。"""
+    _write(semantic_dir, ONTOLOGY_BASE)
+    p = SemanticLayerProvider(
+        semantic_dir, "financial",
+        kb_semantics_path=Path(tmp_path) / "kb" / "financial" / "semantics.yml")
+    m = p.model()
+    assert m is not None
+    loan = next(d for d in m.datasets if d.name == "loan")
+    assert loan.entity is not None and loan.entity.display_name == "贷款"
+    assert m.relationships[0].display_name == "属于"
+    assert [h.name for h in m.hierarchies] == [
+        "product_hierarchy", "time_hierarchy"]
+
+
 # ── 漂移检测(声明模型 vs 实时 catalog)──────────────────────
 
 DRIFT_MODEL = """

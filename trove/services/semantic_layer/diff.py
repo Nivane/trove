@@ -19,7 +19,7 @@ from typing import Any
 from trove.services.semantic_layer.models import SemanticModel
 from trove.services.semantic_layer.ossie import parse_ossie
 
-_SECTIONS = ("datasets", "metrics", "relationships", "topics")
+_SECTIONS = ("datasets", "metrics", "relationships", "topics", "hierarchies")
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,9 @@ def _entity_rows(model: SemanticModel) -> dict[str, dict[str, dict[str, Any]]]:
         rows["relationships"][r.name] = dataclasses.asdict(r)
     for t in model.topics:
         rows["topics"][t.name] = dataclasses.asdict(t)
+    # 层级是模型级块(设计 §4.3):按 name 进 hierarchies 节。
+    for h in model.hierarchies:
+        rows["hierarchies"][h.name] = dataclasses.asdict(h)
     return rows
 
 

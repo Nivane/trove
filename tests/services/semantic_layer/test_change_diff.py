@@ -15,6 +15,10 @@ semantic_model:
   - name: loan
     source: loan
     primary_key: [loan_id]
+    entity:
+      display_name: 贷款
+      natural_keys: [loan_id]
+      aliases: [借款]
     fields:
     - name: amount
       datatype: Real
@@ -41,6 +45,7 @@ semantic_model:
     to: customer
     from_columns: [customer_id]
     to_columns: [customer_id]
+    display_name: 属于
   metrics:
   - name: total_loan
     expression:
@@ -49,6 +54,11 @@ semantic_model:
   topics:
   - name: credits
     datasets: [loan]
+  hierarchies:
+  - name: product_hierarchy
+    display_name: 产品层级
+    dataset: loan
+    levels: [loan_id, amount]
 """
 
 
@@ -82,6 +92,7 @@ _SECTIONS = {
     "fields": ("fields", sem_models.SemanticField),
     "relationships": ("relationships", sem_models.SemanticRelationship),
     "topics": ("topics", sem_models.TopicDomain),
+    "hierarchies": ("hierarchies", sem_models.Hierarchy),
 }
 
 
@@ -126,6 +137,43 @@ def test_every_field_change_is_visible(section):
         diff = _diff_rows(_entity_rows(model), _entity_rows(after), [])
         assert diff.entities[section].modified or diff.entities[section].added, \
             f"{section}.{f.name} 的变化不可见"
+
+
+def test_entity_declaration_change_produces_a_diff_row():
+    """改 entity(对象视图声明)必须在变更历史里可见。
+
+    entity 是 dataset 的字段,经反射进 datasets 行的比对 —— 这正是
+    「E1 三块声明在 diff 里成活」的第一块。
+    """
+    from trove.services.semantic_layer.diff import _diff_rows
+
+    model = _parse(RICH_YAML)
+    entity = dataclasses.replace(model.datasets[0].entity, display_name="贷款对象")
+    ds = dataclasses.replace(model.datasets[0], entity=entity)
+    after = dataclasses.replace(model, datasets=[ds, *model.datasets[1:]])
+    diff = _diff_rows(_entity_rows(model), _entity_rows(after), [])
+    assert diff.entities["datasets"].modified == ["loan"]
+
+
+def test_hierarchy_added_and_removed_are_visible():
+    from trove.services.semantic_layer.diff import _diff_rows
+
+    model = _parse(RICH_YAML)
+    dropped = dataclasses.replace(model, hierarchies=[])
+    diff = _diff_rows(_entity_rows(model), _entity_rows(dropped), [])
+    assert diff.entities["hierarchies"].removed == ["product_hierarchy"]
+    diff = _diff_rows(_entity_rows(dropped), _entity_rows(model), [])
+    assert diff.entities["hierarchies"].added == ["product_hierarchy"]
+
+
+def test_relationship_display_name_change_is_visible():
+    from trove.services.semantic_layer.diff import _diff_rows
+
+    model = _parse(RICH_YAML)
+    rel = dataclasses.replace(model.relationships[0], display_name="归属")
+    after = dataclasses.replace(model, relationships=[rel, *model.relationships[1:]])
+    diff = _diff_rows(_entity_rows(model), _entity_rows(after), [])
+    assert diff.entities["relationships"].modified == ["loan_to_customer"]
 
 
 def test_dataset_row_compares_field_names_only():

@@ -31,6 +31,7 @@ from trove.services.kb.lint import lint_semantics_document
 from trove.services.kb.service import KbService
 from trove.services.semantic_layer.models import (
     SemanticDataset,
+    SemanticEntity,
     SemanticField,
     SemanticMetric,
     SemanticModel,
@@ -156,6 +157,22 @@ def _field_to_dict(f: SemanticField) -> dict[str, Any]:
     }
 
 
+def _entity_to_dict(e: SemanticEntity | None) -> dict[str, Any] | None:
+    """实体声明 → 管理页视图;``None``(未声明)原样透出。
+
+    三键**恒写**(含空值):``entity: null`` 与三键全空的字典在管理页是
+    两件不同的事 —— 前者是"没声明",后者不可能由解析器产出(空块已归一
+    为 None)。消费方(前端/评审)据 ``null`` 判 ``declared``。
+    """
+    if e is None:
+        return None
+    return {
+        "display_name": e.display_name,
+        "natural_keys": list(e.natural_keys),
+        "aliases": list(e.aliases),
+    }
+
+
 def _dataset_to_dict(d: SemanticDataset) -> dict[str, Any]:
     return {
         "name": d.name,
@@ -165,6 +182,8 @@ def _dataset_to_dict(d: SemanticDataset) -> dict[str, Any]:
         "row_filter": d.row_filter,
         "description": d.description,
         "synonyms": list(d.synonyms),
+        # 实体声明(设计 §4.1):缺省 None = 未声明(存量模型逐字节同前)。
+        "entity": _entity_to_dict(d.entity),
         "fields": [_field_to_dict(f) for f in d.fields],
         "examples": list(d.examples),
         "custom_extensions": list(d.custom_extensions),
@@ -197,6 +216,8 @@ def _relationship_to_dict(r: SemanticRelationship) -> dict[str, Any]:
         "to_columns": list(r.to_columns),
         "cardinality": r.cardinality,
         "fan_out": r.fan_out,
+        # 边显示名(设计 §4.2):空串 = 未声明(读侧回退列名连接串)。
+        "display_name": r.display_name,
         "examples": list(r.examples),
         "custom_extensions": list(r.custom_extensions),
     }
@@ -234,6 +255,16 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
                 "custom_extensions": list(t.custom_extensions),
             }
             for t in m.topics
+        ],
+        # 钻取层级(可选段):声明原样透出 —— 读侧不发明回退(设计 §4.3)。
+        "hierarchies": [
+            {
+                "name": h.name,
+                "display_name": h.display_name,
+                "dataset": h.dataset,
+                "levels": list(h.levels),
+            }
+            for h in m.hierarchies
         ],
         # 形状即 OSSIE 形状(无 dialects 嵌套)→ 管理页看得见、可原样回灌
         "masking": {
@@ -428,7 +459,11 @@ def _apply_dataset(model: dict[str, Any], action: str, name: str,
         if not payload.get("fields") and old.get("fields"):
             ds["fields"] = old["fields"]
         _carryover(old, ds, "unique_keys", "row_filter", "examples",
-                   "custom_extensions", "ai_context", "description", "fields")
+                   "custom_extensions", "ai_context", "description", "fields",
+                   # 实体声明与 dataset 草稿是两条写路径(E2):只改元数据的
+                   # dataset upsert 不得把手写的 entity 子块抹掉(N11 同款
+                   # 静默丢失,方向是「声明看起来还在、其实没了」)。
+                   "entity")
         model["datasets"][idx] = ds
     else:
         model["datasets"].append(ds)
@@ -539,9 +574,26 @@ _DIFF_LABELS: dict[str, str] = {
     "row_filter": "行过滤 row_filter",
     "fields": "字段清单 fields",
     "metrics": "收敛指标 metrics",
+    # 对象视图声明(设计 §4 三块增量):diff 行标签与动作标签同步加条目。
+    "entity": "实体 entity",
+    "display_name": "显示名 display_name",
+    "hierarchies": "钻取层级 hierarchies",
+    "natural_keys": "自然键 natural_keys",
+    "aliases": "别名 aliases",
+    "dataset": "归属数据集 dataset",
+    "levels": "级别 levels",
+    "from": "起点 from",
+    "to": "终点 to",
+    "from_columns": "起点列 from_columns",
+    "to_columns": "终点列 to_columns",
+    "cardinality": "基数 cardinality",
+    "fan_out": "扇出 fan_out",
 }
 
-_ACTION_LABELS = {"metric": "指标", "field": "字段", "dataset": "数据集", "topic": "主题域"}
+_ACTION_LABELS = {
+    "metric": "指标", "field": "字段", "dataset": "数据集", "topic": "主题域",
+    "entity": "实体", "hierarchy": "钻取层级", "relationship": "关系",
+}
 
 
 def _present(value: Any) -> bool:
@@ -589,6 +641,19 @@ def _find_entity(data: dict[str, Any] | None, kind: str,
     if kind == "topic":
         return next((t for t in model.get("topics", []) or []
                      if isinstance(t, dict) and t.get("name") == name), None)
+    if kind == "entity":
+        # 实体是数据集级子块(设计 §4.1):kind 名 = 归属数据集名。
+        ds = next((d for d in datasets if d.get("name") == name), None)
+        if ds is None:
+            return None
+        entity = ds.get("entity")
+        return entity if isinstance(entity, dict) else None
+    if kind == "hierarchy":
+        return next((h for h in model.get("hierarchies", []) or []
+                     if isinstance(h, dict) and h.get("name") == name), None)
+    if kind == "relationship":
+        return next((r for r in model.get("relationships", []) or []
+                     if isinstance(r, dict) and r.get("name") == name), None)
     if kind == "field":
         ds_name, sep, field_name = name.partition(".")
         if not sep:
@@ -658,6 +723,29 @@ def _raw_view(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
         put("description", str(entry.get("description") or ""))
         put("synonyms", [str(s) for s in entry.get("synonyms") or [] if s])
         put("examples", [str(e) for e in entry.get("examples") or [] if e])
+        put("custom_extensions", list(entry.get("custom_extensions") or []))
+    elif kind == "entity":
+        # 实体子块(设计 §4.1)同样扁平,且只有这三个键(无 ai_context)。
+        put("display_name", str(entry.get("display_name") or ""))
+        put("natural_keys", [str(k) for k in entry.get("natural_keys") or [] if k])
+        put("aliases", [str(a) for a in entry.get("aliases") or [] if a])
+    elif kind == "hierarchy":
+        # 层级是模型级扁平块(设计 §4.3):name/display_name/dataset/levels。
+        put("name", str(entry.get("name") or ""))
+        put("display_name", str(entry.get("display_name") or ""))
+        put("dataset", str(entry.get("dataset") or ""))
+        put("levels", [str(x) for x in entry.get("levels") or [] if x])
+    elif kind == "relationship":
+        put("name", str(entry.get("name") or ""))
+        put("from", str(entry.get("from") or ""))
+        put("to", str(entry.get("to") or ""))
+        put("from_columns", [str(c) for c in entry.get("from_columns") or [] if c])
+        put("to_columns", [str(c) for c in entry.get("to_columns") or [] if c])
+        put("cardinality", str(entry.get("cardinality") or ""))
+        put("fan_out", str(entry.get("fan_out") or ""))
+        # 边显示名(设计 §4.2):纯展示字段,空串不落键(未声明)。
+        put("display_name", str(entry.get("display_name") or ""))
+        put("examples", list(ai.get("examples") or []))
         put("custom_extensions", list(entry.get("custom_extensions") or []))
     return out
 

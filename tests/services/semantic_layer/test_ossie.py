@@ -4,6 +4,8 @@ The parser turns an Ossie semantic model into SemanticModel/SemanticMetric,
 picking the dialect expression that matches the active adapter and
 extracting the datasets referenced by each metric expression.
 """
+import logging
+
 import pytest
 
 from trove.services.semantic_layer.ossie import parse_ossie
@@ -584,3 +586,257 @@ semantic_model:
     metrics: []
 """, preferred_dialect="sqlite")
     assert model.datasets[0].row_filter == ""
+
+
+# ── 对象视图声明(entity / relationship.display_name / hierarchies)──
+
+ENTITY_YAML = """
+semantic_model:
+  - name: fin
+    datasets:
+      - name: loan
+        primary_key: [loan_id]
+        entity:
+          display_name: 贷款
+          natural_keys: [loan_id, contract_no]
+          aliases: [借款, loan]
+        fields:
+          - name: loan_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+      - name: account
+        primary_key: [account_id]
+        fields:
+          - name: account_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+    relationships:
+      - name: loan_to_account
+        from: loan
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        display_name: 属于
+    hierarchies:
+      - name: product_hierarchy
+        display_name: 产品层级
+        dataset: loan
+        levels: [product_class, product_name]
+    metrics: []
+"""
+
+_ENTITY_BLOCK = (
+    "        entity:\n"
+    "          display_name: 贷款\n"
+    "          natural_keys: [loan_id, contract_no]\n"
+    "          aliases: [借款, loan]\n"
+)
+
+
+def test_parse_dataset_entity_sub_block():
+    model = parse_ossie(ENTITY_YAML, preferred_dialect="sqlite")
+    entity = model.datasets[0].entity
+    assert entity is not None
+    assert entity.display_name == "贷款"
+    assert entity.natural_keys == ["loan_id", "contract_no"]
+    assert entity.aliases == ["借款", "loan"]
+    # 未声明 entity 的兄弟数据集不受影响
+    assert model.datasets[1].entity is None
+
+
+def test_parse_entity_aliases_are_cleaned():
+    """复用 ``_clean_names``:空白丢弃、保序去重、裸标量容忍。"""
+    text = """
+semantic_model:
+  - name: fin
+    datasets:
+      - name: loan
+        entity:
+          aliases: [" 借款 ", 借款, "", loan]
+        fields: []
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    entity = model.datasets[0].entity
+    assert entity is not None
+    assert entity.aliases == ["借款", "loan"]  # 去空白 + 保序去重
+    assert entity.display_name == ""
+
+    scalar = ENTITY_YAML.replace(
+        _ENTITY_BLOCK,
+        "        entity: {aliases: ' 借款 '}\n")
+    assert scalar != ENTITY_YAML  # 替换确实生效(fixture 漂移会红)
+    entity = parse_ossie(scalar, preferred_dialect="sqlite").datasets[0].entity
+    assert entity is not None
+    assert entity.aliases == ["借款"]  # 裸标量 → 单元素,两侧空白去掉
+
+
+def test_empty_entity_block_is_none():
+    """``entity: {}``(三键全空)与缺席同义 → None,不产生「全是默认」的中间态。"""
+    stripped = ENTITY_YAML.replace(_ENTITY_BLOCK, "        entity: {}\n")
+    assert stripped != ENTITY_YAML  # 替换确实生效(fixture 漂移会红)
+    model = parse_ossie(stripped, preferred_dialect="sqlite")
+    assert model.datasets[0].entity is None
+
+
+@pytest.mark.parametrize("block", ["5", "[1, 2]", "a bare string"])
+def test_bad_shape_entity_block_is_ignored(block):
+    """坏形状忽略而不是猜 —— 且不得把整个模型解析炸掉。"""
+    text = ENTITY_YAML.replace(_ENTITY_BLOCK, f"        entity: {block}\n")
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.datasets[0].entity is None
+
+
+def test_entity_unknown_sub_keys_are_ignored():
+    """未知子键不报错也不产生字段 —— 只有三键声明被认。"""
+    text = ENTITY_YAML.replace(
+        "          aliases: [借款, loan]\n",
+        "          aliases: [借款, loan]\n          future_key: whatever\n")
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    entity = model.datasets[0].entity
+    assert entity is not None
+    assert entity.display_name == "贷款"
+    assert not hasattr(entity, "future_key")
+
+
+def test_parse_relationship_display_name():
+    model = parse_ossie(ENTITY_YAML, preferred_dialect="sqlite")
+    assert model.relationships[0].display_name == "属于"
+
+
+def test_parse_relationship_display_name_defaults_empty():
+    """未声明 → 空串(读侧回退列连接串,声明层保持缺失即缺失)。"""
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    assert model.relationships[0].display_name == ""
+
+
+def test_parse_hierarchies():
+    model = parse_ossie(ENTITY_YAML, preferred_dialect="sqlite")
+    assert len(model.hierarchies) == 1
+    h = model.hierarchies[0]
+    assert h.name == "product_hierarchy"
+    assert h.display_name == "产品层级"
+    assert h.dataset == "loan"
+    assert h.levels == ["product_class", "product_name"]
+
+
+def test_hierarchy_levels_cleaned_and_deduped():
+    text = """
+semantic_model:
+  - name: fin
+    datasets: [{name: loan}]
+    hierarchies:
+      - name: h
+        dataset: loan
+        levels: [a, " a ", "", b]
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.hierarchies[0].levels == ["a", "b"]
+
+
+@pytest.mark.parametrize("levels,expected", [("region", ["region"]), (5, [])])
+def test_hierarchy_levels_scalar_tolerance(levels, expected):
+    """裸标量 → 单元素(与 ``_clean_names`` 同法);非列表容器 → 空。"""
+    text = f"""
+semantic_model:
+  - name: fin
+    datasets: [{{name: loan}}]
+    hierarchies:
+      - name: h
+        dataset: loan
+        levels: {levels!r}
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.hierarchies[0].levels == expected
+
+
+def test_bad_hierarchy_entries_dropped_leniently():
+    """非字典条目 / 空名条目丢弃,其余照常解析(与 topics 同款宽容)。"""
+    text = """
+semantic_model:
+  - name: fin
+    datasets: [{name: loan}]
+    hierarchies:
+      - "not a dict"
+      - {dataset: loan, levels: [a]}
+      - {name: "   ", dataset: loan}
+      - {name: good, dataset: loan, levels: [x]}
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert [h.name for h in model.hierarchies] == ["good"]
+
+
+def test_absent_object_view_declarations_default_inert():
+    """存量模型(无三块声明):entity None、display_name 空串、hierarchies 空。"""
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    assert all(d.entity is None for d in model.datasets)
+    assert model.hierarchies == []
+
+
+def test_document_level_entity_is_ignored_with_a_warning(caplog):
+    """文档根出现 entity = 放错层:不生效、不崩,但必须出声(N1–N3)。"""
+    text = """
+entity:
+  display_name: 贷款
+semantic_model:
+  - name: fin
+    datasets: [{name: loan}]
+    metrics: []
+"""
+    with caplog.at_level(
+        logging.WARNING, logger="trove.services.semantic_layer.ossie"
+    ):
+        model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.datasets[0].entity is None
+    assert any("entity" in r.getMessage() and "datasets" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_document_level_hierarchies_is_ignored_with_a_warning(caplog):
+    text = """
+hierarchies:
+  - name: h
+    dataset: loan
+    levels: [a]
+semantic_model:
+  - name: fin
+    datasets: [{name: loan}]
+    metrics: []
+"""
+    with caplog.at_level(
+        logging.WARNING, logger="trove.services.semantic_layer.ossie"
+    ):
+        model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.hierarchies == []
+    assert any("hierarchies" in r.getMessage()
+               and "semantic_model[0]" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_misplaced_declarations_do_not_crash_the_parse():
+    """两块同时放错层:出声但模型照常解析出来(provider 不会因此丢 last-good)。"""
+    text = """
+entity: {display_name: x}
+hierarchies: [{name: h, dataset: loan}]
+semantic_model:
+  - name: fin
+    datasets: [{name: loan}]
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.name == "fin"
+    assert [d.name for d in model.datasets] == ["loan"]
+
+
+def test_model_level_entity_is_not_a_dataset_entity():
+    """entity 只认 dataset 子块:写进 semantic_model[0] 顶层不会被当声明认领。"""
+    text = """
+semantic_model:
+  - name: fin
+    entity: {display_name: 贷款}
+    datasets: [{name: loan}]
+    metrics: []
+"""
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    assert model.datasets[0].entity is None
