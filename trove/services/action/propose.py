@@ -102,6 +102,55 @@ def primary_group(outcome: Any) -> dict[str, Any]:
     return fired[0]
 
 
+def entity_key(rule: Any, outcome: Any) -> tuple[str, str] | None:
+    """提案载荷点名的 ``(维度字段引用, 组值)`` —— 对象引用(E8)的输入。
+
+    只认**恰好一个**维度:多维规则的组标签是 ``" / "`` 连接的拼接值
+    (``decision/service.py::_to_map``),拼串不是任何实体的键值,单键
+    语义在那里不成立 —— 宁缺不猜,``None``。聚合规则的行卡 ``dim == ""``
+    (引擎对总体的标签就是空串),同样落进空值门。
+
+    组值**原样**返回(不 strip、不归一):它是库里读到的那个字符串,
+    引用是一份审计记录 —— 冻结的必须是当时读到的那一个值,展示层怎么
+    读是展示层的事。纯空白值等同于空(前端守卫只丢 ``''``/null,空白串
+    会渲染成一个空白对象名,不如在这里当缺席)。
+
+    ``rule.action.params`` 的显示覆盖**不影响**这里:参数改的是消息措辞
+    (``build_variables``),``group`` 的钉法钉的是**被判定/被测量的那一组**
+    (B7 同款纪律),entity_ref 与被验收的组同源,不跟措辞走。
+    """
+    dims = list(getattr(getattr(rule, "subject", None), "dimensions", []) or [])
+    if len(dims) != 1:
+        return None
+    value = primary_group(outcome).get("dim")
+    text = "" if value is None else str(value)
+    if not text.strip():
+        return None
+    return str(dims[0]), text
+
+
+def entity_ref(value: Any, spec: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``(组值, 键字段规格)`` → ``{"type", "keys"}``;不全就不给(E8,设计 §5.6)。
+
+    形状与前端守卫(``frontend/src/utils/entityRef.ts::parseEntityRef``)
+    逐条对齐:``type`` 去空白后非空、``keys`` 恰一个键、值非空 —— 守卫
+    会把空值键丢光,丢光就整块不渲染,所以**发不出空值**:发一个只会让
+    同一份证据在两处读法不同。spec 坏形(缺 type/field)→ ``None``;
+    ``value`` 必须是字符串化的非空白值(键值原样,special chars 不转义
+    —— JSON 序列化负责传输,这里不做第二套转义)。
+    """
+    if not isinstance(spec, dict):
+        return None
+    etype = str(spec.get("type") or "").strip()
+    field = str(spec.get("field") or "").strip()
+    if not etype or not field:
+        return None
+    text = "" if value is None else str(value)
+    if not text.strip():
+        return None
+    return {"type": etype, "keys": {field: text}}
+
+
 def build_variables(
     rule: Any, outcome: Any, datasource: str, *,
     proposal_id: str, run_id: int | None = None, job_id: str = "",

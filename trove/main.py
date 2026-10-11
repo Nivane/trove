@@ -460,6 +460,13 @@ async def create_app_components(
     from trove.services.decision.outcome import make_verifier
 
     actions.verifier = make_verifier(decision, kb=kb)
+    # 对象引用(本体形态 E8):同一姿态的第二档 —— 解析器从 decision 侧
+    # 装配(复用 ``_dialect`` / ``_model_for``,提案里钉下的对象引用与
+    # 判定编译看到的是同一份声明),以 callable 注入行动包。缺省不绑 =
+    # 提案不带 entity_ref(与 ``verifier`` 同一句装配纪律)。
+    from trove.services.decision.entity_ref import make_entity_lookup
+
+    actions.entity_lookup = make_entity_lookup(decision)
     # 测量延迟(天)。默认 0 = 测量腿全关(app.py 的 sweep 腿按它门控)。
     actions.outcome_after_days = int(config.action.outcome_after_days or 0)
     # 主动扫描(B6):执行面**注入**而不是交给它连接器 —— scan 包物理上
