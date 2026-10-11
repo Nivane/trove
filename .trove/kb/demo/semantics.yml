@@ -5,6 +5,12 @@ semantic_model:
     source: account
     primary_key:
     - account_id
+    entity:
+      display_name: Account
+      natural_keys:
+      - account_id
+      aliases:
+      - account
     fields:
     - name: account_id
       expression:
@@ -144,6 +150,13 @@ semantic_model:
     source: client
     primary_key:
     - client_id
+    entity:
+      display_name: Client
+      natural_keys:
+      - client_id
+      aliases:
+      - client
+      - customer
     fields:
     - name: client_id
       expression:
@@ -894,6 +907,7 @@ semantic_model:
     to_columns:
     - district_id
     cardinality: 1:N
+    display_name: Account district
   - name: card_to_disp
     from: card
     to: disp
@@ -950,6 +964,22 @@ semantic_model:
     to_columns:
     - account_id
     cardinality: 1:N
+  - name: trans_to_disp_mn
+    from: trans
+    to: disp
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: M:N
+    display_name: Account touchpoints
+  hierarchies:
+  - name: district_geo
+    display_name: Geography
+    dataset: district
+    levels:
+    - A3
+    - A2
   metrics:
   - name: number of account records
     expression:
