@@ -60,7 +60,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L110">models.py:110 <span class="ref-line">ActionProposal</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L153">service.py:153 <span class="ref-line">ActionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L155">service.py:155 <span class="ref-line">ActionService</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L130">dispatcher.py:130 <span class="ref-line">ActionDispatcher</span></a>
     </p>
 
@@ -117,8 +117,8 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L38">models.py:38 <span class="ref-line">PROPOSAL_STATUSES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L420">service.py:420 <span class="ref-line">dispatch</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L719">service.py:719 <span class="ref-line">ack</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L460">service.py:460 <span class="ref-line">dispatch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L759">service.py:759 <span class="ref-line">ack</span></a>
     </p>
 
     <h3>载荷创建即定稿</h3>
@@ -136,8 +136,8 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L750">service.py:750 <span class="ref-line">_envelope</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L164">propose.py:164 <span class="ref-line">build_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L790">service.py:790 <span class="ref-line">_envelope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L213">propose.py:213 <span class="ref-line">build_proposal</span></a>
     </p>
 
     <h3>同一触发，只提案一次</h3>
@@ -154,7 +154,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L38">propose.py:38 <span class="ref-line">idempotency_key</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L227">service.py:227 <span class="ref-line">propose_from_verdict</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L255">service.py:255 <span class="ref-line">propose_from_verdict</span></a>
     </p>
 
     <p>
@@ -292,7 +292,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L57">rules.py:57 <span class="ref-line">AUTONOMIES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L319">service.py:319 <span class="ref-line">approve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L359">service.py:359 <span class="ref-line">approve</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L347">config.py:347 <span class="ref-line">enabled</span></a>
     </p>
 
@@ -330,7 +330,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L117">service.py:117 <span class="ref-line">BATCH_DECISIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L119">service.py:119 <span class="ref-line">BATCH_DECISIONS</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L221">actions.py:221 <span class="ref-line">batch</span></a>
     </p>
 
@@ -354,7 +354,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L198">dispatcher.py:198 <span class="ref-line">send</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L500">service.py:500 <span class="ref-line">retry</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L540">service.py:540 <span class="ref-line">retry</span></a>
     </p>
 
     <h2 id="guards">外送不是一次 POST 赌一把：护栏与重试</h2>
@@ -400,8 +400,8 @@ flowchart LR
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L115">guard.py:115 <span class="ref-line">backoff_delay</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L137">guard.py:137 <span class="ref-line">next_attempt_at</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L123">dispatcher.py:123 <span class="ref-line">retryable</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L420">service.py:420 <span class="ref-line">dispatch</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L511">service.py:511 <span class="ref-line">retry_due_proposals</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L460">service.py:460 <span class="ref-line">dispatch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L551">service.py:551 <span class="ref-line">retry_due_proposals</span></a>
     </p>
 
     <h2 id="pull">拉通道：MCP 与 webhook 并列</h2>
@@ -486,7 +486,7 @@ flowchart LR
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L131">effect.py:131 <span class="ref-line">measure_effect</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/outcome.py#L98">outcome.py:98 <span class="ref-line">make_verifier</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L565">service.py:565 <span class="ref-line">measure_due</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L605">service.py:605 <span class="ref-line">measure_due</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L197">actions.py:197 <span class="ref-line">outcomes 端点</span></a>
     </p>
 
@@ -582,7 +582,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
