@@ -129,7 +129,7 @@ flowchart LR
       tier / body / history / rollback / disable / enable，
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L266">skills.py:266 <span class="ref-line">history</span></a>）、
       语义模型草稿（drafts / confirm / reject / history / rollback，
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L195">semantic.py:195 <span class="ref-line">history</span></a>）、
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L221">semantic.py:221 <span class="ref-line">history</span></a>）、
       行动模板（confirm / reject，
       <a href="action-safety.html">行动安全架构</a>）。
       学习回路（<a href="closed-loop.html">闭环与契约</a>）的产物也全部落在这一形状里——
@@ -193,7 +193,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L71">guards.py:71 <span class="ref-line">GUARD_TARGETS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L61">execute_sql.py:61 <span class="ref-line">ORG_GUARD_TAG</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L62">execute_sql.py:62 <span class="ref-line">ORG_GUARD_TAG</span></a>
     </p>
 
     <h2 id="validate">干跑校验：一条能进 CI 的退出码契约</h2>
@@ -325,7 +325,7 @@ flowchart TB
 
     <p>
       配套的一条<strong>响度纪律</strong>值得单独说
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L275">service.py:275 <span class="ref-line">_org_enabled</span></a>）：
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L364">service.py:364 <span class="ref-line">_org_enabled</span></a>）：
       停用期间，定时决策任务<strong>报错</strong>（「已停用」），绝不静默按零规则通过——
       一个安静跑着的健康态和一个被关掉的判定，从运行记录上看必须不一样。
       这是全仓同一哲学的另一处实例：<a href="decision-engine.html#error">失败要响亮</a>，
@@ -587,7 +587,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 86ca61e</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

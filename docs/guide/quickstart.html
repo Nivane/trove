@@ -129,9 +129,9 @@ uv sync</code></pre>
 
     <p>
       两个入口共用同一套管线：<code>trove</code> 是交互 REPL
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L964">main.py:964 <span class="ref-line">main_repl</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L971">main.py:971 <span class="ref-line">main_repl</span></a>，
       <code>trove-cli</code> 是管道模式
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L674">main.py:674 <span class="ref-line">async_main_cli</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L681">main.py:681 <span class="ref-line">async_main_cli</span></a>。
     </p>
 
     <h3>4. 看看它凭什么这么答</h3>
@@ -217,7 +217,7 @@ flowchart LR
     <p>
       它会连上你的实时 schema，起草表/列注释，并<strong>确定性地</strong>生成语义模型骨架、术语与示例模板：
       能算出来的部分不交给模型，模型只负责措辞。
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L367">init_pipeline.py:367 <span class="ref-line">init_kb</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L441">init_pipeline.py:441 <span class="ref-line">init_kb</span></a>
     </p>
 
     <div class="callout note">
@@ -257,7 +257,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 4432f6d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
