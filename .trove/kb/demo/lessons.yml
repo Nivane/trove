@@ -104,23 +104,9 @@ lessons:
     district, including the year-over-year change'
   confirmed: false
   created_at: '2026-09-12T03:55:01.210061+00:00'
-- pattern: '校验规则: [F2-a] 问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件,也不含按 birth_number
-    推断性别的写法——检查是否漏了性别条件。'
-  note: '校验规则: [F2-a] 问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件,也不含按 birth_number
-    推断性别的写法——检查是否漏了性别条件。'
-  sql_snippet: 'SELECT client.gender, COUNT(*) AS num_clients
-
-    FROM client
-
-    GROUP BY client.gender'
-  confidence: 0.5
-  source: correction
-  evidence: 'question: How many clients are there for each gender?'
-  confirmed: false
-  created_at: '2026-10-11T13:57:34.890246+00:00'
 _meta:
   format: 1
-  generator: memory
+  generator: kb_reject_lesson
   trove: 0.1.0
-  digest: sha256:0ccc2574ddff5880905f18ae28cd2f1a4d986660b1ee3a7a1787f79348e301bc
-  generated_at: '2026-10-11T13:57:34.899534+00:00'
+  digest: sha256:046c97302aba96e356683c9226667fcc1c2b8ca867f9eaf0389b907e8c70a750
+  generated_at: '2026-10-11T14:12:31.270985+00:00'
