@@ -86,6 +86,8 @@ from trove.services.action.propose import (
     ProposalError,
     anchor_of,
     build_proposal,
+    entity_key,
+    entity_ref,
     primary_group,
     proposal_key,
 )
@@ -179,12 +181,38 @@ class ActionService:
         #: ``ActionGuards.from_config`` 显式绑定。默认 ActionGuards =
         #: 三道护栏全关 → 老路径逐字节不变。
         self.guards = ActionGuards()
+        #: 实体引用解析器(本体形态 E8,可选;与 ``verifier`` 同款姿态 ——
+        #: 实现体在包外 ``decision/entity_ref.py``,这里拿到的是一次调用,
+        #: 语义模型解析全在那侧)。构造签名保持姿态守卫钉死的形状,这一档
+        #: 同样走**运行时绑定**(装配点 main.py)。
+        #: 缺省 None = 不派生 entity_ref(未配置部署逐字节不变)。
+        self.entity_lookup = None
 
     # ── helpers ──────────────────────────────────────────
 
     @staticmethod
     def _now() -> datetime:
         return datetime.now()
+
+    async def _entity_spec(
+        self, datasource: str, dim_ref: str,
+    ) -> dict[str, Any] | None:
+        """实体键规格解析(best-effort):缺席/失败一律 ``None``。
+
+        引用是展示与审计元数据(设计 §5.6)—— 宁缺不猜:一次解析失败
+        让整条提案创建失败,是拿装饰件挡住了承重件。未绑解析器(老装配)
+        直接缺席。callable 抛异常 = 契约外的故障,记 warning(诊断用),
+        照旧缺席、绝不外抛。
+        """
+        lookup = self.entity_lookup
+        if lookup is None:
+            return None
+        try:
+            return await lookup(datasource, dim_ref)
+        except Exception as e:  # noqa: BLE001 — 见 docstring，绝不阻断提案
+            logger.warning("entity_ref: lookup failed for %s / %s: %s",
+                           datasource, dim_ref, e)
+            return None
 
     async def _proposal_or_raise(self, proposal_id: str) -> ActionProposal:
         p = await self.store.get_proposal(proposal_id)
@@ -293,6 +321,18 @@ class ActionService:
         evidence = getattr(outcome, "evidence", None) or {}
         refs.setdefault("rule_rev", str(evidence.get("rule_rev") or ""))
         refs.setdefault("group", str(primary_group(outcome).get("dim") or ""))
+        # 本体形态(E8):消息点名的那一组若落在一个**已声明实体**的自然键
+        # 上(含 D1 回退:实体数据集主键),在同一个时点再钉一份对象引用
+        # (设计 §5.6,与 group 同源 —— 同一次 primary_group 的答案)。
+        # 解析不了 / 未声明 / 聚合规则 / 多键标签 → 整键缺席:宁缺不猜
+        # (N37);解析器未绑定(老装配)同样缺席。引用是展示与审计元数据,
+        # 它的一切失败都不得影响提案创建本身。
+        key = entity_key(rule, outcome)
+        if key is not None:
+            spec = await self._entity_spec(datasource, key[0])
+            ref = entity_ref(key[1], spec)
+            if ref is not None:
+                refs.setdefault("entity_ref", ref)
         proposal = build_proposal(
             rule=rule, outcome=outcome, datasource=datasource,
             template=template, run_id=run_id, job_id=job_id,
