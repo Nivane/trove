@@ -234,10 +234,15 @@
               />
               <!-- 拒绝出口(A1):拒绝不该是死胡同 —— 后端给全 label 与
                    管理端深链,这里只渲染(NextActions 组件自带空列表隐藏
-                   与 admin_only 角色闸)。与拒绝文案同屏,不依赖步骤卡展开。 -->
+                   与 admin_only 角色闸)。与拒绝文案同屏,不依赖步骤卡展开。
+                   已声明的链接(本体形态 O1)同屏:键缺席整节不渲染。 -->
               <NextActions
                 v-if="turn.status === 'done'"
                 :actions="turn.summary?.refusal?.next_actions ?? []"
+              />
+              <RefusalRelatedLinks
+                v-if="turn.status === 'done'"
+                :links="turn.summary?.refusal?.related_links"
               />
               <!-- 溯源条:答案自带身份(数据源·时间·模型·run_id + 状态 chip),
                    默认一行,点开 12 行明细。拿不到就不显示(P1 验收第 3 条)。 -->
@@ -366,6 +371,7 @@ import EvidenceDrawer from '../components/chat/EvidenceDrawer.vue'
 import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
 import NextActions from '../components/chat/NextActions.vue'
+import RefusalRelatedLinks from '../components/chat/RefusalRelatedLinks.vue'
 import ProvenanceStrip from '../components/chat/ProvenanceStrip.vue'
 import VerifyStrip from '../components/chat/VerifyStrip.vue'
 import { maskingBadge } from '../utils/masking'

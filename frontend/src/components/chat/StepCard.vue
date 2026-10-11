@@ -213,9 +213,11 @@
         </div>
         <MarkdownView v-if="view.text" :source="view.text" />
       </template>
-      <!-- refuse:拒绝文案 + 一键出口(A1;后端给全 label/深链,只渲染) -->
+      <!-- refuse:拒绝文案 + 一键出口(A1;后端给全 label/深链,只渲染)
+           + 已声明的链接(本体形态 O1;键缺席整节不渲染,只做投影) -->
       <template v-else-if="node === 'refuse'">
         <MarkdownView v-if="view.text" :source="view.text" />
+        <RefusalRelatedLinks :links="refuseLinks" />
         <NextActions :actions="refuseActions" />
       </template>
       <MarkdownView v-else-if="view.text" :source="view.text" />
@@ -241,6 +243,7 @@ import { computed } from 'vue'
 import { LoaderCircle } from 'lucide-vue-next'
 import MarkdownView from './MarkdownView.vue'
 import NextActions from './NextActions.vue'
+import RefusalRelatedLinks from './RefusalRelatedLinks.vue'
 import SqlBlock from './SqlBlock.vue'
 import { useUiStore } from '../../stores/ui'
 import {
@@ -262,7 +265,7 @@ import {
   fmtMs,
 } from '../../utils/steps'
 import type { StepCard as StepCardType } from '../../stores/chat'
-import type { NextActionInfo } from '../../api/types'
+import type { NextActionInfo, RelatedLinkInfo } from '../../api/types'
 import { t } from '../../i18n'
 
 const props = defineProps<{
@@ -289,6 +292,12 @@ const view = computed(() => extractStep(props.card.payload))
 // (主题域拒绝就是这样) —— 不替它编一个。
 const refuseActions = computed(
   () => (view.value.refusal?.next_actions as NextActionInfo[] | undefined) ?? [],
+)
+// 已声明的链接(本体形态 O1):refusal 是自由字典,related_links 缺席/null =
+// 后端没投影这件事(整节不渲染);空数组是**另一个事实**(该方向一条都没有),
+// 原样透传给组件 —— 不在这一层把 null 洗成 []。
+const refuseLinks = computed(
+  () => view.value.refusal?.related_links as RelatedLinkInfo[] | null | undefined,
 )
 const attempt = computed(() => props.attempt ?? 0)
 const elapsedMs = computed(() => {

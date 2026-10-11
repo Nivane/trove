@@ -73,7 +73,24 @@ export interface RefusalInfo {
   draft?: Record<string, unknown> | null
   draft_entry?: Record<string, unknown> | null
   next_actions?: NextActionInfo[]
+  /** 本体形态(O1):这次拒绝方向**已声明**的链接(只读投影,一条 = 显示名 +
+   *  基数)。三态如实:键缺席 = 后端还没投影这件事(整节不渲染);空数组 =
+   *  声明过但该方向一条都没有(渲染引导文案)—— 「读不到」与「读到了零」
+   *  不是同一件事。 */
+  related_links?: RelatedLinkInfo[] | null
   [k: string]: unknown
+}
+
+/** 拒绝卡「已声明的链接」的一条(E5/设计 §5.3 形状):
+ *  ``display_name`` 是关系的显示名(缺省回退关系名),``cardinality`` 是
+ *  OSSIE 记法原样("1:N" / "N:1" / "1:1" / "M:N";空 = 未声明)。前端逐字
+ *  渲染,不替它做语言映射。 */
+export interface RelatedLinkInfo {
+  name?: string
+  from?: string
+  to?: string
+  display_name?: string
+  cardinality?: string
 }
 
 import type { MaskingReport } from '../utils/masking'
@@ -565,6 +582,17 @@ export interface SemanticDatasetInfo {
   fields?: SemanticFieldInfo[]
   examples?: string[]
   custom_extensions?: unknown[]
+  /** 本体实体声明(本体形态 O1,设计 §4.1;可选键——缺席 = 这个数据集还没
+   *  声明实体,不是「声明了一个空实体」)。 */
+  entity?: SemanticEntityInfo | null
+}
+
+/** dataset 上的本体实体投影(E2 形状):显示名 / 自然键(可多列) / 别名。 */
+export interface SemanticEntityInfo {
+  dataset?: string
+  display_name?: string
+  natural_keys?: string[]
+  aliases?: string[]
 }
 
 export interface SemanticMetricInfo {
@@ -590,6 +618,9 @@ export interface SemanticRelationshipInfo {
   to_columns?: string[]
   cardinality?: string
   fan_out?: string
+  /** 显示名(可选):关系在「已声明的链接」与对象视图里的可读名。缺席/空串
+   *  = 没声明,回退关系名——不是另一种显示名。 */
+  display_name?: string
 }
 
 export interface SemanticTimeSpine {

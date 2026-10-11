@@ -1949,6 +1949,40 @@ button:disabled {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* ── Declared links (refusal card, ontology O1) ──────
+   The other half of a refusal: "what is already declared in this direction".
+   Read-only projection — the key absent means the backend did not project it
+   (nothing renders), an empty array is its own fact and gets the guidance
+   line (RefusalRelatedLinks.vue owns all three states). */
+.refusal-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-width: 46rem;
+  margin-top: var(--sp-2);
+}
+.refusal-links-label {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.refusal-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.refusal-link-row {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+.refusal-links-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
 /* ── Streaming ──────────────────────────────────────── */
 .streaming-badge {
   display: inline-flex;
