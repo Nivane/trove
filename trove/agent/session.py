@@ -116,6 +116,10 @@ class SessionManager:
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
         self._result_cache: dict[tuple, dict[str, Any]] = {}
+        # 答案卡对象列(设计 §5.7):(datasource, dialect) → 语义 provider。
+        # provider 自己按文件 mtime 现读(改语义模型下一问即生效),这里的
+        # memo 只是免掉每问重复解析,不是内容缓存。
+        self._object_column_providers: dict[tuple[str, str], Any] = {}
 
     async def dispose(self) -> None:
         """Release the session store's backend connection.
@@ -601,6 +605,8 @@ class SessionManager:
             return final
 
         final = WorkflowState.model_validate(result)
+        # 答案卡对象列(设计 §5.7):真跑完的答案才建映射(best-effort)。
+        self._attach_object_columns(final)
 
         await self._record_exchange(session, workflow_name, final)
         self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
@@ -763,6 +769,8 @@ class SessionManager:
         final = WorkflowState.model_validate(
             {k: v for k, v in result.items() if k != "__interrupt__"}
         )
+        # 答案卡对象列(设计 §5.7):续跑真执行过才建映射(best-effort)。
+        self._attach_object_columns(final)
 
         # 被打断子任务的消息与状态收尾
         store = self._task_store(session)
@@ -1249,6 +1257,8 @@ class SessionManager:
             return
 
         final = WorkflowState.model_validate(merged)
+        # 答案卡对象列(设计 §5.7):真跑完的答案才建映射(best-effort)。
+        self._attach_object_columns(final)
         await self._record_exchange(session, workflow_name, final, task=task, content_prefix=prefix)
 
         stats = self._run_stats(run_id, run_start)
@@ -2039,6 +2049,62 @@ class SessionManager:
         except Exception as e:
             logger.debug("Candidate capture skipped (%s): %s", type(e).__name__, e)
 
+    # ── 答案卡对象列(设计 §5.7 / FR-GRAPH-5)──────────────
+
+    def _object_column_provider(self, datasource: str, dialect: str):
+        """每 (数据源 × 方言) 一个语义 provider(与扫描/决策同一条构造路径)。
+
+        语义层读口是 provider 自己的 mtime 懒读 —— 语义模型改了下一次提问
+        就看到,这里的 memo 只是免掉每问重复解析,不是内容缓存。方言只影响
+        表达式解析口径;对象列匹配只读数据集/字段/entity 声明,与方言无关。
+        """
+        key = (datasource, dialect)
+        provider = self._object_column_providers.get(key)
+        if provider is None:
+            from pathlib import Path
+
+            from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+            root = Path(self._kb.kb_dir).parent / "semantic"
+            provider = SemanticLayerProvider(
+                directory=root / datasource,
+                datasource=datasource,
+                dialect=dialect,
+                kb_semantics_path=self._kb.semantics_path(datasource),
+            )
+            self._object_column_providers[key] = provider
+        return provider
+
+    def _attach_object_columns(self, final: WorkflowState) -> None:
+        """答案卡对象列:答案列 ↔ 已声明实体字段的唯一精确匹配(设计 §5.7)。
+
+        确定性、零 LLM、best-effort:没有 KB/没有语义模型/解析失败 →
+        ``object_columns`` 保持 None → summary **键缺席**(载荷逐字节不变)。
+        只写这一份展示映射,rows/columns 一字不改。
+
+        只在**真跑完的**答案上调用(缓存命中由 summary 往返带出,不重算 ——
+        命中重放的是当时那份答案);命中缓存里没有映射的条目也保持缺席。
+        """
+        if final.object_columns is not None or not final.columns:
+            return
+        if self._kb is None:
+            return
+        datasource = final.datasource or (
+            self._connectors.default_name if self._connectors else "")
+        if not datasource:
+            return
+        try:
+            from trove.services.semantic_layer.object_columns import build_object_columns
+
+            provider = self._object_column_provider(
+                datasource, final.dialect or "sqlite")
+            mapping = build_object_columns(provider.model(), final.columns)
+        except Exception as e:
+            logger.debug("Object columns skipped (%s): %s", type(e).__name__, e)
+            return
+        if mapping:
+            final.object_columns = mapping
+
     # ── Task coordination ────────────────────────────────
 
     def _task_store(self, session: Session) -> TaskStore:
@@ -2585,7 +2651,7 @@ class SessionManager:
             [cap_cell(v) for v in row]
             for row in (final.rows or [])[:get_result_limits().max_rows]
         ]
-        return {
+        summary = {
             "session_id": final.session_id,
             "run_id": final.run_id,
             "question": final.question,
@@ -2649,6 +2715,12 @@ class SessionManager:
             # 加这一行即全通道贯通(_cached_final 按 model_fields 过滤)。
             "analysis": final.analysis,
         }
+        # 答案卡对象列(设计 §5.7 / FR-GRAPH-5):唯一精确命中才有值。
+        # 无可映射 → **键缺席**(不是 None/空 dict)—— 载荷与现状逐字节
+        # 不变是这支增量的红线(前端判据是「键在不在」,不是版本号)。
+        if final.object_columns:
+            summary["object_columns"] = final.object_columns
+        return summary
 
     # ── Result cache (exact-question, in-process) ────────
 

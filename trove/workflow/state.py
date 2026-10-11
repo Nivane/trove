@@ -372,6 +372,14 @@ class WorkflowState(BaseModel):
     # 按 model_fields 过滤,见 agent/session.py)。
     analysis: dict[str, Any] | None = None
 
+    # 答案卡对象列(设计 §5.7 / FR-GRAPH-5,可选增量):{列名: {"entity"
+    # 显示名, "field" 字段名}} —— 答案列对**已声明实体**字段的唯一精确
+    # 命中映射(纯函数 build_object_columns,agent 侧答案收尾处写入)。
+    # None = 无可映射(无声明/列名对不上/多实体撞名)→ summary 里**键
+    # 缺席**,载荷与渲染逐字节不变。进 WorkflowState 即自动贯穿结果缓存/
+    # 历史回放/SSE(_cached_final 按 model_fields 过滤,同 analysis)。
+    object_columns: dict[str, Any] | None = None
+
     # 图表(chart 节点):确定性推断的 ECharts 可消费字典
     # {"type": line|bar|pie, "title", "dimension", "categories", "series",
     #  "measures"};None = 无需图表/未生成。

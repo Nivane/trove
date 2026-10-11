@@ -1917,6 +1917,231 @@ class TestRefusalInSummary:
         assert SessionManager._state_summary(plain)["refusal"] is None
 
 
+class TestObjectColumnsInSummary:
+    """E6(O2,设计 §5.7 / FR-GRAPH-5):答案卡对象列。
+
+    生产者 = SessionManager 答案收尾处(答案列 ↔ 已声明实体字段的**唯一
+    精确匹配**,零 LLM;显示名回退与对象图 D1 同源);载具 =
+    ``WorkflowState.object_columns``(summary 可选键 —— 进 state 即随结果
+    缓存/历史回放/SSE 往返)。**红线**:无可映射 → **键缺席**,载荷与
+    未接线时逐字节同(两态对比钉住)。
+    """
+
+    _ENTITY_YAML = """\
+semantic_model:
+  - name: demo
+    datasets:
+      - name: students
+        source: students
+        entity:
+          display_name: 学生
+        fields:
+          - name: name
+            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+"""
+
+    _NO_ENTITY_YAML = """\
+semantic_model:
+  - name: demo
+    datasets:
+      - name: students
+        source: students
+        fields:
+          - name: name
+            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+"""
+
+    class _StubKb:
+        """只钉 SessionManager 碰的两个读口(semantics_path / kb_dir)。
+
+        生产 KbService 的其余面(镜像/git/lesson)与生产者无关;缺的方法
+        (如 kb_rev)由调用侧 best-effort 吞掉 —— 正是本支增量要的不阻断。
+        """
+
+        def __init__(self, kb_dir, datasource="demo", yaml_text=""):
+            from pathlib import Path
+
+            self.kb_dir = Path(kb_dir)
+            if yaml_text:
+                ds_dir = self.kb_dir / datasource
+                ds_dir.mkdir(parents=True, exist_ok=True)
+                (ds_dir / "semantics.yml").write_text(yaml_text, encoding="utf-8")
+
+        def semantics_path(self, datasource):
+            return self.kb_dir / datasource / "semantics.yml"
+
+    @staticmethod
+    def _stub_graph(columns):
+        class Stub:
+            async def ainvoke(self, state, config=None):
+                return {**state, "columns": list(columns), "row_count": 2,
+                        "final_response": "answer"}
+
+        return Stub()
+
+    @staticmethod
+    def _manager(tmp_home, graph, kb=None, connectors=None):
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+
+        return SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": graph},
+            llm_gateway=None,
+            kb=kb,
+            connectors=connectors,
+        )
+
+    async def test_unique_hit_attaches_mapping_and_summary_carries_it(self, tmp_home):
+        kb = self._StubKb(tmp_home / "kb", yaml_text=self._ENTITY_YAML)
+        manager = self._manager(tmp_home, self._stub_graph(["name", "id"]), kb=kb)
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            final = await manager.ask(
+                session=session, question="学生", datasource="demo")
+
+            assert final.object_columns == {
+                "name": {"entity": "学生", "field": "name"},
+                "id": {"entity": "学生", "field": "id"},
+            }
+            # summary(历史回放/SSE 同源)原样带出;值一字不改。
+            summary = session.messages[-1].metadata["summary"]
+            assert summary["object_columns"] == final.object_columns
+            assert summary["columns"] == ["name", "id"]
+            assert final.rows == []
+        finally:
+            # store 必须 dispose:aiosqlite worker 是常驻非 daemon 线程
+            # (同 TestHistoryPersistence._rig 的纪律)。
+            await manager.dispose()
+
+    async def test_no_mapping_key_absent_and_payload_byte_identical(self, tmp_home):
+        """未声明实体 / 没有 KB → 键缺席,载荷与「从未经过生产者」逐字节同。"""
+        import json
+
+        from trove.agent.session import SessionManager
+
+        for kb in (
+            self._StubKb(tmp_home / "kb_plain", yaml_text=self._NO_ENTITY_YAML),
+            None,  # 没有 KB(嵌入/CLI 无 kb 的部署)
+        ):
+            manager = self._manager(tmp_home, self._stub_graph(["name", "id"]), kb=kb)
+            try:
+                session = await manager.start_session(project_cwd="/tmp/p")
+                final = await manager.ask(
+                    session=session, question="学生", datasource="demo")
+
+                assert final.object_columns is None
+                summary = session.messages[-1].metadata["summary"]
+                assert "object_columns" not in summary
+                # 两态对比:同一份状态若从未经过生产者,summary 与上面**键
+                # 集合与取值都相同**(逐字节 —— 这支增量的红线是「不建映射
+                # = 不改载荷」,不是「加一个 null」)。
+                untouched = WorkflowState(
+                    session_id=final.session_id, run_id=final.run_id,
+                    question=final.question, datasource=final.datasource,
+                    principal=final.principal,
+                    columns=list(final.columns), row_count=final.row_count,
+                    final_response=final.final_response,
+                )
+                assert SessionManager._state_summary(untouched) == summary
+                assert json.dumps(
+                    SessionManager._state_summary(untouched),
+                    sort_keys=True, default=str,
+                ) == json.dumps(summary, sort_keys=True, default=str)
+            finally:
+                await manager.dispose()
+
+    async def test_ask_stream_done_event_carries_object_columns(
+        self, tmp_home, sqlite_registry,
+    ):
+        """全链一次:``_stream_graph_run``(真跑图)路径上 done 事件的 summary
+        也带对象列 —— 生产 provider 从 KB semantics.yml 读,零 LLM。
+
+        管线照 TestHistoryPersistence._rig(经典非 agentic 路径,对脚本化
+        LLM 最稳);KB 副本单独写进 tmp_home:图侧 provider 读 conftest 的
+        原件,本测试只给**会话侧**生产者加 entity 声明,互不干扰。
+        """
+        import yaml
+        from pathlib import Path
+
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+
+        # 以 conftest 生成的 test_db semantics.yml 为蓝本 + entity 声明
+        # (路径取 provider 自己读的那一份,不猜目录布局)。
+        src = Path(sqlite_registry._test_semantic_provider._kb_path)
+        doc = yaml.safe_load(src.read_text(encoding="utf-8"))
+        for d in doc["semantic_model"][0]["datasets"]:
+            if d["name"] == "students":
+                d["entity"] = {"display_name": "学生"}
+        kb_dir = tmp_home / "kb"
+        (kb_dir / "test_db").mkdir(parents=True, exist_ok=True)
+        (kb_dir / "test_db" / "semantics.yml").write_text(
+            yaml.safe_dump(doc, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+        kb = self._StubKb(kb_dir, datasource="test_db")
+
+        class Scripted:
+            def __init__(self, responses):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._it)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": next(self._it), "tool_calls": []}
+
+        llm = Scripted(["query", "```sql\nSELECT name FROM students;\n```", "OK"])
+        config = AgentConfig(home=str(tmp_home), target="mock/model")
+        graphs = build_graphs(
+            GraphServices(
+                llm=llm, connectors=sqlite_registry,
+                semantic_layer=sqlite_registry._test_semantic_provider,
+                config=config,
+            ),
+            checkpointer=InMemorySaver(),
+            multi_candidate=False, query_sketch=False, agentic=False,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=graphs,
+            llm_gateway=llm,
+            kb=kb,
+            connectors=sqlite_registry,
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            events = [
+                event async for event in manager.ask_stream(
+                    session=session,
+                    question="What students are in Alameda county?",
+                )
+            ]
+        finally:
+            await manager.dispose()
+
+        summary = events[-1]["summary"]
+        assert events[-1]["type"] == "done"
+        assert summary["columns"] == ["name"]
+        assert summary["object_columns"] == {
+            "name": {"entity": "学生", "field": "name"},
+        }
+        # 同一份 summary 也落在历史 metadata 上(回放与实跑同源)。
+        assert session.messages[-1].metadata["summary"]["object_columns"] == (
+            summary["object_columns"])
+
+
 class TestConfidenceInSummary:
     """SSE / 历史回放 / runlog 读的都是 ``_state_summary`` —— 落在这里,
     三个消费方一次全有(设计 §6.3)。

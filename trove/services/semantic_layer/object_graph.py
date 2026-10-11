@@ -35,9 +35,21 @@ from __future__ import annotations
 from typing import Any
 
 from trove.services.semantic_layer.compiler import _is_many_to_many
-from trove.services.semantic_layer.models import SemanticModel
+from trove.services.semantic_layer.models import SemanticDataset, SemanticModel
 
 _EMPTY: dict[str, list] = {"objects": [], "links": [], "hierarchies": []}
+
+
+def entity_display_name(dataset: SemanticDataset) -> str:
+    """对象显示名(设计 §4.1 D1):entity.display_name 缺省 → 数据集 name。
+
+    读侧回退只发生在这里(见模块开头):对象图投影与答案卡对象列
+    (§5.7,``object_columns``)共用这一个函数 —— 同一份声明在对象图页
+    与答案卡表头里必须是同一个名字。未声明 entity 的数据集也返回 name
+    (调用方用 ``declared`` 自行区分)。
+    """
+    entity = dataset.entity
+    return entity.display_name if entity and entity.display_name else dataset.name
 
 
 def _link_display_name(r: Any) -> str:
@@ -91,9 +103,9 @@ def build_object_graph(model: SemanticModel | None) -> dict[str, Any]:
         entity = d.entity
         objects.append({
             "dataset": d.name,
-            # 读侧回退(设计 §4.1):声明优先,缺省回退数据集 name。
-            "display_name": (entity.display_name if entity and entity.display_name
-                             else d.name),
+            # 读侧回退(设计 §4.1):声明优先,缺省回退数据集 name
+            # (与答案卡 object_columns 共用 entity_display_name)。
+            "display_name": entity_display_name(d),
             "declared": entity is not None,
             # 自然键缺省回退 primary_key(同一读侧纪律)。
             "natural_keys": (list(entity.natural_keys)
