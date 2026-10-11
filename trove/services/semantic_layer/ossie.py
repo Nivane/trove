@@ -14,7 +14,12 @@ Reads the parts relevant to NL→SQL plus the spec's extensibility surface:
   bypass_scopes / hash_salt_ref) — the masking **declaration**; applying it
   to result sets is `authz/masking.py` (P4);
 - field-level `values` (该列的实际取值,probe 的结构事实) — read as plain
-  data; it never changes `semantic_role` nor feeds prompt rendering.
+  data; it never changes `semantic_role` nor feeds prompt rendering;
+- dataset-level `entity` (display_name / natural_keys / aliases) and
+  model-level `hierarchies` (name / display_name / dataset / levels) —
+  the object-view declarations (Trove 扩展); relationship-level
+  `display_name`. 全部可选,缺省 = 存量模型逐字节同前;放错层(文档根)
+  出声但忽略,与 masking/topics 同一条告警先例。
 """
 import logging
 import re
@@ -23,8 +28,10 @@ import yaml
 from sqlglot import exp, parse_one
 
 from trove.services.semantic_layer.models import (
+    Hierarchy,
     MaskingPolicy,
     SemanticDataset,
+    SemanticEntity,
     SemanticField,
     SemanticMetric,
     SemanticModel,
@@ -141,6 +148,26 @@ def _masking_policy(raw: object) -> MaskingPolicy:
     )
 
 
+def _entity_declaration(raw: object) -> SemanticEntity | None:
+    """数据集 ``entity`` 子块 → SemanticEntity;坏形状/空块 → ``None``。
+
+    与 :func:`_masking_policy` 同一姿态:这是**声明**的解析,不是判定点。
+    映射/嵌套容器忽略而不是猜(猜会让一份写错的文件静默变成一份能跑的
+    模型);三键全空(``entity: {}``)与缺席同义 —— 都归一为未声明,
+    投影的 ``declared`` 只看「有没有实体声明」这一件事。
+    """
+    if not isinstance(raw, dict):
+        return None
+    entity = SemanticEntity(
+        display_name=str(raw.get("display_name") or "").strip(),
+        natural_keys=_clean_names(raw.get("natural_keys")),
+        aliases=_clean_names(raw.get("aliases")),
+    )
+    if not (entity.display_name or entity.natural_keys or entity.aliases):
+        return None
+    return entity
+
+
 def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel:
     """Parse an Ossie semantic model YAML into SemanticModel.
 
@@ -169,6 +196,19 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     if "masking" in data and "masking" not in top:
         logger.warning(
             "masking at document top level is ignored; declare it under "
+            "semantic_model[0] (same level as time_spine)")
+
+    # 对象视图声明同样只认**声明位置**:entity 在 dataset 子块下(不是模型级、
+    # 更不是文档根),hierarchies 在 semantic_model[0] 下。放错层静默忽略会
+    # 让「对象看起来声明了、投影里却没有」成为一次无痕的失败 —— 出声,并在
+    # lint 侧拦写盘(与 masking/topics 同一条双守卫先例)。
+    if "entity" in data and "entity" not in top:
+        logger.warning(
+            "entity at document top level is ignored; declare it under the "
+            "dataset it belongs to (semantic_model[0].datasets[].entity)")
+    if "hierarchies" in data and "hierarchies" not in top:
+        logger.warning(
+            "hierarchies at document top level is ignored; declare it under "
             "semantic_model[0] (same level as time_spine)")
 
     declared = {d.get("name") for d in top.get("datasets", []) or [] if d.get("name")}
@@ -250,6 +290,8 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             fields=fields,
             examples=ds_examples,
             custom_extensions=_clean_extensions(d.get("custom_extensions")),
+            # 业务实体声明(设计 §4.1):缺省/坏形状 → None(未声明)。
+            entity=_entity_declaration(d.get("entity")),
         ))
 
     relationships: list[SemanticRelationship] = []
@@ -281,6 +323,9 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             fan_out=str(r.get("fan_out") or "").strip().lower(),
             examples=r_examples,
             custom_extensions=_clean_extensions(r.get("custom_extensions")),
+            # 边显示名(设计 §4.2):纯展示字段,缺省空串 = 未声明
+            # (读侧回退列名连接串)。
+            display_name=str(r.get("display_name") or "").strip(),
         ))
 
     ai = top.get("ai_context") or {}
@@ -327,6 +372,20 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             custom_extensions=_clean_extensions(t.get("custom_extensions")),
         ))
 
+    # 钻取层级(设计 §4.3):模型级有序块,形态模板同 topics —— 可选段、
+    # 空名条目丢弃、坏形状不猜(levels 走 _clean_names 保序去重)。级别字段
+    # 的解析性(须在 dataset 的 fields 里)是 lint 的硬错,不在解析层判。
+    hierarchies: list[Hierarchy] = []
+    for h in top.get("hierarchies", []) or []:
+        if not isinstance(h, dict) or not str(h.get("name") or "").strip():
+            continue
+        hierarchies.append(Hierarchy(
+            name=str(h["name"]).strip(),
+            display_name=str(h.get("display_name") or "").strip(),
+            dataset=str(h.get("dataset") or "").strip(),
+            levels=_clean_names(h.get("levels")),
+        ))
+
     metrics: list[SemanticMetric] = []
     for m in top.get("metrics", []) or []:
         # 与原实现一致:metric 缺可用的 expression 是结构性问题 → 抛错
@@ -362,4 +421,5 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
         time_spine=spine,
         masking=masking,
         topics=topics,
+        hierarchies=hierarchies,
     )

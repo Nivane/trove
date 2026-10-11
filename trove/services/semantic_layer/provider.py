@@ -94,6 +94,11 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
     topics = {t.name: t for t in base.topics}
     for t in override.topics:
         topics[t.name] = t
+    # 钻取层级同款按名合并:同名层级被真源整体替换。层级是对"级别链"的
+    # 断言,字段级并集会得到一个谁都没写过的第三条链(同 topics 的理由)。
+    hierarchies = {h.name: h for h in base.hierarchies}
+    for h in override.hierarchies:
+        hierarchies[h.name] = h
     return SemanticModel(
         name=override.name or base.name,
         description=override.description or base.description,
@@ -107,6 +112,11 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
         custom_extensions=override.custom_extensions or base.custom_extensions,
         time_spine=override.time_spine or base.time_spine,
         topics=list(topics.values()),
+        # 新块必须**同时**出现在按名合并与显式重建两处:dataset.entity 与
+        # relationship.display_name 随对象整体进 list(...)(同名替换是整
+        # 对象替换,声明不会丢),而 hierarchies 是模型级字段,漏掉这一行 =
+        # 有 override 时整段声明被静默丢弃(N11 最高危点)。
+        hierarchies=list(hierarchies.values()),
     )
 
 

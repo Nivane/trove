@@ -192,6 +192,32 @@ async def semantic_detail(
     return {"semantic": result}
 
 
+@router.get("/admin/semantic/{name}/object-graph")
+async def semantic_object_graph(
+    name: str, request: Request, admin: dict = Depends(require_admin),
+) -> dict:
+    """语义模型的**只读投影**:对象(含未声明数据集)+ 链接 + 层级(设计 §4.5)。
+
+    本体页的唯一数据面。纯函数投影、零 LLM、零副作用 —— 直接读
+    ``semantics.yml`` 解析,不触发 KB 同步、不落任何文件。错误形状沿用
+    既有两条:源未注册 → ``datasource not found``;无 ``semantics.yml``
+    → ``no semantic model for datasource: …``(与 ``/v1/semantic/query``
+    同一句)。**空模型**(有文件、零数据集)是合法空图,不是 404 ——
+    「读不到」与「没有东西」是两回事。
+    """
+    ds = _resolve_datasource(request, name)
+    dialect = await _dialect(request, ds)
+    model = _manager(request).model(ds, dialect)
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no semantic model for datasource: {ds}",
+        )
+    from trove.services.semantic_layer.object_graph import build_object_graph
+
+    return build_object_graph(model)
+
+
 @router.get("/admin/semantic/{name}/history")
 async def semantic_history(
     name: str, request: Request, admin: dict = Depends(require_admin_or_analyst),
