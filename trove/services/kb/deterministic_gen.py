@@ -98,6 +98,70 @@ def business_label(description: str, table_name: str) -> str:
     return head or table_name
 
 
+def entity_display_name(description: str, table_name: str) -> str:
+    """表描述 → 对象显示名(实体声明的确定性候选);推不出 → ""。
+
+    复用 :func:`business_label` 的标题词规则,再加两道闸:
+
+    - **必须含 CJK**:英文散文按分隔符切出的首词是坏名字(「Bank accounts
+      with statement issuance frequency」→「Bank」),而英文库的表名本身
+      就是业务词,读侧回退(显示名缺省 → 数据集名)已经正确 —— 宁可不给,
+      不给错的;
+    - 与表名同词(大小写无关)→ "":那是读侧回退已经给出的答案,写进声明
+      不添信息。
+    """
+    label = business_label(description, table_name)
+    if not label or not _CJK_RE.search(label):
+        return ""
+    if label.strip().casefold() == str(table_name or "").strip().casefold():
+        return ""
+    return label
+
+
+# 表级计数词形(与 generate_terms 的产出同源):zh `{label}总数/数量/记录数`,
+# en `number of {name} records` / `{name} count`。
+_COUNT_SUFFIX_ZH = ("总数", "数量", "记录数")
+_NUMBER_OF_EN_RE = re.compile(r"^number of (.+?) records$", re.IGNORECASE)
+_X_COUNT_EN_RE = re.compile(r"^(.+?) count$", re.IGNORECASE)
+
+
+def _count_stem_from_text(text: str) -> str:
+    t = str(text or "").strip()
+    for suffix in _COUNT_SUFFIX_ZH:
+        if t.endswith(suffix) and len(t) > len(suffix):
+            return t[: -len(suffix)]
+    m = _NUMBER_OF_EN_RE.match(t) or _X_COUNT_EN_RE.match(t)
+    if m:
+        stem = m.group(1).strip()
+        return stem if stem and " " not in stem else ""
+    return ""
+
+
+def entity_alias_candidates(terms: list[dict[str, Any]], table_name: str) -> list[str]:
+    """terms 里该表的**表级计数词** → 对象别名原料(保序去重)。
+
+    只认表级计数词(映射是 ``COUNT(...)`` 且词形是计数词):列级/占比词的
+    词干是度量名(如「贷款金额」),拿它们当别名会把度量锚到对象上。返回的
+    词干含 display_name 那一份(设计 §4.1 的对象词汇示例:对象「贷款」的
+    别名就列着「贷款」)—— 显示名归展示,别名归词法锚定(E4 的
+    synonyms ∪ aliases 通道),两者各喂各的消费方,不是同一件事的两份拷贝。
+    """
+    out: list[str] = []
+    for term in terms or []:
+        if not isinstance(term, dict):
+            continue
+        tables = [str(t) for t in (term.get("tables") or [])]
+        if table_name not in tables:
+            continue
+        if not str(term.get("mapping") or "").strip().upper().startswith("COUNT("):
+            continue
+        for text in [term.get("term"), *(term.get("aliases") or [])]:
+            stem = _count_stem_from_text(str(text or ""))
+            if stem and stem not in out:
+                out.append(stem)
+    return out
+
+
 def _is_id_column(name: str, description: str) -> bool:
     """ID/标识类列不生成 SUM/AVG 术语(对 ID、账户号、银行代码求
     平均没有业务含义)。"""

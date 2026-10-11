@@ -194,7 +194,7 @@ class SemanticDraftCreate(BaseModel):
     services/semantic_layer/manage.py)。
     """
 
-    kind: Literal["metric", "field", "dataset", "topic"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -246,7 +246,7 @@ class SemanticValidateRequest(BaseModel):
     不写任何文件。``payload`` 与创建草稿时同形。
     """
 
-    kind: Literal["metric", "field", "dataset", "topic"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -368,7 +368,7 @@ class SemanticBatchResponse(BaseModel):
 class SemanticChangePayload(BaseModel):
     """一条 payload 变更（与草稿 payload 同形）。"""
 
-    kind: Literal["metric", "field", "dataset", "topic"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)

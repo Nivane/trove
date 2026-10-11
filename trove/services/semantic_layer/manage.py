@@ -43,7 +43,7 @@ from trove.services.semantic_layer.topics import resolve_topic, topic_names
 logger = logging.getLogger(__name__)
 
 _ANSI = "ANSI_SQL"
-_KINDS = {"metric", "field", "dataset", "topic"}
+_KINDS = {"metric", "field", "dataset", "topic", "entity", "relationship"}
 _ACTIONS = {"upsert", "delete"}
 
 _DUMP_KWARGS = dict(
@@ -528,6 +528,131 @@ def _apply_topic(model: dict[str, Any], action: str, name: str,
         model["topics"].append(topic)
 
 
+def _apply_entity(model: dict[str, Any], action: str, name: str,
+                  payload: dict[str, Any] | None, dialect: str | None) -> None:
+    """实体声明草稿应用(E2):数据集 ``entity`` 子块的唯一写路径。
+
+    ``name`` = 归属数据集名(与 ``_find_entity`` 的口径一致);payload 允许
+    带 ``dataset``(管理页预填用),与 name 不一致时**显式报错** —— 静默改
+    归属会让「确认的草稿」与「写下的东西」不是同一件事。
+
+    两条硬校验都在写盘前:数据集必须已声明(实体声明只能落在已声明的对象
+    上);声明内容至少一键非空 —— ``entity: {}`` 在解析器里归一为**未声明**
+    (``ossie._entity_declaration``),落一个空块看起来"确认成功"却什么都
+    没声明,是这一层最不能有的静默 no-op。
+
+    carryover 只保三键:upsert 未覆盖的键不被抹掉(与 dataset 子块同一纪律)。
+    """
+    datasets = model.setdefault("datasets", [])
+    if action == "delete":
+        ds = next((d for d in datasets if isinstance(d, dict) and d.get("name") == name), None)
+        if ds is None:
+            raise ValueError(
+                f"数据集未声明: {name}(实体声明的归属数据集必须先存在,再谈删除)")
+        ds.pop("entity", None)
+        return
+    payload = payload or {}
+    owner = str(payload.get("dataset") or "").strip()
+    if owner and owner != name:
+        raise ValueError(
+            f"实体声明的归属数据集不一致: 草稿 name={name!r}、payload.dataset={owner!r}")
+    declared = {d.get("name") for d in datasets if isinstance(d, dict) and d.get("name")}
+    if name not in declared:
+        raise ValueError(
+            f"数据集未声明: {name}(实体声明只能落在已声明的数据集上;"
+            "改用正确名字,或先声明该数据集)")
+    entity: dict[str, Any] = {}
+    display = str(payload.get("display_name") or "").strip()
+    if display:
+        entity["display_name"] = display
+    keys = [str(k) for k in (payload.get("natural_keys") or []) if str(k).strip()]
+    if keys:
+        entity["natural_keys"] = list(dict.fromkeys(keys))
+    aliases = [str(a) for a in (payload.get("aliases") or []) if str(a).strip()]
+    if aliases:
+        entity["aliases"] = list(dict.fromkeys(aliases))
+    idx = next((i for i, d in enumerate(datasets)
+                if isinstance(d, dict) and d.get("name") == name), None)
+    old = datasets[idx].get("entity") if idx is not None else None
+    _carryover(old if isinstance(old, dict) else None, entity,
+               "display_name", "natural_keys", "aliases")
+    if not entity:
+        raise ValueError(
+            f"实体声明为空(数据集「{name}」):display_name/natural_keys/aliases "
+            "至少一项非空 —— 空声明在语义模型里等于未声明,确认它没有意义")
+    datasets[idx]["entity"] = entity
+
+
+def _apply_relationship(model: dict[str, Any], action: str, name: str,
+                        payload: dict[str, Any] | None, dialect: str | None) -> None:
+    """关系声明草稿应用(E2):``relationships`` 列表的唯一写路径。
+
+    from/to 必填且必须是**已声明数据集** —— 关系的作用域是已声明的对象之间,
+    引用一个不存在的名字只会产出一条永远落不了地的边(O1 关系对话框与
+    E5 的缺失补齐共用本路径,校验在这里收口)。
+
+    ``from_columns``/``to_columns`` 必填且等长:解析器对缺键对的关系**整体
+    丢弃**(``ossie.parse_ossie`` 的 mismatch 分支)—— 写进 YAML 也是不可见
+    的声明,当场拒绝优于安静的 no-op。upsert 已有关系时省略可以,carryover
+    会把旧键对补回来。
+
+    ``fan_out`` **刻意不可由 payload 设置**:它是编译期安全豁免
+    (``dedup``/``bridge:<dataset>``),交给草稿等于一次确认静默放行一个未
+    验证的豁免;只能手写进 semantics.yml,upsert 时原样保留。
+    ``cardinality`` 允许 payload 设置(管理页对话框四档),取值纪律在 lint。
+    """
+    relationships = model.setdefault("relationships", [])
+    if action == "delete":
+        model["relationships"] = [
+            r for r in relationships if not (isinstance(r, dict) and r.get("name") == name)]
+        return
+    payload = payload or {}
+    declared = {d.get("name") for d in model.get("datasets", [])
+                if isinstance(d, dict) and d.get("name")}
+    src = str(payload.get("from") or "").strip()
+    dst = str(payload.get("to") or "").strip()
+    if not src or not dst:
+        raise ValueError(
+            f"关系「{name}」的 from/to 必填(一条指向不明的关系没有可声明的内容)")
+    undeclared = [t for t in dict.fromkeys((src, dst)) if t not in declared]
+    if undeclared:
+        raise ValueError(
+            f"关系「{name}」引用的数据集未声明: {', '.join(undeclared)}"
+            "(关系只能建立在已声明的对象之间;改用正确名字,或先声明该数据集)")
+    rel: dict[str, Any] = {"name": name, "from": src, "to": dst}
+    from_cols = [str(c) for c in (payload.get("from_columns") or []) if str(c).strip()]
+    if from_cols:
+        rel["from_columns"] = list(dict.fromkeys(from_cols))
+    to_cols = [str(c) for c in (payload.get("to_columns") or []) if str(c).strip()]
+    if to_cols:
+        rel["to_columns"] = list(dict.fromkeys(to_cols))
+    card = str(payload.get("cardinality") or "").strip()
+    if card:
+        rel["cardinality"] = card
+    display = str(payload.get("display_name") or "").strip()
+    if display:
+        rel["display_name"] = display
+    idx = next((i for i, r in enumerate(relationships)
+                if isinstance(r, dict) and r.get("name") == name), None)
+    if idx is not None:
+        old = relationships[idx]
+        _carryover(old, rel, "from_columns", "to_columns", "cardinality",
+                   "display_name", "fan_out", "examples", "custom_extensions",
+                   "ai_context", "description")
+    final_from = [str(c) for c in (rel.get("from_columns") or []) if str(c).strip()]
+    final_to = [str(c) for c in (rel.get("to_columns") or []) if str(c).strip()]
+    if not final_from or not final_to or len(final_from) != len(final_to):
+        raise ValueError(
+            f"关系「{name}」的 from_columns/to_columns 必填且等长"
+            "(解析器会整体丢弃没有键对的关系 —— 写进去也是不可见的声明)")
+    rel["from_columns"] = final_from
+    rel["to_columns"] = final_to
+    if idx is not None:
+        relationships[idx] = rel
+    else:
+        relationships.append(rel)
+
+
 def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | None) -> None:
     model = _model_of(data)
     kind = draft["kind"]
@@ -542,6 +667,10 @@ def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | Non
         _apply_dataset(model, action, name, payload, dialect)
     elif kind == "topic":
         _apply_topic(model, action, name, payload, dialect)
+    elif kind == "entity":
+        _apply_entity(model, action, name, payload, dialect)
+    elif kind == "relationship":
+        _apply_relationship(model, action, name, payload, dialect)
     else:
         raise ValueError(f"未知草稿类型: {kind}")
 

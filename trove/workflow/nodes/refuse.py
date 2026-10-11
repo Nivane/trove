@@ -408,6 +408,8 @@ _CONFLICT_COPY: dict[str, tuple[str, str]] = {
     "field_name_form": ("字段名不是 dataset.field 形式", "the field name is not in dataset.field form"),
     "agg_duplicate": ("已有同口径指标", "an equivalent metric already exists"),
     "unknown_kind": ("草稿类型未知", "the draft kind is unknown"),
+    "entity_declared": ("该数据集已声明实体（确认将覆盖现有声明）",
+                        "the dataset already declares an entity (confirming overwrites it)"),
 }
 
 
@@ -416,6 +418,56 @@ def _conflict_phrase(lang: str, conflict: "Conflict") -> str:
     if pair is None:
         return L(lang, "与现有模型冲突", "it conflicts with the current model")
     return L(lang, pair[0], pair[1])
+
+
+def _detect_declaration_conflict(
+    model, draft: dict[str, Any], declared_datasets: set[str],
+) -> Conflict | None:
+    """实体/关系声明草稿(E2)的冲突检测。
+
+    两类可修正冲突(内容照落 pending + 确认被守卫拦住,以蓝本新建后
+    upsert 覆盖):
+
+    * ``entity``:目标数据集已声明实体 → ``entity_declared``(重名声明
+      与 agg_duplicate 不同 —— 覆盖一条实体声明是**有意义的修正路径**,
+      所以落库 + 给蓝本动作,而不是既不落库也不给动作);
+    * ``relationship``:关系名重复 → ``name_declared``(与 metric 同款)。
+
+    引用未声明数据集 → ``dataset_undeclared``(与 field 分支同款);
+    空名 → ``name_missing``。**from/to 缺失不在这里发明冲突码**:
+    它是「草稿本身结构不全」,交给 ``_apply_relationship`` 在确认时响亮
+    拒绝(冲突码闭集见 ``_CONFLICT_COPY``,不临时加词)。
+    """
+    payload = draft.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    kind = draft.get("kind")
+    if kind == "entity":
+        name = str(draft.get("name") or payload.get("dataset") or "").strip()
+        if not name:
+            return Conflict("name_missing", "实体声明缺少归属数据集名")
+        if name not in declared_datasets:
+            return Conflict(
+                "dataset_undeclared", f"数据集「{name}」未声明", landable=True)
+        ds = next(d for d in model.datasets if d.name == name)
+        if ds.entity is not None:
+            return Conflict(
+                "entity_declared",
+                f"数据集「{name}」已声明实体——确认将覆盖现有声明",
+                landable=True, name=name)
+        return None
+    name = str(draft.get("name") or "").strip()
+    if not name:
+        return Conflict("name_missing", "关系名缺失")
+    if model is not None and any(r.name == name for r in model.relationships):
+        return Conflict("name_declared", f"关系「{name}」已声明", landable=True)
+    endpoints = [str(payload.get("from") or "").strip(),
+                 str(payload.get("to") or "").strip()]
+    undeclared = [t for t in dict.fromkeys(e for e in endpoints if e)
+                  if t not in declared_datasets]
+    if undeclared:
+        return Conflict(
+            "dataset_undeclared", f"引用了未声明的数据集 {undeclared}", landable=True)
+    return None
 
 
 def _detect_conflict(model, draft: dict[str, Any]) -> Conflict | None:
@@ -427,10 +479,14 @@ def _detect_conflict(model, draft: dict[str, Any]) -> Conflict | None:
     (补救是换问法加过滤条件,不是补声明)。
     """
     kind = draft.get("kind")
+    declared_datasets = {d.name for d in model.datasets} if model is not None else set()
+    # 实体/关系草稿(E2)没有表达式,数据在 payload 里(前端对话框的自有形状);
+    # 必须在 _expr_ok 之前分流,否则一律被当成"表达式不可解析"。
+    if kind in ("entity", "relationship"):
+        return _detect_declaration_conflict(model, draft, declared_datasets)
     expr = str(draft.get("expression") or "").strip()
     if not _expr_ok(expr):
         return Conflict("expr_unparseable", "表达式不可解析", landable=True)
-    declared_datasets = {d.name for d in model.datasets} if model is not None else set()
     declared_metrics = {m.name for m in model.metrics} if model is not None else set()
     if kind == "metric":
         name = str(draft.get("name") or "").strip()
@@ -719,6 +775,15 @@ def _blueprint_payload(draft: dict[str, Any],
     }
     if draft.get("datasets"):
         out["datasets"] = list(draft["datasets"])
+    payload = draft.get("payload")
+    if isinstance(payload, dict) and str(draft.get("kind") or "") == "relationship":
+        # 关系草稿的声明内容在 payload 里(前端对话框形状);键名与前端
+        # Blueprint 契约一致(from_dataset/to_dataset/from_columns/
+        # to_columns,NextActions 机械转运为 bp_*)。
+        out["from_dataset"] = str(payload.get("from") or "")
+        out["to_dataset"] = str(payload.get("to") or "")
+        out["from_columns"] = [str(c) for c in (payload.get("from_columns") or [])]
+        out["to_columns"] = [str(c) for c in (payload.get("to_columns") or [])]
     if conflict is not None:
         out["conflict_code"] = conflict.code
         if conflict.message:

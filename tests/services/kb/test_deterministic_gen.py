@@ -5,7 +5,10 @@ kb init 的 semantics/examples 部分从「LLM 起草」改为「确定性生成
 """
 
 from trove.services.kb.deterministic_gen import (
+    _count_stem_from_text,
     _enum_values,
+    entity_alias_candidates,
+    entity_display_name,
     generate_templates,
     generate_terms,
 )
@@ -1108,3 +1111,141 @@ class TestShareCastCompatibility:
         other = self.CAST_COUNT.replace("= 'A'", "= 'C'")
         result = self._compile(self.CAST_COUNT, other)
         assert isinstance(result, CompileMiss)
+
+
+class TestEntityDisplayName:
+    """实体显示名的确定性规则(两道闸:必须 CJK、必须异于表名)。
+
+    这个函数有两个消费方:kb init 后置起草(``_draft_entity_naming``)与
+    候选捕获(``candidates._entity_spec``)—— 两侧必须是同一句话,规则
+    写在这里、钉在这里。
+    """
+
+    def test_zh_description_yields_business_label(self):
+        label = entity_display_name(
+            "银行账户信息表，包含账户ID、所属地区、对账单发放频率和开户日期", "account")
+        assert label == "银行账户"
+
+    def test_en_prose_yields_nothing(self):
+        # 英文散文按分隔符切出的首词是坏名字(「Bank」)→ 宁可不给;
+        # 英文库的表名本身是业务词,读侧回退(→ 数据集名)已经正确。
+        assert entity_display_name(
+            "Bank accounts with statement issuance frequency", "account") == ""
+
+    def test_en_table_name_without_cjk_yields_nothing(self):
+        """表名无 CJK 时,空描述退化为表名 → 两道闸都在上空转 → ""。
+
+        (英文库的 kb init 因此只落 natural_keys 型实体草稿 —— 诚实边界,
+        见 E2 报告。)
+        """
+        assert entity_display_name("", "loan") == ""
+        assert entity_display_name("Loan information table", "loan") == ""
+
+    def test_label_equal_to_table_name_yields_nothing(self):
+        """与表名同词(大小写无关)→ "":那是读侧回退已经给出的答案。"""
+        assert entity_display_name("贷款信息表，包含贷款ID与金额", "贷款") == ""
+        assert entity_display_name("Account 信息表", "account") == ""
+
+    def test_bare_suffix_falls_back_to_table_name_then_gates(self):
+        # 「信息表」剥后缀后为空 → business_label 退回表名;CJK 表名与
+        # 自身同词 → 闸二拦下;无 CJK 表名 → 闸一拦下。两条都 ""。
+        assert entity_display_name("信息表", "贷款") == ""
+        assert entity_display_name("信息表", "loan") == ""
+
+    def test_known_limitation_documented(self):
+        """已知边界(写出来而不是省略):完全无描述的 CJK 表名永远拿不到
+        显示名 —— 表名即答案,读侧回退给出同一份。"""
+        assert entity_display_name("", "银行账户") == ""
+
+
+class TestCountStemFromText:
+    def test_zh_suffixes(self):
+        for text in ("贷款总数", "贷款数量", "贷款记录数"):
+            assert _count_stem_from_text(text) == "贷款", text
+
+    def test_zh_suffix_alone_is_not_a_stem(self):
+        # 裸词形("总数")没有词干,不能把自己当别名锚进任何对象
+        for text in ("总数", "数量", "记录数"):
+            assert _count_stem_from_text(text) == "", text
+
+    def test_en_shapes(self):
+        assert _count_stem_from_text("number of loan records") == "loan"
+        assert _count_stem_from_text("loan count") == "loan"
+
+    def test_en_match_is_case_insensitive_stem_is_verbatim(self):
+        # 正则大小写不敏感地**匹配**,但捕获的词干保留原文大小写。生产者
+        # 的词形与表名同源(generate_terms 原样插表名),同一份 terms 永不
+        # 分叉;异常输入下的 case-variant 重复落成两条同义别名,对下游是
+        # 无害的重复项 —— 不值得为此引入第二次改写。
+        assert _count_stem_from_text("Number Of Loan Records") == "Loan"
+
+    def test_en_multiword_stem_rejected(self):
+        # 多词词干不是单一业务词,拿它当别名会把度量锚到错误的词上
+        assert _count_stem_from_text("number of active loan records") == ""
+        assert _count_stem_from_text("active loan count") == ""
+
+    def test_non_count_shapes(self):
+        for text in ("贷款金额", "total loan amount", "", None, "还款状态"):
+            assert _count_stem_from_text(text) == "", repr(text)
+
+
+class TestEntityAliasCandidates:
+    """terms 里该表的**表级计数词** → 对象别名原料。
+
+    只认 COUNT(...) 映射的计数词;列级/占比词(词干 = 度量名)进别名
+    会把度量锚到对象上 —— 那是 _field_spec 那条路的事。
+    """
+
+    def test_picked_from_real_generated_terms(self):
+        terms = generate_terms(TABLES, lang="zh")
+        assert entity_alias_candidates(terms, "loan") == ["贷款"]
+
+    def test_count_mapping_is_the_gate(self):
+        terms = [
+            {"term": "贷款金额", "aliases": ["贷款总额"],
+             "mapping": "SUM(loan.amount)", "tables": ["loan"]},
+            {"term": "平均贷款金额", "aliases": ["贷款均值"],
+             "mapping": "AVG(loan.amount)", "tables": ["loan"]},
+        ]
+        assert entity_alias_candidates(terms, "loan") == []
+
+    def test_table_membership_is_required(self):
+        terms = [{"term": "账户总数", "aliases": ["账户数量"],
+                  "mapping": "COUNT(account.account_id)", "tables": ["account"]}]
+        assert entity_alias_candidates(terms, "loan") == []
+        assert entity_alias_candidates(terms, "account") == ["账户"]
+
+    def test_ordered_dedup_across_term_and_aliases(self):
+        terms = [
+            {"term": "贷款总数", "aliases": ["贷款数量"],
+             "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]},
+            {"term": "贷款记录数", "aliases": ["贷款总数"],
+             "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]},
+        ]
+        assert entity_alias_candidates(terms, "loan") == ["贷款"]
+
+    def test_display_name_stem_is_included_on_purpose(self):
+        """设计 §4.1:对象「贷款」的别名就列着「贷款」—— 显示名归展示、
+        别名归词法锚定(E4 的 synonyms ∪ aliases 通道),两个消费方各取
+        各的,不是同一件事的两份拷贝。"""
+        terms = generate_terms(TABLES, lang="zh")
+        display = entity_display_name(
+            "贷款信息表，包含贷款ID、账户ID、日期、金额、期限和状态", "loan")
+        aliases = entity_alias_candidates(terms, "loan")
+        assert display == "贷款" and display in aliases
+
+    def test_malformed_inputs_are_skipped(self):
+        terms = [None, "junk", {"term": "贷款总数", "tables": "loan"},
+                 {"term": "贷款总数", "mapping": "COUNT(loan.loan_id)"},
+                 {"term": "贷款总数", "aliases": None,
+                  "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]}]
+        # tables 非列表 → str() 后不相等;缺 tables → 空表;aliases None 容忍
+        assert entity_alias_candidates(terms, "loan") == ["贷款"]
+        assert entity_alias_candidates([], "loan") == []
+        assert entity_alias_candidates(None, "loan") == []
+
+    def test_count_star_mapping_still_counts(self):
+        # COUNT(*) 也是计数词(无 id 列的表会生成这种)
+        terms = [{"term": "地区总数", "aliases": [],
+                  "mapping": "COUNT(*)", "tables": ["district"]}]
+        assert entity_alias_candidates(terms, "district") == ["地区"]

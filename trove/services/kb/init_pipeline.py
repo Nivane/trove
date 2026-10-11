@@ -19,7 +19,12 @@ import yaml
 from trove.core.errors import DatasourceError
 from trove.core.logging import get_logger
 from trove.prompts import render
-from trove.services.kb.deterministic_gen import generate_terms, generate_templates
+from trove.services.kb.deterministic_gen import (
+    entity_alias_candidates,
+    entity_display_name,
+    generate_terms,
+    generate_templates,
+)
 from trove.services.kb.docs_import import apply_docs, load_docs_tables
 from trove.services.kb.enum_probe import merge_into_notes, probe_enums, probe_values
 from trove.services.kb.lint import is_temporal_field
@@ -360,6 +365,75 @@ def _backfill_values(
     return added
 
 
+async def _draft_entity_naming(
+    kb, datasource: str, tables: list[dict], terms: list[dict],
+) -> int:
+    """kb init 后置:为还没有实体声明的数据集起草**实体命名** pending 草稿。
+
+    Q2 拍板:实体命名是新声明,走不了 LLM 白名单(N17 ——
+    ``apply_annotations`` 只写措辞,不新增声明),所以命名内容全部由
+    **确定性规则**复现:
+
+    - ``display_name`` = schema notes 描述的标题词(``entity_display_name``,
+      含 CJK 闸:英文散文首词是坏名字,宁可缺;缺了读侧回退数据集名);
+    - ``aliases`` = terms 里该表**表级计数词**的词干
+      (``entity_alias_candidates``:中文库里「贷款」由此进锚定词表;
+      英文库词干等于表名 → 排除,表名本就是隐式锚点);
+    - ``natural_keys`` = 模型主键(读侧回退同值,写进声明显式化)。
+
+    四条纪律:①**只落 pending**(``create_draft`` 只写
+    semantic_drafts.yml,绝不碰 semantics.yml);②**读最终模型** ——
+    overwrite 是三方合并(C2),人写进文件的 entity 块在这里看得见,已声明
+    的数据集不再起草;③**全状态幂等** —— ``(kind, name)`` 在
+    pending/applied/rejected 任一桶里就跳过(重跑 init 不刷屏、拒绝过的
+    不回灌,与历史蒸馏同一姿态);④三键全空 → **不起草**(空声明在解析器
+    里等于未声明,一条确认了也什么都没声明的草稿是纯噪声)。
+
+    Returns: 新建草稿数。任何失败由调用方折进 warning(后置起草是锦上添花,
+    绝不阻断已完成的 init)。
+    """
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    manager = SemanticManager(kb)
+    model = manager.model(datasource)
+    if model is None:
+        return 0
+    entries = manager.drafts(datasource)
+    seen = {
+        (str(d.get("kind") or ""), str(d.get("name") or ""))
+        for bucket in entries.values() for d in bucket
+    }
+    descriptions = {
+        str(t.get("name") or ""): str(t.get("description") or "")
+        for t in tables or [] if isinstance(t, dict)
+    }
+    created = 0
+    for ds in model.datasets:
+        if ds.entity is not None or ("entity", ds.name) in seen:
+            continue
+        payload: dict[str, object] = {"dataset": ds.name}
+        desc = descriptions.get(ds.name) or str(ds.description or "")
+        label = entity_display_name(desc, ds.name)
+        if label:
+            payload["display_name"] = label
+        aliases = [
+            s for s in entity_alias_candidates(terms or [], ds.name)
+            if s.strip().casefold() != ds.name.strip().casefold()
+        ]
+        if aliases:
+            payload["aliases"] = aliases
+        keys = [str(k) for k in (ds.primary_key or []) if str(k).strip()]
+        if keys:
+            payload["natural_keys"] = keys
+        if len(payload) <= 1:
+            continue  # 只有 dataset 键 = 空声明,不起草
+        await manager.create_draft(
+            datasource, "entity", "upsert", ds.name, payload=payload,
+            note=f"auto:entity_naming:kb-init:{ds.name}")
+        created += 1
+    return created
+
+
 #: /kb init 生成的文件。合并的预检(merge_blockers)按这份清单逐个过。
 INIT_FILES = ["schema_notes.yml", "semantics.yml", "examples.yml"]
 
@@ -498,6 +572,15 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     kb.init_examples(examples, datasource, overwrite=overwrite, force=force)
     await kb.force_sync(datasource)
     await kb.git_commit(datasource, f"kb init: {datasource}")
+    # 后置:实体命名草稿(在**原子写盘段之外**,每条草稿自带一次提交)。
+    # 失败只降级为 warning —— init 已经写完盘了,不能因为起草草稿把它翻红。
+    try:
+        _report("drafts", 97, "起草实体命名草稿")
+        drafted = await _draft_entity_naming(kb, datasource, all_tables, terms)
+        if drafted:
+            logger.info("Entity naming drafts created: %d", drafted)
+    except Exception as e:
+        logger.warning("Entity naming drafts skipped: %s", e)
     _report("done", 100, "完成")
     summary = (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
                f"{len(terms)} terms, {len(examples)} templates. "
