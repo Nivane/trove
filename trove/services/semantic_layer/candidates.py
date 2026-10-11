@@ -68,6 +68,11 @@ _METRIC_REASON = "no_metric_match"
 # 编译器第三键),但落候选必须过实测取值证据门槛(见 _value_spec)。
 _VALUE_REASONS = frozenset({"enum_value_unresolved"})
 
+# 实体命名候选理由:问题确定性地用到了某数据集的列,而该数据集还没有
+# 实体声明 —— 对象视图的门面(投影里的 declared 节点、词法锚定)就长在
+# 这里。触发面刻意窄:只从字段形状的缺口(见 _entity_spec)。
+_ENTITY_REASON = "entity_naming"
+
 
 def _column_ref(text: str) -> tuple[str, str] | None:
     """文本 → ``(dataset, field)``;非单一 ``dataset.field`` 列引用 → None。
@@ -207,16 +212,62 @@ def _value_spec(component: str, value: str, model: Any) -> dict[str, Any] | None
     }
 
 
+def _entity_spec(component: str, model: Any) -> dict[str, Any] | None:
+    """``dataset.field`` ref → 实体命名候选;已声明/锚不住/无可声明内容 → None。
+
+    与 ``_field_spec`` 信任同一个锚(单一 ``dataset.field`` 引用,见
+    ``_column_ref``)——不重做指标侧的多表推断,也不额外猜数据集。
+
+    payload 只写**模型里读得到的**事实(主键 → 自然键;数据集描述 → 显示
+    名,规则与 kb init 后置起草共用 ``entity_display_name``):schema notes /
+    terms 是 kb init 现场才有的原料,捕获路径拿不到 **也不去猜**;那份更富
+    的初始化版本由 init 后置起草负责,两个生产者以 (kind, name) 幂等收口。
+
+    自然键空且推不出显示名 → 不落草稿:``entity: {}`` 在解析器里等于未声明,
+    一条什么都声明不了的实体草稿只会让「确认过了」变成一句空话。
+    """
+    ref = _column_ref(component)
+    if ref is None:
+        return None
+    ds_name = ref[0]
+    ds = next((d for d in model.datasets
+               if str(d.name).lower() == ds_name.lower()), None)
+    if ds is None or getattr(ds, "entity", None) is not None:
+        return None
+    from trove.services.kb.deterministic_gen import entity_display_name
+
+    payload: dict[str, Any] = {"dataset": ds.name}
+    label = entity_display_name(str(getattr(ds, "description", "") or ""), ds.name)
+    if label:
+        payload["display_name"] = label
+    keys = [str(k) for k in (getattr(ds, "primary_key", None) or []) if str(k).strip()]
+    if keys:
+        payload["natural_keys"] = keys
+    if len(payload) <= 1:
+        return None
+    evidence = ds.name + (f" natural_keys={','.join(keys)}" if keys else "")
+    return {
+        "kind": "entity",
+        "name": ds.name,
+        "payload": payload,
+        "reason": _ENTITY_REASON,
+        "evidence": evidence,
+    }
+
+
 def candidate_specs(misses: list[Any], model: Any) -> list[dict[str, Any]]:
     """软 MISS 列表 + 当前模型 → 候选规格(纯函数,零 IO;metric 优先)。
 
-    输出顺序 = 捕获优先级:先 metric(缺口更大)后 field;同轮按
-    (kind, name) 去重(同一缺口的多个 reason 只建一条)。
+    输出顺序 = 捕获优先级:先 metric(缺口更大)后 field,最后 entity
+    (对象声明是元一级的,单轮上限下让位给能直接解锁本题的声明);同轮按
+    (kind, name) 去重(同一缺口的多个 reason 只建一条)。实体候选只从
+    字段形状的缺口发射(见 ``_entity_spec``)。
     """
     if model is None:
         return []
     metrics: list[dict[str, Any]] = []
     fields: list[dict[str, Any]] = []
+    entities: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for miss in misses or []:
         if not isinstance(miss, dict):
@@ -240,14 +291,21 @@ def candidate_specs(misses: list[Any], model: Any) -> list[dict[str, Any]]:
             bucket = fields
         else:
             continue
-        if spec is None:
-            continue
-        key = (spec["kind"], spec["name"])
-        if key in seen:
-            continue
-        seen.add(key)
-        bucket.append(spec)
-    return metrics + fields
+        if spec is not None:
+            key = (spec["kind"], spec["name"])
+            if key not in seen:
+                seen.add(key)
+                bucket.append(spec)
+        # 实体候选挂在「字段形状的缺口」上:能确定性地定位到某数据集的列,
+        # 就是「这个问题用到了它」的硬证据(未声明实体才发射,见 _entity_spec)。
+        if reason in _FIELD_REASONS or reason in _VALUE_REASONS:
+            entity = _entity_spec(component, model)
+            if entity is not None:
+                ekey = (entity["kind"], entity["name"])
+                if ekey not in seen:
+                    seen.add(ekey)
+                    entities.append(entity)
+    return metrics + fields + entities
 
 
 async def capture_candidates(
@@ -263,6 +321,11 @@ async def capture_candidates(
     幂等:``(kind, name)`` 已在 pending 队列 → 跳过(同题重跑不刷屏;
     create_draft 自身无去重,这里是唯一的闸门)。单条失败不清空整批 ——
     第一次写成功、第二条炸掉,第一条的候选不该被连坐。
+
+    实体候选多一道**全状态**去重(applied/rejected 也算):实体命名是
+    「定过一次就不用再问」的事,拒绝过的命名更不该回灌(与历史蒸馏的
+    ``(kind,name)`` 全状态去重同一姿态)。metric/field 保持 pending-only
+    —— 老行为逐字节不变。
     """
     if kb is None or not datasource or not misses:
         return []
@@ -278,18 +341,28 @@ async def capture_candidates(
     if not specs:
         return []
     try:
+        entries = manager.drafts(datasource)
         pending = {
             (str(d.get("kind") or ""), str(d.get("name") or ""))
-            for d in manager.drafts(datasource).get("pending", [])
+            for d in entries.get("pending", [])
+        }
+        # 实体候选的全状态桶:applied/rejected 里的 (entity, dataset)。
+        decided_entities = {
+            (str(d.get("kind") or ""), str(d.get("name") or ""))
+            for status, bucket in entries.items() if status != "pending"
+            for d in bucket
+            if str(d.get("kind") or "") == "entity"
         }
     except Exception:
-        pending = set()  # 读队列失败不挡写入:宁可多一条去重由人看
+        pending, decided_entities = set(), set()  # 读队列失败不挡写入:宁可多一条由人看
 
     created: list[dict[str, Any]] = []
     for spec in specs:
         if len(created) >= max_candidates:
             break
         if (spec["kind"], spec["name"]) in pending:
+            continue
+        if spec["kind"] == "entity" and (spec["kind"], spec["name"]) in decided_entities:
             continue
         evidence = str(spec.get("evidence") or "")
         note_head = f"{evidence}:" if evidence else ""
