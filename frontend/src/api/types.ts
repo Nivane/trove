@@ -1077,3 +1077,47 @@ export interface GovernanceDiffValidation {
   errors: string[]
   warnings: string[]
 }
+
+// ── 本体投影(GET /v1/admin/semantic/{name}/object-graph)─────────────────────
+// 形状 = design §4.5 的投影 DTO(语义模型的只读投影,非第二建模面)。
+// objects/links 两键是形状守卫的判据(缺键 → 页面走错误态,见 utils/ontologyChart)。
+
+/** 本体图的一个对象(数据集投影)。declared = 已声明实体(显示名/自然键/别名)。 */
+export interface ObjectNodeInfo {
+  dataset: string
+  display_name?: string | null
+  declared: boolean
+  natural_keys?: string[]
+  aliases?: string[]
+  metrics?: string[]
+  field_count?: number
+}
+
+/** 本体图的一条链接(语义关系投影)。from/to 是数据集名。 */
+export interface ObjectLinkInfo {
+  name: string
+  from: string
+  to: string
+  from_columns?: string[]
+  to_columns?: string[]
+  /** "" | "1:N" | "1:1" | "M:N"(语义关系声明的基数)。 */
+  cardinality?: string
+  /** 投影层的风险布尔;后端若透传模型原值(豁免串),前端有归一化兜底。 */
+  fan_out?: boolean
+  display_name?: string | null
+}
+
+/** 层级(E7 可选键;缺席 → 0,不当形状错)。 */
+export interface ObjectHierarchyInfo {
+  name: string
+  display_name?: string | null
+  dataset?: string | null
+  levels?: string[]
+}
+
+/** 本体图投影载荷(缺 objects/links 任一 = 形状异常,绝不渲染假空图)。 */
+export interface ObjectGraphInfo {
+  objects: ObjectNodeInfo[]
+  links: ObjectLinkInfo[]
+  hierarchies?: ObjectHierarchyInfo[]
+}

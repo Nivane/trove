@@ -2,7 +2,7 @@
  * P6 W0 壳地基 — 契约与交互测试。
  *
  * 四层：
- *  1. navModel 契约：四组 16 项、路径唯一、双语 key 齐备、可见性默认拒绝；
+ *  1. navModel 契约：四组 17 项、路径唯一、双语 key 齐备、可见性默认拒绝；
  *     每个可见项的 path 在真实路由表里存在，且 routes 的 meta.roles 兜住。
  *  2. 前缀高亮与守卫角色矩阵（纯函数，跑真实路由表）。
  *  3. ⌘K 过滤（中英文命中）。
@@ -50,21 +50,34 @@ const mockFetch = vi.mocked(fetchOverview)
 
 // ───────────────────────── navModel 契约 ─────────────────────────
 
-describe('navModel — 四组 16 项 IA 单一来源', () => {
-  it('四组、16 项、分组顺序固定、路径不重复', () => {
+describe('navModel — 四组 17 项 IA 单一来源', () => {
+  it('四组、17 项、分组顺序固定、路径不重复', () => {
     expect(NAV_GROUPS.map((g) => g.key)).toEqual([
       'ops',
       'modeling',
       'governance',
       'system',
     ])
-    expect(NAV_ITEMS).toHaveLength(16)
+    expect(NAV_ITEMS).toHaveLength(17)
     const paths = NAV_ITEMS.map((i) => i.path)
     expect(new Set(paths).size).toBe(paths.length)
-    const counts = { ops: 4, modeling: 6, governance: 3, system: 3 }
+    const counts = { ops: 4, modeling: 7, governance: 3, system: 3 }
     for (const [group, n] of Object.entries(counts)) {
       expect(NAV_ITEMS.filter((i) => i.group === group)).toHaveLength(n)
     }
+  })
+
+  it('本体项三处同步：navModel 邻位 semantic、路由名 admin-ontology、roles 与 semantic 同档（默认拒绝）', () => {
+    // N44：路由 / 导航 / 角色三处契约同一条断言钉死。
+    const keys = NAV_ITEMS.map((i) => i.key)
+    expect(keys.indexOf('ontology')).toBe(keys.indexOf('semantic') + 1)
+    const item = NAV_ITEMS.find((i) => i.key === 'ontology')!
+    expect(item.path).toBe('/admin/ontology')
+    expect(item.labelKey).toBe('ontology')
+    expect(item.badgeKey).toBeUndefined()
+    const resolved = appRouter.resolve('/admin/ontology')
+    expect(resolved.name).toBe('admin-ontology')
+    expect(requiredRoles(resolved)).toEqual(['admin'])
   })
 
   it('每个 labelKey / 角标标题键在 zh 与 en 都齐备（i18n 对齐）', () => {
@@ -97,7 +110,7 @@ describe('navModel — 四组 16 项 IA 单一来源', () => {
   })
 
   it('角色可见性：W5 阶段二 analyst 只见只读面 6 项，user 与未登录仍为零', () => {
-    expect(navItemsFor('admin')).toHaveLength(15)
+    expect(navItemsFor('admin')).toHaveLength(16)
     expect(navItemsFor('analyst')).toHaveLength(6)
     expect(navItemsFor('user')).toHaveLength(0)
     expect(navItemsFor(undefined)).toHaveLength(0)
@@ -189,7 +202,7 @@ describe('守卫角色矩阵（meta.roles 地基）', () => {
 
 describe('filterNavItems — ⌘K 过滤', () => {
   it('空查询给出全部可见项；中英文页名均可命中（大小写不敏感）', () => {
-    expect(filterNavItems('', 'admin')).toHaveLength(15)
+    expect(filterNavItems('', 'admin')).toHaveLength(16)
     expect(filterNavItems('知识', 'admin').map((i) => i.path)).toEqual([
       '/admin/kb',
     ])
@@ -380,14 +393,14 @@ describe('既有管理页模块契约（壳改造后 11 页零改动仍可加载
 })
 
 describe('ConsoleShell — 既有页零改动地落在壳里', () => {
-  it('四组标签 + 15 个真链接；总览页（既有页）照常渲染在主区', async () => {
+  it('四组标签 + 16 个真链接；总览页（既有页）照常渲染在主区', async () => {
     const view = await mountShell('/admin')
     const text = document.body.textContent ?? ''
     for (const label of ['运营', '建模', '治理', '系统']) {
       expect(text).toContain(label)
     }
     const links = document.querySelectorAll('a.admin-nav-item')
-    expect(links).toHaveLength(15)
+    expect(links).toHaveLength(16)
     for (const link of Array.from(links)) {
       expect(link.getAttribute('href')).toMatch(/^\/admin/)
     }
@@ -518,7 +531,7 @@ describe('ConsoleShell — ⌘K（K5）', () => {
     )
     await flushPromises()
     const options = document.querySelectorAll('[role="option"]')
-    expect(options).toHaveLength(15)
+    expect(options).toHaveLength(16)
     expect(options[1].getAttribute('aria-selected')).toBe('true')
     expect(input.getAttribute('aria-activedescendant')).toBe(options[1].id)
 

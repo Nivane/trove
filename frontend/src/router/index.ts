@@ -92,6 +92,13 @@ export const router = createRouter({
           meta: { titleKey: 'semanticLayer' },
         },
         {
+          // 本体页（语义模型的只读投影；roles 继承 /admin 的默认拒绝档，与 semantic 同档）。
+          path: 'ontology',
+          name: 'admin-ontology',
+          component: () => import('../views/admin/OntologyView.vue'),
+          meta: { titleKey: 'ontology' },
+        },
+        {
           path: 'audit',
           name: 'admin-audit',
           component: () => import('../views/admin/AuditView.vue'),
