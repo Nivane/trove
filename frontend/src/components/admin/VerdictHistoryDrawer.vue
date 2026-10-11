@@ -368,7 +368,11 @@ function pct(v: unknown): string {
                       :key="i"
                       :class="{ 'vh-fired': card.triggered }"
                     >
-                      <td>{{ fmtVal(card.dim) }}</td>
+                      <!-- 行级显示名(本体标注):有则优先,裸值(委托
+                           fmtVal 的现状渲染)进 tooltip;键缺席 → 现状。 -->
+                      <td :title="card.dim_display ? fmtVal(card.dim) : undefined">
+                        {{ card.dim_display ?? fmtVal(card.dim) }}
+                      </td>
                       <td>{{ fmtVal(card.current) }}</td>
                       <td>{{ fmtVal(card.baseline) }}</td>
                       <td>{{ fmtVal(card.delta) }}</td>
@@ -449,7 +453,11 @@ function pct(v: unknown): string {
                       :key="i"
                       :class="{ 'vh-fired': b.entry.gated }"
                     >
-                      <td>{{ b.dim || '—' }}</td>
+                      <!-- 显示名读 entry 级 dim_display;by_dim 的**键**
+                           (裸值)是身份,一个字不动,只进 tooltip。 -->
+                      <td :title="b.entry.dim_display ? (b.dim || undefined) : undefined">
+                        {{ b.entry.dim_display ?? (b.dim || '—') }}
+                      </td>
                       <td>{{ num2(b.entry.z) }}</td>
                       <td>{{ num2(b.entry.k) }}</td>
                       <td>{{ num2(b.entry.confidence) }}</td>

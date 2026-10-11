@@ -501,3 +501,98 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
     expect(view.text()).toContain('SELECT loan.region')
   })
 })
+
+describe('VerdictHistoryDrawer — 本体显示名（O3）', () => {
+  /** 判定行卡与噪声带 by_dim 都带行级 dim_display 的一份证据(由
+   *  withDisplay 开关同一份 base 的两种形态 —— 缺席态必须与现状一致)。 */
+  function displayDetail(withDisplay: boolean): VerdictDetail {
+    const row0: Record<string, unknown> = {
+      ...(DETAIL.verdict.evidence as any).rows[0],
+      gated: true,
+      confidence: 0.93,
+    }
+    const row1: Record<string, unknown> = {
+      ...(DETAIL.verdict.evidence as any).rows[1],
+      gated: false,
+      confidence: 0.0,
+    }
+    const entry0: Record<string, unknown> = {
+      k: 3.5, z: 6.74, outside: true, confidence: 0.93, gated: true, reason: '',
+    }
+    const entry1: Record<string, unknown> = {
+      k: 3.5, z: 1.21, outside: false, confidence: 0.0, gated: false, reason: 'within_band',
+    }
+    if (withDisplay) {
+      row0.dim_display = '上海分行'
+      entry0.dim_display = '上海分行'
+    }
+    return {
+      verdict: {
+        ...brief(),
+        evidence: {
+          ...DETAIL.verdict.evidence,
+          rows: [row0, row1],
+          significance: {
+            required: true,
+            min_confidence: 0,
+            seasonal: { grain: 'month', lookback: 12, mode: 'trailing', k: 3.5 },
+            note: '位置分数非概率:(|z|−k)/k 截断到 [0,1]',
+            by_dim: { 华东: entry0, 华北: entry1 },
+            degraded: [],
+          },
+        },
+      },
+      diff: null,
+    }
+  }
+
+  function secOf(view: VueWrapper, title: string) {
+    const s = view.findAll('.vh-sec').find((x) => x.find('.vh-sec-title').text() === title)
+    if (!s) throw new Error(`section not found: ${title}`)
+    return s
+  }
+
+  async function expand(detail: VerdictDetail) {
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
+    })
+    vi.mocked(fetchVerdict).mockResolvedValue(detail)
+    const view = await mountDrawer()
+    await view.find('.vh-row').trigger('click')
+    await flushPromises()
+    return view
+  }
+
+  it('判定行与噪声带行显示显示名,裸值(键)只进 tooltip', async () => {
+    const view = await expand(displayDetail(true))
+
+    const cards = secOf(view, 'Judged rows').findAll('tbody tr td:first-child')
+    expect(cards[0].text()).toBe('上海分行')
+    expect(cards[0].attributes('title')).toBe('华东')
+    expect(cards[1].text()).toBe('华北')
+    expect(cards[1].attributes('title')).toBeUndefined()
+
+    const band = secOf(view, 'Noise band · significance gate').findAll('tbody tr td:first-child')
+    expect(band[0].text()).toBe('上海分行')
+    expect(band[0].attributes('title')).toBe('华东')
+    expect(band[1].text()).toBe('华北')
+    expect(band[1].attributes('title')).toBeUndefined()
+
+    // 键是身份:原始结果行不参与标注,照旧显示裸值。
+    const raw = secOf(view, 'Raw result rows').findAll('tbody tr td:first-child')
+    expect(raw[0].text()).toBe('华东')
+    expect(raw[0].attributes('title')).toBeUndefined()
+  })
+
+  it('显示名键缺席:两处表格照旧显示裸值,不加任何 tooltip', async () => {
+    const view = await expand(displayDetail(false))
+
+    const cards = secOf(view, 'Judged rows').findAll('tbody tr td:first-child')
+    expect(cards.map((c) => c.text())).toEqual(['华东', '华北'])
+    expect(cards.every((c) => c.attributes('title') === undefined)).toBe(true)
+
+    const band = secOf(view, 'Noise band · significance gate').findAll('tbody tr td:first-child')
+    expect(band.map((c) => c.text())).toEqual(['华东', '华北'])
+    expect(band.every((c) => c.attributes('title') === undefined)).toBe(true)
+  })
+})

@@ -244,6 +244,11 @@
         <el-table-column :label="t('actionsColRule', ui.lang)" min-width="180">
           <template #default="{ row }">
             <span class="cell-mono">{{ row.rule_id }}</span>
+            <!-- 对象块(O4):entity_ref 在 → 一行「针对 …」;缺席不渲染
+                 (现状行,不补话)。三处共用 EntityRefBlock。 -->
+            <div v-if="entityRefOf(row.evidence_refs)" class="actions-entity-line">
+              <EntityRefBlock :entity-ref="entityRefOf(row.evidence_refs)!" />
+            </div>
             <div v-if="row.rationale" class="dim actions-rationale">{{ row.rationale }}</div>
           </template>
         </el-table-column>
@@ -469,7 +474,14 @@
           </div>
           <div class="actions-batch-line">
             <span class="dim">{{ t('actionsEvidence', ui.lang) }}</span>
-            <span class="cell-mono actions-batch-value">{{ evidenceSummary(p) }}</span>
+            <!-- 对象块(O4)与列表行/抽屉同源;entity_ref 缺席时不渲染,
+                 摘要原样保留(现状行,不补话)。 -->
+            <EntityRefBlock
+              v-if="entityRefOf(p.evidence_refs)"
+              :entity-ref="entityRefOf(p.evidence_refs)!"
+              class="actions-batch-value"
+            />
+            <span v-if="evidenceSummary(p)" class="cell-mono actions-batch-value">{{ evidenceSummary(p) }}</span>
           </div>
         </div>
       </div>
@@ -546,7 +558,17 @@
           <dt>{{ t('actionsIdempotencyKey', ui.lang) }}</dt>
           <dd class="cell-mono actions-wrap">{{ detail.proposal.idempotency_key || '—' }}</dd>
           <dt>{{ t('actionsEvidence', ui.lang) }}</dt>
-          <dd class="cell-mono actions-wrap">{{ evidenceText }}</dd>
+          <dd class="cell-mono actions-wrap">
+            <!-- 对象块(O4):与列表行/批量预览共用 EntityRefBlock;
+                 evidenceText 已把已解析的 entity_ref 从扁平文本里剔掉
+                 (同一事实不出现两遍),其余证据原样。 -->
+            <EntityRefBlock
+              v-if="detailEntityRef"
+              :entity-ref="detailEntityRef"
+              class="actions-entity-dd"
+            />
+            <span v-if="evidenceText">{{ evidenceText }}</span>
+          </dd>
         </dl>
 
         <div v-if="detail.proposal.error" class="actions-dialog-error cell-mono">
@@ -673,6 +695,8 @@ import { useListQuery } from '../../composables/useListQuery'
 import { fmtDateTime } from '../../utils/format'
 import { notifySuccess, toastError } from '../../utils/notify'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import EntityRefBlock from '../../components/admin/EntityRefBlock.vue'
+import { entityRefOf } from '../../utils/entityRef'
 import {
   ACTION_PROPOSAL_STATUSES,
   ACTION_PROPOSALS_ALL,
@@ -1036,16 +1060,22 @@ function payloadSummary(p: ActionProposal): string {
   return parts.join(' · ') + more
 }
 
-/** 证据摘要:先摆判定锚点类键,其余只报个数(它们本来就是指针)。 */
+/** 证据摘要:先摆判定锚点类键,其余只报个数(它们本来就是指针)。
+ *  已成对象块渲染的 entity_ref 不再计进 +N(行上已看得见,计了是重复);
+ *  只剩它一个时返回空串,模板整段省略(而不是留一个孤零零的 '—')。
+ *  entity_ref 缺席/坏形状 → 与现状逐字节一致。 */
 function evidenceSummary(p: ActionProposal): string {
   const refs = p.evidence_refs ?? {}
+  const hasEntity = entityRefOf(refs) !== null
   const keys = ['rule_rev', 'group', 'run_id', 'job_id']
   const parts = keys
     .filter((k) => refs[k] !== undefined && refs[k] !== null && refs[k] !== '')
     .map((k) => `${k}: ${String(refs[k])}`)
-  const extra = Object.keys(refs).filter((k) => !keys.includes(k)).length
+  const extra = Object.keys(refs).filter(
+    (k) => !keys.includes(k) && !(k === 'entity_ref' && hasEntity),
+  ).length
   if (extra) parts.push(`+${extra}`)
-  return parts.join(' · ') || '—'
+  return parts.join(' · ') || (hasEntity ? '' : '—')
 }
 
 /* ── 提案:审批对话框(单条 / 批量共用)────────────────── */
@@ -1228,12 +1258,22 @@ const prettyPayload = computed(() =>
   detail.value ? JSON.stringify(detail.value.proposal.payload, null, 2) : '',
 )
 
+/** 详情里的对象引用(键缺席/坏形状 → null,抽屉回退现状扁平文本)。 */
+const detailEntityRef = computed(() =>
+  entityRefOf(detail.value?.proposal.evidence_refs),
+)
+
 const evidenceText = computed(() => {
   const refs = detail.value?.proposal.evidence_refs
   if (!refs || !Object.keys(refs).length) return '—'
-  return Object.entries(refs)
+  // 已解析的 entity_ref 不上扁平文本(它已由对象块渲染);
+  // 坏形状的不解析、照旧留在扁平文本里可见 —— 宁缺不猜,更不吞。
+  const hasEntity = detailEntityRef.value !== null
+  const text = Object.entries(refs)
+    .filter(([k]) => !(k === 'entity_ref' && hasEntity))
     .map(([k, v]) => `${k}: ${String(v)}`)
     .join(' · ')
+  return text || (hasEntity ? '' : '—')
 })
 
 const detailVerbs = computed(() =>
@@ -1297,6 +1337,16 @@ onMounted(load)
 }
 .actions-rationale {
   font-size: var(--fs-2xs);
+}
+/* 列表行对象块(O4):与 rationale 分开一行,颜色略强 —— 它是这条提案
+   对谁生效,不是解释性附注。 */
+.actions-entity-line {
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+}
+/* 抽屉里对象块与其余证据同排,块与后随文本留一点间隔。 */
+.actions-entity-dd {
+  margin-right: 6px;
 }
 .actions-error-text {
   color: var(--danger-text, #d64545);

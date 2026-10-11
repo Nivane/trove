@@ -190,6 +190,78 @@ describe('AnalysisCard — 噪声带', () => {
   })
 })
 
+describe('AnalysisCard — 本体显示名（O3）', () => {
+  /** 显示名与裸值两侧都在的 payload:labels 带 primary_dimension_display,
+   *  贡献表首行与下钻行带 dim_display(第二行刻意不带)。 */
+  const O3: AnalysisPayload = {
+    ...V1,
+    labels: {
+      baseline: 'prev_period',
+      baseline_label: '上期',
+      primary_dimension: 'SH',
+      primary_dimension_display: '上海分行',
+    },
+    table: [
+      { dim: 'SH', dim_display: '上海分行', base: 100, current: 80, delta: -20, contribution: 1 },
+      { dim: 'BJ', base: 30, current: 42, delta: 12, contribution: -0.5 },
+    ],
+    drilldown: {
+      dimension: 'product',
+      table: [{ dim: 'LN', dim_display: '贷款', base: 5, current: 6, delta: 1, contribution: 0.5 }],
+    },
+  }
+
+  /** 只摘掉显示名键的同形 payload —— 缺席态必须与现状逐字节一致。 */
+  const O3_BARE: AnalysisPayload = {
+    ...O3,
+    labels: { baseline: 'prev_period', baseline_label: '上期', primary_dimension: 'SH' },
+    table: [
+      { dim: 'SH', base: 100, current: 80, delta: -20, contribution: 1 },
+      { dim: 'BJ', base: 30, current: 42, delta: 12, contribution: -0.5 },
+    ],
+    drilldown: {
+      dimension: 'product',
+      table: [{ dim: 'LN', base: 5, current: 6, delta: 1, contribution: 0.5 }],
+    },
+  }
+
+  it('显示名在:头条/贡献表/下钻显示显示名,裸值进 tooltip', () => {
+    mountCard(O3)
+
+    const head = wrapper?.find('.ana-headline-dim')
+    expect(head?.text()).toContain('上海分行')
+    expect(head?.text()).not.toContain('SH')
+    expect(head?.attributes('title')).toBe('SH')
+
+    const cells = wrapper?.find('table.ana-table')?.findAll('tbody tr td:first-child') ?? []
+    expect(cells[0]?.text()).toBe('上海分行')
+    expect(cells[0]?.attributes('title')).toBe('SH')
+    // 未标注的行原样:裸值上屏,也不凭空加 tooltip
+    expect(cells[1]?.text()).toBe('BJ')
+    expect(cells[1]?.attributes('title')).toBeUndefined()
+
+    const drillCell = wrapper?.find('.ana-drill table.ana-table tbody tr td:first-child')
+    expect(drillCell?.text()).toBe('贷款')
+    expect(drillCell?.attributes('title')).toBe('LN')
+  })
+
+  it('显示名键缺席:裸值照旧上屏,一个 title 都不加(与现状一致)', () => {
+    mountCard(O3_BARE)
+
+    const head = wrapper?.find('.ana-headline-dim')
+    expect(head?.text()).toContain('SH')
+    expect(head?.attributes('title')).toBeUndefined()
+
+    const cells = wrapper?.find('table.ana-table')?.findAll('tbody tr td:first-child') ?? []
+    expect(cells.map((c) => c.text())).toEqual(['SH', 'BJ'])
+    expect(cells.every((c) => c.attributes('title') === undefined)).toBe(true)
+
+    const drillCell = wrapper?.find('.ana-drill table.ana-table tbody tr td:first-child')
+    expect(drillCell?.text()).toBe('LN')
+    expect(drillCell?.attributes('title')).toBeUndefined()
+  })
+})
+
 describe('AnalysisCard — 降级记账（partial + evidence.degraded）', () => {
   const withDegraded = (
     degraded: { stage?: string; reason?: string }[],

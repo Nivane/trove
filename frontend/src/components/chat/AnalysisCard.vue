@@ -323,8 +323,15 @@ function resize() {
       <span class="ana-headline-v" :class="deltaClass(a.total_delta)">
         {{ fsign(a.total_delta) }}
       </span>
-      <span v-if="a.labels?.primary_dimension" class="ana-headline-dim">
-        {{ t('anaPrimaryDim', ui.lang) }}: {{ a.labels.primary_dimension }}
+      <!-- 本体标注(O3):有显示名优先显示,裸值进 tooltip;键缺席 →
+           与现状逐字节一致(title 属性也不加)。 -->
+      <span
+        v-if="a.labels?.primary_dimension"
+        class="ana-headline-dim"
+        :title="a.labels.primary_dimension_display ? a.labels.primary_dimension : undefined"
+      >
+        {{ t('anaPrimaryDim', ui.lang) }}:
+        {{ a.labels.primary_dimension_display ?? a.labels.primary_dimension }}
       </span>
     </div>
 
@@ -378,7 +385,10 @@ function resize() {
       </thead>
       <tbody>
         <tr v-for="(r, i) in rows" :key="i">
-          <td class="ana-dim">{{ r.dim ?? '' }}</td>
+          <!-- 行级显示名(本体标注):有则优先,裸值进 tooltip;缺席 → 现状。 -->
+          <td class="ana-dim" :title="r.dim_display ? (r.dim ?? '') : undefined">
+            {{ r.dim_display ?? r.dim ?? '' }}
+          </td>
           <template v-if="isRatio">
             <td>{{ fv(r.base_rate) }}</td>
             <td>{{ fv(r.current_rate) }}</td>
@@ -441,7 +451,9 @@ function resize() {
         </thead>
         <tbody>
           <tr v-for="(r, i) in drillRows" :key="i">
-            <td class="ana-dim">{{ r.dim ?? '' }}</td>
+            <td class="ana-dim" :title="r.dim_display ? (r.dim ?? '') : undefined">
+              {{ r.dim_display ?? r.dim ?? '' }}
+            </td>
             <td>{{ fv(r.base) }}</td>
             <td>{{ fv(r.current) }}</td>
             <td :class="deltaClass(r.delta)">{{ fsign(r.delta) }}</td>
