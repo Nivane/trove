@@ -32,11 +32,11 @@
               v-for="(h, j) in headers"
               :key="h"
               :class="{ numeric: isNumericCol(j), masked: j in maskedCols }"
-              :title="j in maskedCols ? t('maskedColTip', ui.lang) : undefined"
+              :title="j in maskedCols ? t('maskedColTip', ui.lang) : headerTitle(j)"
               @click="toggleSort(j)"
             >
               <span class="th-inner">
-                {{ h }}
+                {{ headerLabels[j] }}
                 <EyeOff v-if="j in maskedCols" :size="11" class="masked-icon" />
                 <span v-if="sortCol === j" class="sort-arrow">{{
                   sortDir === 1 ? '▲' : '▼'
@@ -95,6 +95,7 @@ import { computed, ref } from 'vue'
 import { ArrowLeft, ArrowRight, Copy, Download, EyeOff } from 'lucide-vue-next'
 import type { MaskingReport } from '../../utils/masking'
 import { maskedColumnModes } from '../../utils/masking'
+import type { ObjectColumnInfo } from '../../api/types'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, notifyError } from '../../utils/notify'
@@ -106,8 +107,27 @@ const props = defineProps<{
   downloadRows?: unknown[][] | null
   /** 字段级脱敏报告:命中名字的列会被标出(P6)。 */
   masking?: MaskingReport | null
+  /** 本体标注(O2,可选增量):{列名: {entity, field}} 命中的列表头
+   *  增强为「姓名 · 客户」。**只动展示** —— 过滤/排序/复制/下载/数值
+   *  判定/脱敏匹配一律继续用原始 props.headers,单元格值一字不改;
+   *  键缺席(或该列没映射)→ 渲染逐字节同现状。 */
+  objectColumns?: Record<string, ObjectColumnInfo> | null
 }>()
 const ui = useUiStore()
+
+/** 列下标 → 表头展示文本。本体标注命中的列显示「列名 · 实体」,
+ *  其余原样;entity 空/非字符串 → 不算命中(宁缺不猜)。 */
+const headerLabels = computed(() =>
+  props.headers.map((h) => {
+    const entity = props.objectColumns?.[h]?.entity
+    return typeof entity === 'string' && entity.trim() ? `${h} · ${entity.trim()}` : h
+  }),
+)
+
+/** 有显示名时把原始列名留在 tooltip(脱敏列的说明优先,见模板)。 */
+function headerTitle(j: number): string | undefined {
+  return headerLabels.value[j] === props.headers[j] ? undefined : props.headers[j]
+}
 
 /** 列下标 → 模式。名字对不上就不标(见 utils/masking 的取舍说明)。 */
 const maskedCols = computed(() => maskedColumnModes(props.headers, props.masking))

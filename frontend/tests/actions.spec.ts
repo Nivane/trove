@@ -745,3 +745,125 @@ describe('ActionsView effect measurement (B7)', () => {
     expect(bodyText()).toContain('Not measured yet')
   })
 })
+
+describe('ActionsView — 对象块（O4）', () => {
+  /** 创建时冻结的对象引用(文档三 §5.6):三处展示共用这一份 + 同一个
+   *  渲染组件 —— 三处断言同一条字符串,漂移就会在这里显形。 */
+  const ENTITY = { type: 'loan', keys: { loan_id: 'L456', customer: '张伟' } }
+  const BLOCK = 'Targeted at loan L456 (customer: 张伟)'
+
+  function mockPending(items: ReturnType<typeof proposal>[]) {
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('status=pending')) {
+        return { proposals: items, counts: { pending: items.length, approved: 0, failed: 0 }, enabled: true }
+      }
+      return { proposals: [], counts: { pending: items.length, approved: 0, failed: 0 }, enabled: true }
+    })
+  }
+
+  function rows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll<HTMLElement>('.el-table__body-wrapper tbody tr'))
+  }
+
+  function rowBoxes(): HTMLInputElement[] {
+    return Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        '.el-table__body-wrapper input[type="checkbox"]',
+      ),
+    )
+  }
+
+  function drawer(): HTMLElement {
+    const d = Array.from(document.querySelectorAll<HTMLElement>('.el-drawer')).find(
+      (x) => !(x.parentElement as HTMLElement | null)?.style.display.includes('none'),
+    )
+    if (!d) throw new Error('drawer is not open')
+    return d
+  }
+
+  /** 抽屉里「证据」那一格(按 dt 找它的 dd)。 */
+  function evidenceDd(): HTMLElement {
+    const dt = Array.from(drawer().querySelectorAll('.actions-dl dt')).find(
+      (d) => d.textContent?.trim() === 'Evidence',
+    )
+    if (!dt) throw new Error('evidence dt not found')
+    return dt.nextElementSibling as HTMLElement
+  }
+
+  it('列表行:entity_ref 在 → 对象块一行;缺席的行不渲染不补话', async () => {
+    mockPending([
+      proposal({ id: 'p1', status: 'pending', evidence_refs: { entity_ref: ENTITY, run_id: 7 } }),
+      proposal({ id: 'p4', status: 'pending', evidence_refs: { run_id: 9 } }),
+    ])
+    await mountView('/admin/actions?tab=proposals&status=open')
+
+    const trs = rows()
+    expect(trs).toHaveLength(2)
+    expect(trs[0].textContent ?? '').toContain(BLOCK)
+    expect(trs[0].querySelector('.actions-entity-line')).not.toBeNull()
+    expect(trs[1].textContent ?? '').not.toContain('Targeted at')
+    expect(trs[1].querySelector('.actions-entity-line')).toBeNull()
+  })
+
+  it('详情抽屉:对象块 + 其余证据原样;entity_ref 不在扁平文本里出现两遍', async () => {
+    const withEntity = proposal({
+      id: 'p1', status: 'pending', evidence_refs: { entity_ref: ENTITY, run_id: 7 },
+    })
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('/proposals/p1')) {
+        return { proposal: withEntity, approvals: [], deliveries: [], stale: false }
+      }
+      return { proposals: [withEntity], counts: { pending: 1, approved: 0, failed: 0 }, enabled: true }
+    })
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+
+    const dd = evidenceDd()
+    expect(dd.textContent ?? '').toContain(BLOCK)
+    expect(dd.textContent ?? '').toContain('run_id: 7') // 其余证据原样保留
+    expect(dd.textContent ?? '').not.toContain('entity_ref') // 已渲染的不重复上屏
+
+    // 缺席(键不在)→ 与现状完全一致:扁平文本 + 无对象块。
+    await wrapper?.unmount()
+    wrapper = null
+    document.body.innerHTML = ''
+    const bare = proposal({ id: 'p1', status: 'pending', evidence_refs: { run_id: 7 } })
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('/proposals/p1')) {
+        return { proposal: bare, approvals: [], deliveries: [], stale: false }
+      }
+      return { proposals: [bare], counts: { pending: 1, approved: 0, failed: 0 }, enabled: true }
+    })
+    const view2 = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view2.element, 'Detail').click()
+    await flushPromises()
+    const dd2 = evidenceDd()
+    expect(dd2.textContent ?? '').toContain('run_id: 7')
+    expect(dd2.textContent ?? '').not.toContain('Targeted at')
+  })
+
+  it('批量审批预览:同款对象块;摘要不把已渲染的 entity_ref 计进 +N', async () => {
+    mockPending([
+      proposal({
+        id: 'p1',
+        status: 'pending',
+        evidence_refs: { entity_ref: ENTITY, rule_rev: 'rev-2', extra: 'x' },
+      }),
+      proposal({ id: 'p4', status: 'pending', evidence_refs: { job_id: 'job-9' } }),
+    ])
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+
+    rowBoxes()[0].click() // p1
+    rowBoxes()[1].click() // p4
+    await flushPromises()
+    findButton(view.element, 'Approve selected').click()
+    await flushPromises()
+
+    const text = bodyText()
+    expect(text).toContain(BLOCK)
+    expect(text).toContain('rule_rev: rev-2 · +1') // entity_ref 不重复计数(旧算法会 +2)
+    expect(text).not.toContain('+2')
+    expect(text).toContain('job_id: job-9') // 无对象的行照旧
+  })
+})

@@ -185,6 +185,9 @@ export interface AnalysisTreeNode {
 /** 贡献表一行(加性:base/current/delta/contribution;比率:率与权重 + 三效应)。 */
 export interface AnalysisContributionRow {
   dim?: string
+  /** 行级可选显示名(本体标注):有则优先显示,裸值进 tooltip。
+   *  缺席 → 与现状逐字节一致(判据是键在不在,不是版本号)。 */
+  dim_display?: string
   base?: number
   current?: number
   delta?: number
@@ -232,6 +235,25 @@ export interface AnalysisSeries {
   confidence?: number | null
 }
 
+/** 行动提案的对象引用(entity_ref;创建时冻结,前端只读展示)。
+ *
+ * 形状:``{"type": <实体显示名>, "keys": {<键字段>: <值>}}``(文档三
+ * §5.6)。整键缺席/坏形状 → 回退现状扁平证据文本(宁缺不猜);前端不
+ * 重算、不补算。 */
+export interface EntityRefInfo {
+  type?: string
+  keys?: Record<string, unknown>
+}
+
+/** 答案卡对象列(object_columns;列名 → 对象字段,文档三 §5.7)。
+ *
+ * 输出节点从执行 SQL 的答案列对已声明实体字段做唯一精确匹配才建映射;
+ * 前端收到才做表头增强,单元格值一字不改。 */
+export interface ObjectColumnInfo {
+  entity?: string
+  field?: string
+}
+
 /** state.analysis(分析柱;形状定义见后端 analysis_payload)。
  *
  * v2(B8)只增不减:series / evidence.budget 与节点层 hypotheses 全可选。
@@ -247,7 +269,10 @@ export interface AnalysisPayload {
     baseline?: string
     baseline_label?: string
     primary_dimension?: string
+    /** field ref 的可选显示名(层级选路后才有);缺席 → 原值照旧。 */
+    primary_dimension_display?: string
     dimensions?: string[]
+    dimensions_display?: string[]
   }
   total_delta?: number
   table?: AnalysisContributionRow[]

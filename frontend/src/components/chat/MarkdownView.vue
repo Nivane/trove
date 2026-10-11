@@ -12,6 +12,7 @@
         :rows="b.rows"
         :download-rows="resultRows"
         :masking="masking"
+        :object-columns="objectColumns"
       />
       <SqlBlock v-else-if="b.type === 'sql'" :code="b.code" />
       <details v-else-if="b.type === 'details'" class="answer-details">
@@ -32,6 +33,7 @@
               :rows="inner.rows"
               :download-rows="resultRows"
               :masking="masking"
+              :object-columns="objectColumns"
             />
             <SqlBlock v-else-if="inner.type === 'sql'" :code="inner.code" />
           </template>
@@ -46,6 +48,7 @@ import { computed } from 'vue'
 import DataTable from './DataTable.vue'
 import SqlBlock from './SqlBlock.vue'
 import type { MaskingReport } from '../../utils/masking'
+import type { ObjectColumnInfo } from '../../api/types'
 import { tokenize } from '../../utils/blocks'
 import { enhanceConclusionHtml, renderMarkdown, stripAsciiChart } from '../../utils/markdown'
 
@@ -55,6 +58,10 @@ const props = defineProps<{
   resultRows?: unknown[][] | null
   /** 字段级脱敏报告:表头据此标出被改写的列(P6)。 */
   masking?: MaskingReport | null
+  /** 本体标注(O2 可选增量):{列名: {entity, field}} 透传给结果表格,
+   *  命中的列表头增强「姓名 · 客户」。键缺席 → 管线逐字节不变
+   *  (表格仍只收到 undefined,DataTable 里自行判断显示与否)。 */
+  objectColumns?: Record<string, ObjectColumnInfo> | null
   /** 答案卡专用:结论当主角(结论标题压灰 + 首段放大 + 数字 hero)。
    *  只由主答案的 MarkdownView 开启,步骤卡片等从不开。 */
   hero?: boolean
