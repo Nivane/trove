@@ -44,11 +44,14 @@ def _seed_query(store, *, question: str, sql: str = "SELECT 1",
 
 
 async def _seed_refusal(store, *, question: str, reason: str = "uncovered",
-                        miss: str = "", datasource: str = "demo",
+                        miss: str = "", component: str = "",
+                        datasource: str = "demo",
                         ts: str | None = None):
     details = {"question": question, "datasource": datasource, "reason": reason}
     if miss:
         details["miss_reason"] = miss
+    if component:
+        details["miss_component"] = component
     await store.append_audit(ts=ts or now_iso(), user_id=None, username="bob",
                              action="query.refused", details=details)
 
@@ -151,6 +154,7 @@ async def test_refusal_report_empty_is_explicit_zero(client, api_app):
     assert body["total"] == 0 and body["capped"] is False
     assert body["top_questions"] == []
     assert body["by_reason"] == [] and body["by_miss"] == []
+    assert body["by_table"] == []
     assert body["relationship_missing"]["count"] == 0
     assert body["relationship_missing"]["top_questions"] == []
     # 覆盖面自述:中英都有,且如实写明 MCP 在表内、直连编译不在
@@ -199,6 +203,55 @@ async def test_refusal_report_aggregates_and_singles_out_relations(
     assert rel["top_questions"][0]["count"] == 2
 
 
+async def test_refusal_report_by_table_aggregates_relation_components(
+        client, api_app):
+    """by_table(FR-REFUSE-3):关系类 miss_component 拆分聚合,store 零变更。
+
+    口径 = 只数**关系类条目**(miss_reason ∈ 四类);token 保序去重、
+    大小写无关合并(拼写取条目顺序最先遇到的 —— 存储按 ts DESC 返回,
+    即**最近一次**的原拼写)、含空白的内部诊断串丢弃(整句不是表名,
+    不能变成一行伪表);排序与 by_reason/by_miss 同款(count 降序、同数
+    按表名升序)。
+    """
+    store = api_app.state.auth.store
+    # ① 先种一条历史拼写:"Loan" / "Region"
+    await _seed_refusal(store, question="q1", miss="fan_out",
+                        component="Loan, Region")
+    # ② 纯表名列表(unknown_cardinality 稳态形态)×2
+    await _seed_refusal(store, question="q2", miss="unknown_cardinality",
+                        component="loan, account")
+    await _seed_refusal(store, question="q2", miss="unknown_cardinality",
+                        component="loan, account")
+    # ③ 带前缀的表名列表:按首个冒号剥前缀后计数
+    await _seed_refusal(store, question="q3", miss="unreachable_table",
+                        component="tables outside join tree: account, District")
+    # ④ 大小写变体合并;条目按 ts DESC 返回 → 最近拼写 "LOAN" 胜出
+    await _seed_refusal(store, question="q4", miss="fan_out",
+                        component="LOAN")
+    # ⑤ 内部诊断串(含空白)→ 丢弃,不出伪表行
+    await _seed_refusal(store, question="q5", miss="ambiguous_join_path",
+                        component="explicit joins reference undeclared edges")
+    # ⑥ 非关系类 miss 的 component 不参与(子集口径)
+    await _seed_refusal(store, question="q6", miss="no_metric_match",
+                        component="loan")
+    # ⑦ 连 miss 都没有的拒绝(no_model)自然不在关系子集里
+    await _seed_refusal(store, question="q7", reason="no_model",
+                        component="loan, account")
+
+    body = (await client.get("/v1/admin/audit/refusal-report?days=7")).json()
+    assert body["available"] is True and body["total"] == 8
+    assert body["by_table"] == [
+        {"table": "LOAN", "count": 4},
+        {"table": "account", "count": 3},
+        {"table": "District", "count": 1},
+        {"table": "Region", "count": 1},
+    ]
+    # 关系子集口径与 by_table 同源计数(每一行 token 都来自这两个条目集)
+    assert body["relationship_missing"]["count"] == 6
+    # 既有投影键不受影响:prose 不出现、非关系 component 不出现
+    assert all("explicit" not in row["table"] for row in body["by_table"])
+
+
 async def test_refusal_report_window_filters_old_rows(client, api_app):
     store = api_app.state.auth.store
     await _seed_refusal(store, question="新问题",
@@ -222,6 +275,7 @@ async def test_refusal_report_degrades_instead_of_faking_zeros(
     assert body["available"] is False
     assert body["total"] is None
     assert body["relationship_missing"]["count"] is None
+    assert body["by_table"] is None
     assert "audit read failed" in body["note"]
     # 覆盖面的自述不因降级而缺席
     assert body["coverage_note"]

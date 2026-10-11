@@ -404,6 +404,50 @@ def _refusal_coverage_notes() -> tuple[str, str]:
     return zh, en
 
 
+def _component_tables(component: str) -> list[str]:
+    """miss_component → 表名 token(保序去重,大小写无关)。
+
+    与 refuse.py 的 ``_component_tables`` 同一口径(那边做文案/链接投影,
+    这边做报表聚合);api 层不 import workflow 节点,两处同改。component
+    形态:纯表名列表 ``", ".join(matched)``、带前缀的
+    ``tables outside join tree: a, b``(按首个冒号剥前缀)、内部诊断串
+    (``explicit joins …`` —— 含空白的整句不是标识符,**丢弃**:这里没有
+    声明集可对照,不丢弃就会在 by_table 里多出一行伪表)。
+    """
+    text = str(component or "")
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in text.split(","):
+        name = part.strip().strip("`\"'")
+        if not name or any(c.isspace() for c in name) or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append(name)
+    return out
+
+
+def _by_table(relation_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """关系类拒绝的 miss_component → 「哪些表最常缺链接」拆分聚合(FR-REFUSE-3)。
+
+    只在关系类条目子集上聚合 —— component 恒为表名(或可剥前缀的表名列表)
+    的保证只在这四类 reason 里,N25 之外的分因会带指标名/诊断串,混进来
+    会把一次「缺指标」记成一次「表缺链接」。大小写无关合并,拼写取**条目
+    顺序里最先遇到的**(存储按 ``ts DESC`` 返回,即最近一次的原拼写);
+    降序、同数按表名升序 —— 与 by_reason/by_miss 同口径。
+    """
+    counts: dict[str, list[Any]] = {}  # lower → [首次出现的原拼写, count]
+    for e in relation_entries:
+        for t in _component_tables(str(e.get("miss_component") or "")):
+            row = counts.setdefault(t.lower(), [t, 0])
+            row[1] += 1
+    return [
+        {"table": row[0], "count": row[1]}
+        for _, row in sorted(counts.items(), key=lambda kv: (-kv[1][1], kv[1][0]))
+    ]
+
+
 def _refusal_report_projection(
     entries: list[dict[str, Any]], *, total: int, capped: bool,
 ) -> dict[str, Any]:
@@ -412,6 +456,8 @@ def _refusal_report_projection(
     - ``top_questions``:按问题(小写归一)分组、count 降序(同数按原文
       升序稳定);空问题不进榜单(total 里算,但榜单回答「问了什么」);
     - ``by_reason`` / ``by_miss``:分布计数(降序、同数按 key 升序);
+    - ``by_table``:关系类条目的 miss_component 拆分聚合(见 _by_table;
+      全集口径的 by_miss 说「是不是缺关系」,by_table 说「缺在哪张表上」);
     - ``relationship_missing``:miss_reason 落在关系类的**条目子集**单独
       聚合 —— count 与榜单都只数关系类拒绝,不把同一个问题的其它拒绝
       混进来。
@@ -466,6 +512,7 @@ def _refusal_report_projection(
         "capped": capped,
         "by_reason": _distribution("reason"),
         "by_miss": _distribution("miss_reason"),
+        "by_table": _by_table(relation_entries),
         "top_questions": _group(entries)[:_REFUSAL_TOP_N],
         "relationship_missing": {
             "reasons": list(_RELATION_MISS_REASONS),
@@ -492,7 +539,7 @@ async def refusal_report(
     base: dict[str, Any] = {
         "available": True, "window_days": days, "since": since,
         "total": 0, "capped": False, "by_reason": [], "by_miss": [],
-        "top_questions": [],
+        "by_table": [], "top_questions": [],
         "relationship_missing": {
             "reasons": list(_RELATION_MISS_REASONS), "count": 0,
             "top_questions": [],
@@ -503,6 +550,9 @@ async def refusal_report(
     def _degraded(note: str) -> dict[str, Any]:
         return {
             **base, "available": False, "total": None, "note": note,
+            # 读不成 → None(「读不到」与「算出来是零条」是两个可区分的事实,
+            # 与 total/relationship_missing.count 同一条纪律)。
+            "by_table": None,
             "relationship_missing": {
                 **base["relationship_missing"], "count": None,
             },

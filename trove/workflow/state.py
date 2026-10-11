@@ -318,9 +318,11 @@ class WorkflowState(BaseModel):
 
     # 语义优先(Phase A):编译 MISS(未覆盖)/零语义匹配/无语义模型 → 拒绝信号。
     # 结构: {reason, question, datasource, plan?, draft?, conflict?, message?,
-    #        next_actions?}。next_actions = 一键出口列表(拒绝不是死胡同),
-    # 形状 [{id, kind, label, href, admin_only, payload?}] —— 后端给全
-    # (含提问语言文案),前端只渲染不分类;缺键/空列表 = 没有出口。
+    #        compile_miss?, next_actions?, related_links?}。next_actions =
+    # 一键出口列表(拒绝不是死胡同),形状 [{id, kind, label, href,
+    # admin_only, payload?}] —— 后端给全(含提问语言文案),前端只渲染不分类;
+    # 缺键/空列表 = 没有出口。related_links(本体 O1,仅关系类 MISS 且投影得
+    # 出来时挂载)= 涉及表之间已声明的链接,sibling 键缺席 = 整节不渲染。
     # 置位后图路由到 refuse 节点,终止本轮(不执行),产出反问文案。
     refusal: dict[str, Any] | None = None
 
