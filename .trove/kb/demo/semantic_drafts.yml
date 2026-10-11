@@ -35,3 +35,22 @@ drafts:
   conflict:
     code: field_declared
     message: 字段「client.gender」已声明
+- id: 28a20eed042c
+  kind: field
+  action: upsert
+  name: trans.type
+  payload:
+    expression: trans.type
+    synonyms:
+    - disposition type
+    - transaction type
+    - type
+    description: Transaction type code indicating credit, debit, or withdrawal.
+    datatype: String
+  note: refuse-conflict:field_declared:What is the total transaction amount for each
+    disposition type?
+  status: pending
+  created_at: '2026-10-11T14:06:53+00:00'
+  conflict:
+    code: field_declared
+    message: 字段「trans.type」已声明
