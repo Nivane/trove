@@ -1708,23 +1708,9 @@ examples:
   pending: true
   template: false
   note: auto-captured successful query
-- question: Show the number of transactions for each account.
-  sql: 'SELECT account.account_id, COUNT(trans.trans_id) AS num_transactions
-
-    FROM trans
-
-    JOIN account ON trans.account_id = account.account_id
-
-    GROUP BY account.account_id'
-  tags:
-  - auto
-  pending: true
-  template: false
-  created_at: '2026-10-11T13:59:50.694558+00:00'
-  note: auto-captured successful query
 _meta:
   format: 1
-  generator: memory
+  generator: kb_reject_example
   trove: 0.1.0
-  digest: sha256:842695597dbe9ee56b765103e41ef5a57768a977478e4094144cef17b376a51e
-  generated_at: '2026-10-11T13:59:50.694900+00:00'
+  digest: sha256:096f24322d47d481374d82d36a73780f9b83cdf2f3e007d423c84c932b12b4b5
+  generated_at: '2026-10-11T14:12:53.603880+00:00'
