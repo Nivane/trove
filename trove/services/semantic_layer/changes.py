@@ -27,10 +27,11 @@ from trove.core import metrics
 from trove.core.config import ChangesConfig
 from trove.services.datasource.naming import is_path_safe
 from trove.services.drift.models import ImpactSet, normalize_subject
+from trove.services.kb.lint import lint_semantics_document
 from trove.services.semantic_layer.diff import build_change_diff
+from trove.services.semantic_layer.issues import blocking_issues
 from trove.services.semantic_layer.manage import (
     _ACTIONS, _KINDS, _apply_draft, _dump_yaml, _load_yaml,
-    _reject_bad_semantics,
 )
 
 logger = logging.getLogger(__name__)
@@ -408,10 +409,14 @@ class ChangeService:
                 raise ChangeInvalid(f"{fail_prefix}: {e}") from e
         if "version" not in working and "semantic_model" in working:
             working["version"] = "0.2.0.dev0"
-        try:
-            _reject_bad_semantics(working, dialect)
-        except ValueError as e:
-            raise ChangeInvalid(str(e)) from e
+        # 写前门禁(**分级**,拍板 Q4):结构性错位拦下,拍板豁免的语义
+        # 缺口只提示不拦 —— 与 git pre-commit 门禁(KbService.semantics_lint)
+        # 共用 issues.blocking_issues 这一个判据,两处不各自分级。
+        blocking = blocking_issues(
+            lint_semantics_document(working, dialect=dialect or "sqlite"))
+        if blocking:
+            raise ChangeInvalid(
+                "语义校验未通过,拒绝写入: " + "; ".join(blocking))
 
         rec.status = "merged"
         rec.warnings = list(warnings)
