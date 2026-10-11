@@ -14,3 +14,24 @@ drafts:
   note: refuse:哪个地区的平均贷款金额最高?
   status: pending
   created_at: '2026-09-12T03:57:18+00:00'
+- id: ec629ae6b232
+  kind: field
+  action: upsert
+  name: client.gender
+  payload:
+    expression: client.gender
+    synonyms:
+    - 性别
+    - 男性
+    - 女性
+    - male
+    - female
+    - gender
+    description: 客户性别，F 表示女性，M 表示男性。
+    datatype: String
+  note: refuse-conflict:field_declared:客户中男性和女性各有多少人？
+  status: pending
+  created_at: '2026-10-11T13:52:25+00:00'
+  conflict:
+    code: field_declared
+    message: 字段「client.gender」已声明
