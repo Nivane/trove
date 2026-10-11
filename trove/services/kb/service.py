@@ -1019,8 +1019,13 @@ class KbService:
         复用管理端 issues() 的同一套 lint_semantics;提交前对将要写盘的
         semantics.yml 做静态校验,保证坏表达式/重复定义/坏关系永不进入
         git 审计历史。返回 ``(paths) -> list[str]`` 供 GitKb.commit 调用。
+
+        **分级**(拍板 Q4):只回应当拦的(``issues.blocking_issues`` 同一
+        判据)—— 结构性错位拦下,拍板豁免的语义缺口(实体自然键回退缺失、
+        别名冲突、单级/重复层级)只提示、不进 git 门禁。
         """
         from trove.services.kb.lint import lint_semantics_document
+        from trove.services.semantic_layer.issues import blocking_issues
 
         def _lint(paths) -> list[str]:
             issues: list[str] = []
@@ -1033,7 +1038,7 @@ class KbService:
                     issues.append(f"semantics.yml 无法解析: {e}")
                     continue
                 issues += lint_semantics_document(data, dialect=dialect)
-            return issues
+            return blocking_issues(issues)
 
         return _lint
 

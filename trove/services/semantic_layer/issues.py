@@ -18,11 +18,17 @@
 **不匹配绝不丢弃**:未命中规则表的串落 ``code="lint"`` 兜底。宁可少分类,
 不可漏报 —— 漏报的后果是页面显示「校验通过」而 confirm 被 400 拒绝。
 
-``severity`` 的取值是 ``error`` / ``warning``,但**今天的写盘门禁不分级**:
-``manage._reject_bad_semantics`` 在 issues 非空时即拒绝写入,所以 warning
-同样会拦 confirm。因此 :func:`validate_draft` 的 ``ok`` 取「能不能过门禁」
-语义(errors / warnings 任一非空即 False),而不是「有没有 error」——
-让校验结果与 confirm 的实际行为一致,是这一层存在的唯一理由。
+``severity`` 的取值是 ``error`` / ``warning``,门禁**分级**(拍板 Q4):
+结构性错位(error)一律拦下;**拍板豁免的语义缺口**(warning 且 code 在
+:data:`_ADVISORY_CODES`)只提示、不拦写盘。分级只认这一个名单 —— 既有
+warning、未命中规则表的 ``lint`` 兜底串一律照旧阻断(fail-closed:新 lint
+消息不会因为忘了登记就悄悄放行)。:func:`blocking_issues` 是这一判据的
+唯一权威,写盘前门禁(``changes._write_merge``)与 git pre-commit 门禁
+(``KbService.semantics_lint``)都经过它;展示面不过滤 —— 被豁免的问题
+照常出现在 ``issues`` / ``issue_items`` 里(「提示得到」不等于「看不见」)。
+因此 :func:`validate_draft` 的 ``ok`` 取「能不能过门禁」语义:error、
+非豁免 warning 任一在场即 False —— 让校验结果与 confirm 的实际行为一致,
+是这一层存在的唯一理由。
 """
 from __future__ import annotations
 
@@ -73,6 +79,18 @@ _HINTS: dict[str, str] = {
     "topic_undeclared_metric": "先声明该指标,或从主题域里移除它",
     "topic_metric_outside": "把该指标锚定的数据集并入本主题,或从本主题移除该指标",
     "topic_invalid": "topics 须为映射数组,每项至少含 name 与非空 datasets",
+    "entity_invalid": "entity 子块须为映射,键取 display_name / natural_keys / aliases;坏形状会被装载侧整体丢弃",
+    "entity_natural_key": "自然键须是本数据集 fields 里已声明的字段名",
+    "entity_natural_key_missing": "补 natural_keys(业务键字段,如 loan_id),或给数据集声明 primary_key 走回退",
+    "entity_alias_conflict": "别名与自身/其它数据集的同义词重复:删掉重复项,或把它归给真正拥有它的对象",
+    "hierarchy_invalid": "hierarchies 须为映射数组,每项含 name 与非空 levels",
+    "hierarchy_dup": "同名层级只保留一条:确认哪条是权威链后改名或合并",
+    "hierarchy_dataset_missing": "层级须声明归属数据集 dataset,且该数据集已在 datasets 里声明",
+    "hierarchy_level_invalid": "级别字段须来自归属数据集的 fields(层级链逐跳都要解析得到)",
+    "hierarchy_levels_sparse": "层级至少两级(粗 → 细);单级链条没有可钻的下一级,补一级或删除该层级",
+    "hierarchy_level_dup": "同一级别只写一次(装载侧保序去重,重复多半是写错)",
+    "entity_misplaced": "entity 写在 semantic_model[0].datasets[].entity(挂在数据集下),顶层会被忽略",
+    "hierarchies_misplaced": "hierarchies 写在 semantic_model[0] 下(与 time_spine 同层),顶层会被忽略",
     "kind_unknown": "kind 必须为 metric / field / dataset / topic 之一",
     "lint": "见原文;这条问题尚未归类,请按 lint 描述修正",
 }
@@ -97,6 +115,15 @@ def _relationship_target(m: re.Match[str]) -> tuple[str, str]:
 
 def _topic_target(m: re.Match[str]) -> tuple[str, str]:
     return ("topic", m.group("name"))
+
+
+def _entity_target(m: re.Match[str]) -> tuple[str, str]:
+    # 实体与数据集 1:1(挂在 ``datasets[].entity`` 下),目标名 = 归属数据集名。
+    return ("entity", m.group("name"))
+
+
+def _hierarchy_target(m: re.Match[str]) -> tuple[str, str]:
+    return ("hierarchy", m.group("name"))
 
 
 def _document_target(_m: re.Match[str]) -> tuple[str, str]:
@@ -146,6 +173,9 @@ _RULES: list[tuple[re.Pattern[str], str, str, Callable[[re.Match[str]], tuple[st
     # ── 文档级 ──
     (re.compile(r"^字段 .+ 声明 mask: hash"), "mask_hash_without_salt", SEVERITY_ERROR, _document_target),
     (re.compile(r"^文档顶层的 masking 会被忽略"), "masking_misplaced", SEVERITY_ERROR, _document_target),
+    # 新声明的两个放错层(与 masking 同款双守卫:解析层出声、写盘层拦下)
+    (re.compile(r"^文档顶层的 entity 会被忽略"), "entity_misplaced", SEVERITY_ERROR, _document_target),
+    (re.compile(r"^文档顶层的 hierarchies 会被忽略"), "hierarchies_misplaced", SEVERITY_ERROR, _document_target),
     # ── 关系家族 ──
     (re.compile(r"^关系「(?P<name>[^」]*)」引用未声明的数据集"), "relationship_undeclared_dataset", SEVERITY_ERROR, _relationship_target),
     (re.compile(r"^关系「(?P<name>[^」]*)」未声明基数"), "relationship_missing_cardinality", SEVERITY_WARNING, _relationship_target),
@@ -170,6 +200,25 @@ _RULES: list[tuple[re.Pattern[str], str, str, Callable[[re.Match[str]], tuple[st
     # 与字段家族共用 code:形状问题同一类,前端提示同一句话
     (re.compile(r"^主题域「(?P<name>[^」]+)」的 (?:synonyms|examples) 含空"), "bad_synonym", SEVERITY_WARNING, _topic_target),
     (re.compile(r"^主题域「(?P<name>[^」]+)」custom_extensions 缺 vendor_name"), "custom_extensions", SEVERITY_WARNING, _topic_target),
+    # ── 实体家族(kb/lint.py ``_lint_entities``;设计 §4.1)──
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的 entity 声明"), "entity_invalid", SEVERITY_ERROR, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的实体 natural_keys 必须是名字数组"), "entity_invalid", SEVERITY_ERROR, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的实体 aliases 必须是名字数组"), "entity_invalid", SEVERITY_ERROR, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的实体自然键「"), "entity_natural_key", SEVERITY_ERROR, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」声明了实体但未声明自然键"), "entity_natural_key_missing", SEVERITY_WARNING, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的实体别名「[^」]*」与自身 synonyms"), "entity_alias_conflict", SEVERITY_WARNING, _entity_target),
+    (re.compile(r"^数据集「(?P<name>[^」]*)」的实体别名「[^」]*」与数据集「"), "entity_alias_conflict", SEVERITY_WARNING, _entity_target),
+    # ── 钻取层级家族(kb/lint.py ``_lint_hierarchies``;设计 §4.3)──
+    (re.compile(r"^hierarchies 必须是数组"), "hierarchy_invalid", SEVERITY_ERROR, lambda _m: ("hierarchy", "")),
+    (re.compile(r"^hierarchies 条目必须是映射"), "hierarchy_invalid", SEVERITY_ERROR, lambda _m: ("hierarchy", "")),
+    (re.compile(r"^钻取层级缺少 name"), "hierarchy_invalid", SEVERITY_ERROR, lambda _m: ("hierarchy", "")),
+    (re.compile(r"^层级「(?P<name>[^」]+)」重复定义"), "hierarchy_dup", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」未声明归属数据集"), "hierarchy_dataset_missing", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」声明的数据集「"), "hierarchy_dataset_missing", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」的 levels 必须是名字数组"), "hierarchy_invalid", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」的级别字段「"), "hierarchy_level_invalid", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」的级别「"), "hierarchy_level_dup", SEVERITY_WARNING, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」解析后只有"), "hierarchy_levels_sparse", SEVERITY_WARNING, _hierarchy_target),
     # ── 其它写盘路径错误 ──
     (re.compile(r"^未知草稿类型"), "kind_unknown", SEVERITY_ERROR, lambda _m: _TARGET_UNKNOWN),
 ]
@@ -189,6 +238,54 @@ def _item(code: str, severity: str, target: tuple[str, str],
 #: sqlglot 的解析错误带 ANSI 下划线转义(终端渲染用),进 JSON 会变成乱码。
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+#: 拍板 Q4 豁免的「语义缺口」类 lint:warning 起步、**不阻断**写盘/提交 ——
+#: 只收新声明的语义缺口提示,既有 warning 一律不豁免(兼容安全带:
+#: 存量行为逐字节同前)。结构性错位、解析不到一律不在名单里。
+_ADVISORY_CODES = frozenset({
+    "entity_natural_key_missing",
+    "entity_alias_conflict",
+    "hierarchy_levels_sparse",
+    "hierarchy_level_dup",
+})
+
+
+def _advisory(severity: str, code: str) -> bool:
+    """豁免判据(唯一口径):**warning 且 code 在点名名单**。
+
+    严格取合取:error 级的同 code 串、既有 warning、未命中规则的兜底串
+    全部照旧阻断 —— 判据方向永远是 fail-closed。
+    """
+    return severity == SEVERITY_WARNING and code in _ADVISORY_CODES
+
+
+def _classify(text: str) -> tuple[str, str, tuple[str, str]] | None:
+    """过 :data:`_RULES`(顺序即优先级);未命中 → ``None``。"""
+    for pattern, code, severity, target_fn in _RULES:
+        m = pattern.match(text)
+        if m:
+            return code, severity, target_fn(m)
+    return None
+
+
+def blocking_issues(issues: list[str]) -> list[str]:
+    """门禁分级(零 IO,唯一判据):结构性错误拦下,拍板豁免的语义缺口放行。
+
+    消费方是两条写盘路径 —— ``changes._write_merge``(写盘前门禁)与
+    ``KbService.semantics_lint``(git pre-commit 门禁)。**展示面不经过
+    这里**:被豁免的问题照常出现在 ``issues`` / ``issue_items`` 里。
+
+    未命中规则表的串原样保留(兜底为阻断)—— 判据 fail-closed,新增
+    lint 消息不会因为忘了登记豁免就悄悄放行。
+    """
+    blocking: list[str] = []
+    for raw in issues or []:
+        text = _ANSI.sub("", str(raw))
+        hit = _classify(text)
+        if hit is not None and _advisory(hit[1], hit[0]):
+            continue
+        blocking.append(str(raw))
+    return blocking
+
 
 def structured_issues(issues: list[str]) -> list[dict[str, Any]]:
     """扁平 lint/校验串 → ``issue_items``(契约:severity/code/target/message/hint)。
@@ -199,13 +296,11 @@ def structured_issues(issues: list[str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for raw in issues or []:
         text = _ANSI.sub("", str(raw))
-        for pattern, code, severity, target_fn in _RULES:
-            m = pattern.match(text)
-            if m:
-                out.append(_item(code, severity, target_fn(m), text))
-                break
-        else:
+        hit = _classify(text)
+        if hit is None:
             out.append(_item("lint", SEVERITY_WARNING, _TARGET_UNKNOWN, text))
+        else:
+            out.append(_item(hit[0], hit[1], hit[2], text))
     return out
 
 
@@ -293,10 +388,13 @@ def validate_draft(
 
     errors = _dedup(errors)
     warnings = _dedup(warnings)
-    # ok 取「过门禁」语义:今天的写盘门禁在 issues 非空即拦截(warning 同样拦),
-    # 所以 warnings 也会让 ok=False —— 校验结果与 confirm 行为保持一致。
+    # ok 取「过门禁」语义(与 :func:`blocking_issues` 同一判据):error 与
+    # 非豁免 warning 一律拦;拍板 Q4 豁免的语义缺口(warning 且 advisory)
+    # 只提示不拦 —— 校验结果与 confirm 的实际行为保持一致。
+    blocking_warnings = [
+        w for w in warnings if not _advisory(w["severity"], w["code"])]
     return {
-        "ok": not errors and not warnings,
+        "ok": not errors and not blocking_warnings,
         "errors": errors,
         "warnings": warnings,
         "normalized": {"expression": normalized},

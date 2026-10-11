@@ -221,8 +221,8 @@ class SemanticRollbackRequest(BaseModel):
 class SemanticIssueTarget(BaseModel):
     """问题定位到的实体(前端按 kind 分流跳转/分组)。"""
 
-    kind: str = ""   # metric | field | dataset | relationship | topic | document | unknown
-    name: str = ""   # metric/关系/主题域名,field 为 dataset.field,dataset 为数据集名
+    kind: str = ""   # metric | field | dataset | relationship | topic | entity | hierarchy | document | unknown
+    name: str = ""   # metric/关系/主题域名,field 为 dataset.field,dataset/entity 为数据集名,hierarchy 为层级名
 
 
 class SemanticIssueItem(BaseModel):

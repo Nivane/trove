@@ -213,10 +213,12 @@ def test_validate_reports_bad_field_target():
 
 
 def test_validate_warning_also_blocks():
-    """lint 门禁不分级:warning 级问题同样拦 confirm → ok 必须为 False。
+    """门禁分级只豁免点名名单(Q4 的语义缺口):既有 warning 照旧拦 confirm。
 
-    今天的 ``_reject_bad_semantics`` 在 issues 非空即拒绝写入,所以「只有
-    warning」的草稿 confirm 一样会 400 —— validate 若报 ok=True 就是在骗人。
+    ``unique_keys`` 这类既有 warning 不在豁免名单里,写盘门禁一律拒绝写入,
+    所以「只有 warning」的草稿 confirm 一样会 400 —— validate 若报 ok=True
+    就是在骗人。(拍板 Q4 豁免的新语义缺口 warning 见
+    ``test_ontology_lint.py::TestValidateDraftGrading``。)
     """
     out = validate_draft(DOC, kind="dataset", action="upsert", name="students",
                          payload={"unique_keys": [["ghost_col"]]},

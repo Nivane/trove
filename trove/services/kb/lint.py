@@ -317,6 +317,8 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
     _lint_path_ambiguity(issues, model, ds_names)
     _lint_mask(issues, model)
     _lint_topics(issues, model, ds_fields, ds_names)
+    _lint_entities(issues, model, ds_fields, ds_names)
+    _lint_hierarchies(issues, model, ds_fields, ds_names)
 
     # 命名约定 FK → 已声明数据集 但未声明关系:编译器「matched 但连不上」
     # 会产出 FROM anchor 无 JOIN 的非法 SQL(被投影表守卫拦成 MISS)。
@@ -362,6 +364,20 @@ def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> lis
         # 意味着「看起来按主题收敛了、其实没收」,比不脱敏更难发现。
         issues.append(
             "文档顶层的 topics 会被忽略 —— 请写在 semantic_model[0] 下"
+            "(与 time_spine 同层)")
+    if "entity" in (data or {}):
+        # 同 masking/topics:entity 只有**一个**声明位置(数据集子块
+        # ``datasets[].entity``);放错层被静默忽略 = 「对象看起来声明了、
+        # 投影里却没有」,一次无痕的失败。与 ossie 侧的 logger.warning
+        # 成对(解析层出声、写盘层拦下 —— N3 的双守卫先例)。
+        issues.append(
+            "文档顶层的 entity 会被忽略 —— 请写在 semantic_model[0] 下的"
+            "数据集上(semantic_model[0].datasets[].entity)")
+    if "hierarchies" in (data or {}):
+        # 同 topics:层级写在模型入口下(与 time_spine 同层);放错层会被
+        # 解析器忽略,钻取链看起来生效、其实不存在。
+        issues.append(
+            "文档顶层的 hierarchies 会被忽略 —— 请写在 semantic_model[0] 下"
             "(与 time_spine 同层)")
     for entry in (data or {}).get("semantic_model", []) or []:
         if isinstance(entry, dict):
@@ -665,6 +681,218 @@ def _lint_topics(
         for ext in t.get("custom_extensions") or []:
             if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
                 issues.append(f"主题域「{name}」custom_extensions 缺 vendor_name")
+
+
+def _raw_name_list(raw: Any) -> list[str]:
+    """名字列表的字形净化:保序**不去重**(``_clean_names`` 减掉去重)。
+
+    重复是字形事实 —— 装载侧 ``_clean_names`` 保序去重会让「级别重复」
+    这条规则没得判(解析产物里只剩一份),所以 lint 看原始序列。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for v in raw:
+        if v is None or isinstance(v, (dict, list, tuple, set)):
+            continue
+        s = str(v).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _dataset_synonyms(d: dict[str, Any]) -> Any:
+    """数据集 ``ai_context.synonyms`` 的原始字形(与装载侧 ``_ai_context``
+    同一个来源 —— 词法锚定的既有词汇)。"""
+    ai = d.get("ai_context")
+    if not isinstance(ai, dict):
+        return None
+    return ai.get("synonyms")
+
+
+def _lint_entities(
+    issues: list[str], model: dict[str, Any],
+    ds_fields: dict[str, set[str]], ds_names: set[str],
+) -> None:
+    """业务实体的结构门 + 语义缺口提示(设计 §4.1,拍板 Q4)。
+
+    「对象 = 已声明实体的数据集」,实体挂在数据集 ``entity`` 子块下。这里
+    拦的每一条都是"声明本身不成立"的形态;拍板 Q4 把它们分两级:
+
+    结构性 error(**拦写盘** —— 与「坏派生定义才是硬 MISS」同一条边界):
+    1. ``entity`` 坏形状 —— 装载侧整体丢弃(不猜),声明了却不在模型里;
+    2. ``natural_keys`` 引用本数据集未声明的字段 —— 照收,但自然键消解
+       (等值)拿它去比对永远命中不了;
+    3. ``aliases`` 坏形状 —— 只留声明得清楚的,坏形状是写错而不是缺省;
+    4. 归属数据集没有 name(防御性,正常不可达)—— 装载侧会连数据集带
+       实体整条丢弃。
+
+    语义缺口 warning(**提示但不阻断**):
+    5. 未声明 natural_keys 且数据集无 ``primary_key`` 可回退 —— 回退链
+       两头都空,对象消解无从进行;
+    6. aliases 与自身 synonyms 重复、或与其它数据集的 synonyms/别名重复
+       —— 词法锚定互相抢命中(E4 把 aliases 与 synonyms 并入同一通道)。
+
+    ``entity`` 缺席(None)不报 —— 不启用对象视图是合法状态,存量模型
+    逐字节同前。
+    """
+    datasets = [d for d in (model.get("datasets") or []) if isinstance(d, dict)]
+    # 词法锚定面的**已有**词汇:各数据集 synonyms + 各实体 aliases(大小写
+    # 不敏感比较,消息里保留原始拼写)。重复判定必须确定:按数据集声明序
+    # setdefault,命中后只报"后来者"(同一对只报一次)。
+    vocab: dict[str, str] = {}
+    for d in datasets:
+        owner = str(d.get("name") or "")
+        for term in _raw_name_list(_dataset_synonyms(d)):
+            vocab.setdefault(term.casefold(), owner)
+    for d in datasets:
+        raw_entity = d.get("entity")
+        if not isinstance(raw_entity, dict):
+            continue
+        for term in _raw_name_list(raw_entity.get("aliases")):
+            vocab.setdefault(term.casefold(), str(d.get("name") or ""))
+    for d in datasets:
+        ds_name = str(d.get("name") or "")
+        raw_entity = d.get("entity")
+        if raw_entity is None:
+            continue
+        if not ds_name or ds_name not in ds_names:
+            # 防御性:正常不可达(遍历的就是声明过的数据集)。触发的唯一
+            # 现实形态是数据集没写 name —— 装载侧会整条丢弃(含实体),
+            # 声明了却不在模型里,静默失败,所以拦下。
+            issues.append(
+                f"数据集「{ds_name}」的 entity 声明无处安放:数据集缺少 name,"
+                "装载侧会把整条数据集(含实体声明)丢弃")
+            continue
+        if not isinstance(raw_entity, dict):
+            issues.append(
+                f"数据集「{ds_name}」的 entity 声明必须是映射: {raw_entity!r}"
+                "(坏形状会被装载侧整体丢弃 —— 声明了却不在模型里)")
+            continue
+        declared = ds_fields.get(ds_name, set())
+        raw_keys = raw_entity.get("natural_keys")
+        if raw_keys is not None and not isinstance(raw_keys, (str, list, tuple)):
+            issues.append(
+                f"数据集「{ds_name}」的实体 natural_keys 必须是名字数组: "
+                f"{raw_keys!r}")
+            keys: list[str] = []
+        else:
+            keys = _raw_name_list(raw_keys)
+        for key in keys:
+            if key not in declared:
+                issues.append(
+                    f"数据集「{ds_name}」的实体自然键「{key}」不是本数据集"
+                    "已声明字段(自然键等值消解拿它去比对永远命中不了)")
+        if not keys and not d.get("primary_key"):
+            issues.append(
+                f"数据集「{ds_name}」声明了实体但未声明自然键,且数据集无 "
+                "primary_key 可回退 —— 对象消解(自然键等值)无从进行,"
+                "请补 natural_keys 或 primary_key")
+        raw_aliases = raw_entity.get("aliases")
+        if raw_aliases is not None and not isinstance(
+            raw_aliases, (str, list, tuple)
+        ):
+            issues.append(
+                f"数据集「{ds_name}」的实体 aliases 必须是名字数组: "
+                f"{raw_aliases!r}")
+            continue
+        own_synonyms = {
+            t.casefold() for t in _raw_name_list(_dataset_synonyms(d))}
+        for alias in _raw_name_list(raw_aliases):
+            key = alias.casefold()
+            if key in own_synonyms:
+                issues.append(
+                    f"数据集「{ds_name}」的实体别名「{alias}」与自身 synonyms "
+                    "重复(声明两次不会让词法锚定更准)")
+                continue
+            other = vocab.get(key, "")
+            if other and other != ds_name:
+                issues.append(
+                    f"数据集「{ds_name}」的实体别名「{alias}」与数据集"
+                    f"「{other}」的同义词/别名重复 —— 词法锚定会互相抢命中,"
+                    "请删掉重复项或把它归给真正拥有它的对象")
+
+
+def _lint_hierarchies(
+    issues: list[str], model: dict[str, Any],
+    ds_fields: dict[str, set[str]], ds_names: set[str],
+) -> None:
+    """钻取层级的结构门 + 语义缺口提示(设计 §4.3,拍板 Q4)。
+
+    层级是**级别字段的有序链**(粗 → 细),模型级 ``hierarchies`` 段。
+    形态模板同 ``_lint_topics``:缺席即合法、坏形状不猜、逐条报。
+
+    结构性 error(**拦写盘**):
+    1. ``hierarchies`` 不是数组 / 条目不是映射 —— 装载侧丢弃;
+    2. 缺少 name —— 装载侧按空名丢弃整条;
+    3. name 重复 —— 层级靠名字被引用,重名让引用有歧义;
+    4. 未声明归属 dataset / dataset 不存在 —— 级别字段无处解析;
+    5. 级别字段不在归属数据集的 fields 里 —— 层级链在任何一跳都会断
+       (拍板 Q4 的「解析不到」一侧)。
+
+    语义缺口 warning(**提示但不阻断**):
+    6. 解析后级别少于 2 个 —— 单级链条没有可钻的下一级;
+    7. 级别重复 —— 装载侧保序去重,重复多半是写错。
+
+    ``hierarchies`` 缺席(存量模型)不报 —— 不启用层级是合法状态。
+    """
+    raw_hierarchies = model.get("hierarchies")
+    if raw_hierarchies is None:
+        return
+    if not isinstance(raw_hierarchies, list):
+        issues.append(f"hierarchies 必须是数组: {raw_hierarchies!r}")
+        return
+    seen: set[str] = set()
+    for h in raw_hierarchies:
+        if not isinstance(h, dict):
+            issues.append(f"hierarchies 条目必须是映射: {h!r}")
+            continue
+        name = str(h.get("name") or "").strip()
+        if not name:
+            issues.append("钻取层级缺少 name")
+            continue
+        if name in seen:
+            issues.append(f"层级「{name}」重复定义")
+        seen.add(name)
+        raw_levels = h.get("levels")
+        if raw_levels is not None and not isinstance(
+            raw_levels, (str, list, tuple)
+        ):
+            issues.append(
+                f"层级「{name}」的 levels 必须是名字数组: {raw_levels!r}")
+            continue
+        levels = _raw_name_list(raw_levels)
+        for i, level in enumerate(levels):
+            if level in levels[:i]:
+                issues.append(
+                    f"层级「{name}」的级别「{level}」重复(同一级别只写一次)")
+        # 长度判**解析后**的级别数(装载侧保序去重);[a, a] 的重复已被上面
+        # 的级别重复警告点名,不再对同一个笔误叠报一次"单级链条"(修掉重复
+        # 它就是一条两级链,提示指向同一个修法)。
+        parsed_levels = list(dict.fromkeys(levels))
+        if len(parsed_levels) < 2 and len(levels) == len(parsed_levels):
+            issues.append(
+                f"层级「{name}」解析后只有 {len(parsed_levels)} 个级别 —— "
+                "单级链条没有可钻的下一级(层级至少两级,粗 → 细)")
+        ds = str(h.get("dataset") or "").strip()
+        if not ds:
+            issues.append(
+                f"层级「{name}」未声明归属数据集 dataset —— 级别字段无处解析")
+        elif ds not in ds_names:
+            issues.append(
+                f"层级「{name}」声明的数据集「{ds}」不存在"
+                "(级别字段无处解析,请先声明该数据集或更正 dataset)")
+        else:
+            declared = ds_fields.get(ds, set())
+            for level in parsed_levels:
+                if level not in declared:
+                    issues.append(
+                        f"层级「{name}」的级别字段「{level}」不在数据集"
+                        f"「{ds}」的 fields 中(层级链在这一跳解析不到)")
 
 
 def _is_many_to_many(cardinality: Any) -> bool:
