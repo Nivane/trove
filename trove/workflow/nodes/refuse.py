@@ -34,6 +34,7 @@ from trove.core.config import AgentConfig
 from trove.core.i18n import L
 from trove.llm.gateway import LLMGateway
 from trove.services.kb.semantic_draft import draft_refusal_extension
+from trove.services.semantic_layer.object_graph import build_object_graph
 from trove.workflow.state import WorkflowState
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,20 @@ _MISS_COPY: dict[str, tuple[str, str]] = {
     "uncovered": ("概念(指标、字段或筛选口径)", "the concepts (metrics, fields, or filter calibers)"),
 }
 
+# 关系类硬 MISS(设计 §5.3,FR-REFUSE-1..2):这四类的 component 携带「本问
+# 涉及的表」(或内部诊断串),拒绝出口据此对象化——文案显示名替换、
+# related_links 投影、一键补链接。与 api/routers/admin.py 的
+# ``_RELATION_MISS_REASONS``(拒绝报表单列「因关系未声明被拒」)同名单,
+# 两处必须同改。
+_RELATION_MISS_REASONS = frozenset({
+    "unknown_cardinality", "fan_out", "ambiguous_join_path", "unreachable_table",
+})
+
+# 文案的显示名替换只发生在这两个 reason —— 它们也是「component 恒为表名
+# 且 template 带 {c}」的唯二发射点(插值边界见 _MISS_COPY 注;另两个关系类
+# reason 的 component 可能携带内部诊断串,不插值、也不替换)。
+_TABLE_COPY_REASONS = frozenset({"unknown_cardinality", "fan_out"})
+
 
 # ── 主题域拒绝(确定性,零 LLM)─────────────────────────────
 # 三种形态,补救方式各不相同,所以分开说:
@@ -187,6 +202,113 @@ def _miss_phrase(lang: str, reason: str, component: str = "") -> str:
         return L(lang, "概念(指标、字段或筛选口径)", "the concepts (metrics, fields, or filter calibers)")
     template = pair[0] if lang == "zh" else pair[1]
     return template.replace("{c}", component) if "{c}" in template else template
+
+
+def _component_tables(component: str) -> list[str]:
+    """component → 表名 token 列表(保序去重,大小写无关)。
+
+    component 有三种形态(compiler 发射点):纯表名列表 ``", ".join(matched)``
+    (unknown_cardinality / fan_out / BFS 的 ambiguous_join_path)、带前缀的
+    表名列表(``tables outside join tree: a, b`` —— 前缀按首个冒号剥掉)、
+    内部诊断串(``explicit joins …``)。**含空白(空格/制表)的 token 一律
+    丢弃**:标识符不含空白,整句只为诊断而存在 —— 当成表名会让报表多出
+    一行伪表(admin 的 ``_by_table`` 同款丢弃,两处同改)。
+    """
+    text = str(component or "")
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in text.split(","):
+        name = part.strip().strip("`\"'")
+        if not name or any(c.isspace() for c in name) or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append(name)
+    return out
+
+
+def _entity_display_map(model: Any) -> dict[str, str]:
+    """数据集名(小写)→ 实体显示名;只含**已声明实体且显示名非空**的数据集。"""
+    if model is None:
+        return {}
+    names: dict[str, str] = {}
+    for d in model.datasets:
+        entity = getattr(d, "entity", None)
+        display = str(getattr(entity, "display_name", "") or "") if entity is not None else ""
+        if display:
+            names[str(d.name).lower()] = display
+    return names
+
+
+def _display_mapped_detail(reason_detail: str, model: Any) -> str:
+    """关系类文案的显示名替换(设计 §5.3):表名 → 实体显示名。
+
+    边界与 {c} 插值逐字相同:_TABLE_COPY_REASONS 是唯二「component 恒为
+    表名且 template 带 {c}」的 reason,只在那里替换;其余 reason(含另两个
+    关系类 reason 的内部诊断串、指标/字段名)原样透传。只换**已声明实体**
+    的表名,未声明的原样;没有任何 token 变化时逐字节回退旧串(不重组,
+    不给未声明模型制造任何字节差)。
+    """
+    names = _entity_display_map(model)
+    if not names:
+        return reason_detail
+    slug, sep, component = reason_detail.partition(":")
+    if not sep or slug.strip() not in _TABLE_COPY_REASONS or not component.strip():
+        return reason_detail
+    tokens = _component_tables(component)
+    if not tokens:
+        return reason_detail
+    mapped = [names.get(t.lower(), t) for t in tokens]
+    if mapped == tokens:
+        return reason_detail
+    return f"{slug}: {', '.join(mapped)}"
+
+
+def _related_links(
+    model: Any, *, component: str, plan: Any,
+) -> list[dict[str, Any]] | None:
+    """本问涉及的表/实体之间**已声明**的链接(设计 §5.3 的结构化兄弟键)。
+
+    返回 ``None`` = 这件事投影不出来(键缺席,前端整节不渲染):没有已解析
+    的模型,或涉及集与已声明数据集零交集 —— 后者意味着 component 是内部
+    诊断串且 plan 也没给出表,投影不出「涉及谁」就不摆一份空断言。
+    返回 ``[]`` = 涉及的表确实在声明面上,但两两之间一条已声明链接都没有
+    (前端出引导文案)——「投影不出」与「投影出来是零条」是两个可区分的事实。
+
+    数据即 ``build_object_graph`` 投影的过滤(零 I/O):条目 = 两端都在
+    涉及集里的已声明边;``from``/``to`` 是端点对象的显示名(D1 回退:实体
+    显示名缺省 → 数据集名),``display_name``/``cardinality`` 逐字取自投影
+    (列连接串回退不在本层重写第二遍)。
+    """
+    if model is None:
+        return None
+    involved = {t.lower() for t in _component_tables(component)}
+    if isinstance(plan, dict):
+        involved |= {
+            str(t).strip().lower()
+            for t in (plan.get("tables") or []) if str(t).strip()
+        }
+    declared = {str(d.name).lower() for d in model.datasets}
+    if not (involved & declared):
+        return None
+    graph = build_object_graph(model)
+    display = {
+        str(o["dataset"]).lower(): str(o["display_name"]) for o in graph["objects"]
+    }
+    out: list[dict[str, Any]] = []
+    for link in graph["links"]:
+        f = str(link["from"]).lower()
+        t = str(link["to"]).lower()
+        if f in involved and t in involved:
+            out.append({
+                "name": link["name"],
+                "from": display.get(f, link["from"]),
+                "to": display.get(t, link["to"]),
+                "display_name": link["display_name"],
+                "cardinality": link["cardinality"],
+            })
+    return out
 
 
 def _draft_name(draft: dict[str, Any]) -> str:
@@ -763,6 +885,83 @@ def _semantic_url(datasource: str, *, tab: str = "") -> str:
     return "/admin/semantic" + (f"?{'&'.join(parts)}" if parts else "")
 
 
+def _id_names(model: Any, dataset: str) -> dict[str, str]:
+    """数据集声明的 ``*_id`` 列名(小写 → 原拼写),含主键/唯一键引用。
+
+    命名口径与 metadata 路径的 ``answer._join_hints`` 同款:
+    ``endswith("_id")`` 且长度 > 3(排除赤裸的 ``id``/``xx`` 之类噪声)。
+    """
+    ds = next((d for d in model.datasets if str(d.name).lower() == dataset.lower()), None)
+    if ds is None:
+        return {}
+    names: list[str] = [str(f.name) for f in ds.fields]
+    for extra in (ds.primary_key, *(ds.unique_keys or [])):
+        names.extend(str(c) for c in extra if c not in names)
+    out: dict[str, str] = {}
+    for n in names:
+        s = n.strip()
+        if len(s) > 3 and s.lower().endswith("_id"):
+            out.setdefault(s.lower(), s)
+    return out
+
+
+def _relation_columns(
+    model: Any, from_dataset: str, to_dataset: str,
+) -> tuple[list[str], list[str]]:
+    """唯一确定性 ``*_id`` 名称匹配 → 两端列对;零匹配/多匹配 → 空(机器不猜列)。
+
+    「唯一」是硬条件:两个名字都像连接键时挑哪个都是猜,错键的关系声明
+    会静默产出错结果(所以 A2 决策 (d) 拒了自动落关系草稿——预填列同理)。
+    """
+    left = _id_names(model, from_dataset)
+    right = _id_names(model, to_dataset)
+    shared = [k for k in left if k in right]
+    if len(shared) != 1:
+        return [], []
+    return [left[shared[0]]], [right[shared[0]]]
+
+
+def _new_relation_action(
+    lang: str, datasource: str, model: Any, component: str, reason: str,
+) -> dict[str, Any] | None:
+    """关系类 MISS 的「新建关系」蓝本(next_actions 新 kind,设计 §5.3)。
+
+    只在机器**确定**两端点时才给:component 恰两个 token 且都大小写无关
+    命中已声明数据集;否则不给动作(机器不猜表对)。列对仅在唯一 ``*_id``
+    名称匹配时预填,否则留空。**不自动落草稿**——落点是语义台的关系编辑
+    对话框,确认门照旧(FR-REFUSE-2 的「打开即见预填好的关系声明草稿」
+    兑现为对话框预填,草稿由人提交)。
+
+    payload 键名与前端 Blueprint 契约一致(``from_dataset``/``to_dataset``/
+    ``from_columns``/``to_columns``,NextActions 机械转运为 ``bp_*``);
+    ``reason`` 是原始 miss slug(管理端诊断用,前端不认识就忽略)。
+    """
+    if model is None or not datasource:
+        return None
+    tokens = _component_tables(component)
+    if len(tokens) != 2:
+        return None
+    by_lower = {str(d.name).lower(): str(d.name) for d in model.datasets}
+    endpoints = [by_lower.get(t.lower()) for t in tokens]
+    if not all(endpoints):
+        return None
+    from_columns, to_columns = _relation_columns(model, endpoints[0], endpoints[1])
+    payload: dict[str, Any] = {
+        "draft_kind": "relationship",
+        "from_dataset": endpoints[0],
+        "to_dataset": endpoints[1],
+        "reason": reason,
+    }
+    if from_columns:
+        payload["from_columns"] = from_columns
+        payload["to_columns"] = to_columns
+    return _admin_action(
+        lang, "new_relation_from_miss", _semantic_url(datasource),
+        "声明关系（已预填两端）", "Declare the relationship (both ends prefilled)",
+        payload=payload,
+    )
+
+
 def _blueprint_payload(draft: dict[str, Any],
                        conflict: "Conflict | None" = None) -> dict[str, Any]:
     """冲突草稿的蓝本内容:前端「以此为蓝本新建」预填用(值原样透传,
@@ -919,6 +1118,19 @@ def make_refuse(
                 },
                 **_HYGIENE,
             }
+        # question/plan/model 先解析:关系类拒绝的显示名替换、related_links
+        # 投影与「新建关系」蓝本都要用已解析的模型 —— 模型本就在本节点解析
+        # (N23),这里只是把它提到文案构造之前,不新增 I/O 面。
+        question = str(refusal.get("question") or state.question)
+        plan = refusal.get("plan")
+        model = None
+        if semantic_layer is not None:
+            try:
+                model = semantic_layer.model()
+            except Exception as e:
+                logger.warning("Semantic model lookup failed (%s): %s",
+                               state.datasource, e)
+                model = None
         # 编译 MISS 的结构化分因(reason slug + 失败组件)→ 拼进用户可见
         # 文案,管理端知道具体缺哪个声明(metric/字段/join),而不是笼统
         # 「uncovered」。返回的 refusal["reason"] 保持原始值(上游契约/
@@ -935,16 +1147,23 @@ def make_refuse(
             if cm.get("component"):
                 detail = f"{detail}: {cm['component']}"
             reason_detail = detail
-        question = str(refusal.get("question") or state.question)
-        plan = refusal.get("plan")
-        model = None
-        if semantic_layer is not None:
-            try:
-                model = semantic_layer.model()
-            except Exception as e:
-                logger.warning("Semantic model lookup failed (%s): %s",
-                               state.datasource, e)
-                model = None
+        # 关系类硬 MISS 的出口原料(设计 §5.3):显示名替换只作用于**文案
+        # 副本**(copy_detail)——refusal 的 compile_miss 保持原始分因(审计
+        # miss_component / 报表 by_table 按原文聚合,替换只活在文案里)。
+        miss_reason = str(cm.get("reason") or "") if isinstance(cm, dict) else ""
+        miss_reason = miss_reason or reason
+        relation_miss = miss_reason in _RELATION_MISS_REASONS
+        copy_detail = (
+            _display_mapped_detail(reason_detail, model) if relation_miss
+            else reason_detail
+        )
+        component = str(cm.get("component") or "") if isinstance(cm, dict) else ""
+        related: list[dict[str, Any]] | None = None
+        relation_action: dict[str, Any] | None = None
+        if relation_miss:
+            related = _related_links(model, component=component, plan=plan)
+            relation_action = _new_relation_action(
+                state.lang, state.datasource or "", model, component, miss_reason)
 
         draft = None
         conflict: Conflict | None = None
@@ -1071,11 +1290,11 @@ def make_refuse(
 
         if draft is not None and conflict is not None:
             message = _uncovered_message(
-                state.lang, reason_detail, draft,
+                state.lang, copy_detail, draft,
                 conflict=conflict, landed=conflict_landed)
         else:
             shown = draft if draft is not None else None
-            message = _uncovered_message(state.lang, reason_detail, shown)
+            message = _uncovered_message(state.lang, copy_detail, shown)
         # 管理员在对话中即可确认(无需离开会话);非管理员提示走管理端。
         # 冲突草稿例外:确认被 manage 的守卫拦住,提示=死按钮,不给。
         if state.is_admin and draft is not None and conflict is None:
@@ -1084,6 +1303,16 @@ def make_refuse(
                 "\n（管理员：直接回复「确认」即可在对话中采纳该草稿并立即重答。）",
                 "\n(Admins: reply \"confirm\" to approve this draft and get the answer immediately.)",
             )
+        actions = _draft_actions(
+            state.lang, state.datasource or "",
+            draft=draft, conflict=conflict, entry=entry,
+        )
+        if relation_action is not None:
+            # 「新建关系」蓝本取代泛泛的「去语义工作台」——同一落点但预填了
+            # 两端(严格更好,不并存);草稿类出口(确认 / 以蓝本新建)是另
+            # 一件已发生的事,照留。
+            actions = [relation_action] + [
+                a for a in actions if a.get("kind") != "open_semantic"]
         # 普通拒绝:显式重置 auto_confirmed=False——A 档自确认后若同问重跑仍
         # 失败,auto_confirmed 残留 True 会把路由拉回 parse_date 造成死循环。
         refusal_out: dict[str, Any] = {
@@ -1094,10 +1323,7 @@ def make_refuse(
             "conflict": conflict is not None,
             "draft_entry": entry,
             "message": message,
-            "next_actions": _draft_actions(
-                state.lang, state.datasource or "",
-                draft=draft, conflict=conflict, entry=entry,
-            ),
+            "next_actions": actions,
         }
         # 冲突结构化信息(``conflict`` 保持 bool 兼容老消费方,新信息走兄弟键;
         # 无冲突时不带这个键——拒绝 dict 的既有形状逐字节不变)。
@@ -1112,6 +1338,12 @@ def make_refuse(
         # 上一跳写了 compile_miss,这里重建 dict 时丢掉 = 诊断只活在日志里。
         if cm:
             refusal_out["compile_miss"] = cm
+        # 结构化兄弟键(设计 §5.3):本问涉及的表/实体之间已声明的链接 ——
+        # 让「缺的是哪条、已有的是哪些」变成两个可区分的事实。仅关系类
+        # reason 且投影得出来时挂载;缺席 = 前端整节不渲染(非关系类、无
+        # 模型、涉及集解析不出的拒绝 dict 形状逐字节不变)。
+        if related is not None:
+            refusal_out["related_links"] = related
         return {
             "auto_confirmed": False,
             "clarification_question": message,
