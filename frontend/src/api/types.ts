@@ -165,6 +165,10 @@ export interface DoneSummary {
   /** 分析柱结构化结果(贡献/效应/驱动器树/证据);null/缺席 = 这一轮没有
    *  归因分析(不是「分析为空」)。与答案 markdown 里的分析区块同源。 */
   analysis?: AnalysisPayload | null
+  /** 答案卡对象列(设计 §5.7 / FR-GRAPH-5):{列名: {entity, field}} ——
+   *  后端对**已声明实体**字段做唯一精确匹配才建映射。null/缺席 = 无可
+   *  映射(不是「全都没声明」),表头渲染与现状逐字节一致;值一字不改。 */
+  object_columns?: Record<string, ObjectColumnInfo> | null
 }
 
 /** 分析柱一件证据(query log):SQL + 取回的样例行(≤10 行,前端抽屉展示)。 */

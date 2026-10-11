@@ -180,6 +180,7 @@
                 :source="turn.answer || turn.synthesis || ''"
                 :result-rows="turn.summary?.rows ?? null"
                 :masking="turn.summary?.masking_applied ?? null"
+                :object-columns="turn.summary?.object_columns ?? null"
                 hero
               />
                 <span
