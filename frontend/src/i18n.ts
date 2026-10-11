@@ -2144,7 +2144,7 @@ export const messages = {
     ontologyDirection: '方向',
     ontologyLinkColumns: '连接列',
     ontologyLinkCardinality: '基数',
-    ontologyFanoutWarn: '扇出风险（fan-out）：该链接一对多，聚合时需按原对象去重',
+    ontologyFanoutWarn: '扇出风险（fan-out）：该链接为多对多（M:N），聚合时需按原对象去重',
     ontologyScaleHint: '对象较多：已关闭动画，可缩放平移查看',
   },
   en: {
@@ -4343,7 +4343,7 @@ export const messages = {
     ontologyLinkColumns: 'Join columns',
     ontologyLinkCardinality: 'Cardinality',
     ontologyFanoutWarn:
-      'Fan-out risk: one-to-many link — deduplicate by the owning object when aggregating',
+      'Fan-out risk: many-to-many link (M:N) — deduplicate by the owning object when aggregating',
     ontologyScaleHint: 'Many objects: animation off; pan and zoom to explore',
   },
 }
