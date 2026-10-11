@@ -98,17 +98,35 @@ export function objectLabel(obj: Pick<ObjectNodeInfo, 'dataset' | 'display_name'
 }
 
 /**
+ * M:N 归一化判定 —— 与编译器 `_is_many_to_many`
+ * (trove/services/semantic_layer/compiler.py) 同口径：upper + 去
+ * `_`/`-`/空白后落在拼写闭集。逐字 `=== 'M:N'` 会漏 `N:M`/`M2M` 等拼写，
+ * 警示会静默消失（错方向：宁可多报风险，不可漏报）。
+ */
+function isManyToMany(cardinality: string | undefined): boolean {
+  const c = (cardinality ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/_/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, '')
+  return ['MN', 'M:N', 'N:M', 'M2M', 'MANYTOMANY', 'MANY:MANY'].includes(c)
+}
+
+/**
  * fan_out 风险判据。投影 DTO 的契约是布尔（design §4.5）；
- * 再兜一层模型原值：编译器语义里 fan_out 是非空串 = 显式豁免
- * （dedup / bridge:<dataset>），空串 + M:N 基数 = 未豁免的有风险边。
- * 两种表示都收敛到同一个布尔 —— 表示法变化不会让警示静默消失。
+ * 再兜一层模型原值，逐条照编译器权威语义（compiler.py `_classify_edges`）：
+ * M:N 边**唯一已实现的豁免是 `fan_out == 'dedup'`**；`bridge:<dataset>`
+ * 豁免未实现 → 保守仍判有风险。故非 M:N → false；M:N 且非 dedup
+ * （含空串与 bridge:*）→ true。两种表示都收敛到同一个布尔 ——
+ * 表示法变化不会让警示静默消失。
  */
 export function isFanout(
   link: Pick<ObjectLinkInfo, 'fan_out'> & { cardinality?: string },
 ): boolean {
   const v = link.fan_out as unknown
   if (typeof v === 'string') {
-    return (link.cardinality ?? '') === 'M:N' && v.trim() === ''
+    return isManyToMany(link.cardinality) && v.trim().toLowerCase() !== 'dedup'
   }
   return v === true
 }

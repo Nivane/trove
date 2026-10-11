@@ -167,9 +167,22 @@ describe('fan_out 归一化', () => {
     expect(isFanout({ fan_out: false })).toBe(false)
     expect(isFanout({ fan_out: '', cardinality: 'M:N' })).toBe(true)
     expect(isFanout({ fan_out: '', cardinality: '1:N' })).toBe(false)
-    // 非空串 = 显式豁免（dedup / bridge:<dataset>）→ 无风险。
+    // 唯一已实现的豁免是 dedup（与编译器 _classify_edges 同口径）。
     expect(isFanout({ fan_out: 'dedup', cardinality: 'M:N' })).toBe(false)
-    expect(isFanout({ fan_out: 'bridge:account', cardinality: 'M:N' })).toBe(false)
+    // bridge:<dataset> 豁免未实现 → 保守仍判有风险。
+    expect(isFanout({ fan_out: 'bridge:account', cardinality: 'M:N' })).toBe(true)
+  })
+
+  it('M:N 判定是归一化拼写闭集（照 compiler._is_many_to_many）：N:M / M2M 不漏', () => {
+    // 偏离字面 'M:N' 的拼写仍须认出 M:N（漏判 = 警示静默消失，错方向）。
+    expect(isFanout({ fan_out: '', cardinality: 'N:M' })).toBe(true)
+    expect(isFanout({ fan_out: '', cardinality: 'M2M' })).toBe(true)
+    expect(isFanout({ fan_out: 'bridge:ds', cardinality: 'M2M' })).toBe(true)
+    // 归一化后是 M:N 但已 dedup 豁免 → 无风险。
+    expect(isFanout({ fan_out: 'dedup', cardinality: 'M2M' })).toBe(false)
+    // 非 M:N → false（含拼写变体）。
+    expect(isFanout({ fan_out: '', cardinality: 'N:1' })).toBe(false)
+    expect(isFanout({ fan_out: '', cardinality: 'many-to-one' })).toBe(false)
   })
 })
 
