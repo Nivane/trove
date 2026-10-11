@@ -240,6 +240,87 @@ class TestLintHierarchies:
         assert _hits(doc, "解析后只有 1 个级别")
 
 
+# ── 口径覆盖(FR-HIER-3,_lint_metric_hierarchy_coverage)──────
+
+
+def _cov_doc(*, metric_filter: str = "", metric_expr: str = "SUM(amount)",
+             levels: tuple[str, ...] = ("region", "loan_id")) -> dict:
+    """层级 + 单指标的最小文档(region 维度、ts 时态,均声明字段)。"""
+    fields = [
+        _f("loan_id"), _f("amount"),
+        {"name": "region", "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "region"}]},
+         "semantic_role": "dimension"},
+        {"name": "ts", "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "ts"}]},
+         "semantic_role": "time"},
+    ]
+    metric: dict = {"name": "loan_balance", "expression": {"dialects": [
+        {"dialect": "ANSI_SQL", "expression": metric_expr}]}}
+    if metric_filter:
+        metric["filter"] = metric_filter
+    return _base_doc(
+        loan_extra={"fields": fields},
+        model_extra={
+            "metrics": [metric],
+            "hierarchies": [{"name": "geo", "dataset": "loan",
+                             "levels": list(levels)}],
+        })
+
+
+class TestHierarchyCoverageGap:
+    """指标口径把层级收窄到某一支 → warning(不阻断)且可结构化消费。"""
+
+    NEEDLE = "过滤/派生条件对层级"
+
+    def test_equality_on_a_level_field_warns(self):
+        hits = _hits(_cov_doc(metric_filter="region = '个人'"), self.NEEDLE)
+        assert len(hits) == 1
+        assert "指标「loan_balance」" in hits[0]
+        assert "层级「geo」" in hits[0] and "「region」" in hits[0]
+
+    @pytest.mark.parametrize("pred", [
+        "region != '个人'",           # 不等同款收敛
+        "region IN ('个人', '小微')",  # IN(含 NOT IN)
+    ])
+    def test_neq_and_in_also_warn(self, pred):
+        assert _hits(_cov_doc(metric_filter=pred), self.NEEDLE)
+
+    def test_expression_pin_is_reported_too(self):
+        doc = _cov_doc(metric_expr=(
+            "SUM(CASE WHEN region = '个人' THEN amount ELSE 0 END)"))
+        assert _hits(doc, self.NEEDLE)
+
+    def test_ordering_comparison_is_not_reported(self):
+        """顺序比较不"收敛"到具名支 —— 时间窗口类惯用写法落这一侧。"""
+        for pred in ("region >= '个'", "region < '微'"):
+            assert _hits(_cov_doc(metric_filter=pred), self.NEEDLE) == []
+
+    def test_temporal_level_field_is_not_reported(self):
+        """时间等值是「时间锚」不是「层级分支」(N35 边界,不误报)。"""
+        doc = _cov_doc(metric_filter="ts = '2026-01-01'",
+                       levels=("ts", "region"))
+        assert _hits(doc, self.NEEDLE) == []
+
+    def test_undeclared_column_is_silent(self):
+        assert _hits(_cov_doc(metric_filter="city = 'x'"), self.NEEDLE) == []
+
+    def test_absent_hierarchies_is_silent(self):
+        doc = _cov_doc(metric_filter="region = '个人'")
+        doc["semantic_model"][0]["hierarchies"] = []
+        assert _hits(doc, self.NEEDLE) == []
+
+    def test_gap_maps_to_metric_target_advisory_and_does_not_block(self):
+        doc = _cov_doc(metric_filter="region = '个人'")
+        issues = _messages(doc)
+        assert issues and all(self.NEEDLE in i for i in issues)
+        item = structured_issues(issues)[0]
+        assert item["code"] == "hierarchy_coverage_gap"
+        assert item["severity"] == SEVERITY_WARNING
+        assert item["target"] == {"kind": "metric", "name": "loan_balance"}
+        assert blocking_issues(issues) == []   # 语义缺口提示,放行
+
+
 # ── 放错层(lint_semantics_document 硬错)────────────────────
 
 
@@ -342,6 +423,8 @@ class TestBlockingIssuesGrading:
             "entity_alias_conflict",
             "hierarchy_levels_sparse",
             "hierarchy_level_dup",
+            # E7 FR-HIER-3:指标口径收敛到层级某支是语义缺口提示,不阻断
+            "hierarchy_coverage_gap",
         }
 
     def test_structural_errors_block(self):
