@@ -1,7 +1,7 @@
 /**
  * navModel — 控制台信息架构（IA）的单一来源（设计稿 P6 §4.1）。
  *
- * 四组 16 项：`group` 的声明顺序即渲染顺序；侧栏、⌘K 面板与路由契约
+ * 四组 17 项：`group` 的声明顺序即渲染顺序；侧栏、⌘K 面板与路由契约
  * 测试读的都是这一份。这是个零渲染、零请求的纯数据 + 纯函数模块：
  * 角标只声明「来源键」（badgeKey），取值在 useNavBadges 里完成，
  * 取不到就不显示 —— 绝不在导航层编造数字。
@@ -27,6 +27,7 @@ import {
   Palette,
   ScrollText,
   Send,
+  Share2,
   ShieldCheck,
   SlidersHorizontal,
   Users,
@@ -157,6 +158,15 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Layers3,
     group: 'modeling',
     badgeKey: 'semPending',
+  },
+  {
+    // 本体（对象视图）：语义模型的只读投影，无角标 —— 它是「已经是什么」，
+    // 不是待办队列（无 badgeKey 的项在导航层恒不显示数字）。
+    key: 'ontology',
+    path: '/admin/ontology',
+    labelKey: 'ontology',
+    icon: Share2,
+    group: 'modeling',
   },
   {
     key: 'skills',
