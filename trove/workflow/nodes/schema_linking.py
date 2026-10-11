@@ -88,10 +88,27 @@ def _fold_plural(word: str) -> str:
     return word
 
 
-def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
-    """dataset 名/synonym/description 的确定性匹配分(零 LLM)。
+def _lexical_terms(d: Any) -> list[str]:
+    """数据集锚定的词法词表:dataset.synonyms + entity.aliases(设计 D2)。
 
-    3.0 = 名称/synonym 子串命中;2.5 = synonym 词重叠 ≥0.5 或
+    别名并入**既有** synonyms 子串子句(单通道合并),不新开通道 ——
+    「问题里出现这个词 → 锚定本数据集」对 synonym 与 alias 是同一种语义;
+    新通道要复制 in_scope 过滤与 declared 过滤两份逻辑,只会多两处漂移点。
+
+    未声明 entity / entity 无 aliases → 返回的就是旧的 synonyms 列表,
+    打分与现状逐字节一致(兼容安全带)。
+    """
+    terms: list[str] = [str(s) for s in (getattr(d, "synonyms", None) or [])]
+    entity = getattr(d, "entity", None)
+    aliases = getattr(entity, "aliases", None) if entity is not None else None
+    terms.extend(str(a) for a in (aliases or []))
+    return terms
+
+
+def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
+    """dataset 名/synonym/别名/description 的确定性匹配分(零 LLM)。
+
+    3.0 = 名称/synonym/alias 子串命中;2.5 = synonym 词重叠 ≥0.5 或
     enum_display 展示值子串命中;2.0 = description 词重叠 ≥0.5;1.5 =
     description 词重叠 ≥0.25;1.0 = 名称/synonym/description 单 token
     命中(弱信号,仅反思轮放大时用)。
@@ -100,7 +117,7 @@ def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     q = (query or "").lower()
     if d.name and d.name.lower() in q:
         return 3.0
-    for s in d.synonyms:
+    for s in _lexical_terms(d):
         if s and str(s).lower() in q:
             return 3.0
     # enum_display 展示值命中("female" → gender 枚举列):问题点名枚举值 →
@@ -228,6 +245,45 @@ def _semantic_match_datasets(
     return matched[:_progressive_tables_limit(retry_round)]
 
 
+def _object_summary_line(d: Any) -> str:
+    """对象摘要行 —— **只有 entity 已声明才渲染**(设计 §5.1)。
+
+    渲染的是**声明事实**:对象显示名、别名、自然键 —— 计划书写对象语言
+    (「这单贷款」「该客户」)时有可依的规范词,不再把对象词猜成表名或
+    凭空发明键名。渲染格式对齐本文件既有排版(标签一律英文,与
+    「Dataset:」「Topic domain:」同款 —— 渲染函数拿不到提问语言,不在这里
+    按语言分叉):
+
+        Object: <display_name> (aliases: a, b; natural keys: k)
+
+    读侧回退与 object_graph 同一条纪律(声明层保持缺失即缺失,回退只发生
+    在读侧):display_name 缺省 → 数据集 name;natural_keys 缺省 →
+    primary_key。别名没有文档化的回退,为空该段不渲染;两段都空 → 只渲染
+    显示名(不出现空括号)。未声明 entity → 空串,整行不渲染 —— 渲染输出
+    与现状**逐字节一致**(兼容安全带/N20:不改 dataset.synonyms 的渲染现状)。
+    """
+    entity = getattr(d, "entity", None)
+    if entity is None:
+        return ""
+    display = str(getattr(entity, "display_name", "") or "").strip() or str(d.name)
+    aliases = [
+        str(a) for a in (getattr(entity, "aliases", None) or []) if str(a)
+    ]
+    keys = [
+        str(k) for k in (getattr(entity, "natural_keys", None) or []) if str(k)
+    ]
+    if not keys:
+        keys = [str(k) for k in (getattr(d, "primary_key", None) or []) if str(k)]
+    bits: list[str] = []
+    if aliases:
+        bits.append("aliases: " + ", ".join(aliases))
+    if keys:
+        bits.append("natural keys: " + ", ".join(keys))
+    if not bits:
+        return f"Object: {display}"
+    return f"Object: {display} (" + "; ".join(bits) + ")"
+
+
 def _render_semantic_context(
     model: Any, matched: list[str], semantic_layer: Any | None,
     question: str, metric_hits: list[Any] | None = None,
@@ -267,6 +323,11 @@ def _render_semantic_context(
         if d is None:
             continue
         lines = [f"Dataset: {name}"]
+        # 对象摘要行(设计 §5.1):entity 已声明才渲染;未声明 → 空串,
+        # 以下的渲染与现状逐字节一致(N20)。
+        object_line = _object_summary_line(d)
+        if object_line:
+            lines.append(object_line)
         if d.description:
             lines.append(f"Description: {d.description}")
         if d.fields:

@@ -40,6 +40,7 @@ from trove.services.sql.budget import (
 from trove.services.semantic_layer.compiler import (
     build_contract,
     compiled_sql_matches,
+    natural_key_literals_grounded,
     skeleton_preserved,
 )
 from trove.services.semantic_layer.contract import contract_from_wire
@@ -194,6 +195,16 @@ def make_execute_sql(
             if not ok:
                 logger.info("compile drift for %r: %s", state.question[:80], why)
                 return _compile_drift_failure(state, max_retries)
+            # 自然键接地断言(设计 §5.2):结构保真 ≠ 值保真 —— 已声明自然键
+            # 上的等值过滤,字面量必须逐字来自提问(大小写无关),编出来的
+            # 键值打回重生成。契约无自然键(未声明实体 / 旧 wire / 现抽契约)
+            # → 空转放行。结构失败的反馈文本与改造前逐字节一致(只有这条
+            # 断言的失败才附带 ``Reason:`` 行)。
+            ok, why = natural_key_literals_grounded(
+                contract, state.sql, state.question, state.dialect)
+            if not ok:
+                logger.info("compile drift for %r: %s", state.question[:80], why)
+                return _compile_drift_failure(state, max_retries, reason=why)
 
         # 执行前授权门(设计 §5.3 / G2)—— **执行前的最后一米**。放在这里而不是
         # 更靠前,是因为上面几道守卫都只在「这一轮反正要跑」的假设下才有意义:
@@ -693,16 +704,24 @@ def _guard_message(blocked: list, lang: str) -> str:
     return "\n".join(lines)
 
 
-def _compile_drift_failure(state: WorkflowState, max_retries: int) -> dict[str, Any]:
+def _compile_drift_failure(
+    state: WorkflowState, max_retries: int, reason: str = "",
+) -> dict[str, Any]:
     """编译通道照抄校验失败:带权威 SQL 打回 gen_sql;预算耗尽才降级。
 
     与 _execution_failure 共用修正预算与「本轮未执行」语义(row_count == -1),
     偏离重生成同样受 analyze_error 的 versions 回归链约束。
+
+    ``reason`` 非空时在指令与权威 SQL 之间补一行判词(自然键接地断言用
+    它把失败原因说清楚:结构可能都对,是**值**没接地);空串 = 既有调用点,
+    消息逐字节不变。
     """
     message = (
         f"{COMPILE_DRIFT_TAG} The generated SQL does not reproduce the "
         "authoritative compiled SQL (semantic-first deterministic channel). "
-        "Regenerate it byte-for-byte from the compiled SQL in the plan:\n"
-        f"```sql\n{state.compiled_sql}\n```"
+        "Regenerate it byte-for-byte from the compiled SQL in the plan:"
     )
+    if reason:
+        message += f"\nReason: {reason}"
+    message += f"\n```sql\n{state.compiled_sql}\n```"
     return _execution_failure(state, message, max_retries)
