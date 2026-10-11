@@ -39,6 +39,18 @@ async def test_unknown_kind_is_422(client, api_kb):
 
 
 async def test_entity_draft_round_trip(client, api_app, api_kb):
+    # 自然键必须落在**已声明字段**上(E3 确认门硬错):种子模型的 students
+    # 是 name-only 存量形态(无字段声明),先走 field 草稿把 students.grade
+    # 声明出来 —— 这也正是真实审阅顺序(字段 → 实体键)。
+    field = await client.post("/v1/admin/semantic/test_db/drafts", json={
+        "kind": "field", "action": "upsert", "name": "students.grade",
+        "payload": {"expression": "grade", "description": "成绩"},
+    })
+    assert field.status_code == 201, field.text
+    confirmed = await client.post(
+        f"/v1/admin/semantic/test_db/drafts/{field.json()['draft']['id']}/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+
     resp = await client.post("/v1/admin/semantic/test_db/drafts", json={
         "kind": "entity", "action": "upsert", "name": "students",
         "payload": {"dataset": "students", "display_name": "学生",
