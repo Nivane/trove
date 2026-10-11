@@ -242,6 +242,95 @@ def judge(
     return rows, [h[0] for h in hits]
 
 
+def resolve_dim_pairs(
+    model: Any, dims: list[str], datasets: list[str],
+) -> list[tuple[str, Any] | None]:
+    """规则维度名 → (数据集名, 字段对象);解析失败 → None(不猜)。
+
+    与引擎 ``resolve_dim_ref`` 走同一个 ``_resolve_field`` 锚定口径
+    (锚 = subject 编译出的数据集),因为行卡标签与引擎贡献表必须指回
+    同一批声明。此函数只服务**标注**,解析不了只是不标注,绝不上抛。
+    """
+    if model is None or not dims:
+        return []
+    try:
+        from trove.services.semantic_layer.compiler import SemanticCompiler
+
+        compiler = SemanticCompiler(model)
+        anchors = {str(d) for d in datasets if str(d or "").strip()}
+    except Exception:
+        return [None] * len(dims)
+    out: list[tuple[str, Any] | None] = []
+    for dim in dims:
+        try:
+            resolved = compiler._resolve_field(str(dim).strip(), anchors)
+        except Exception:
+            resolved = None
+        out.append((resolved[0], resolved[1]) if resolved is not None else None)
+    return out
+
+
+def label_display(
+    model: Any, pairs: list[tuple[str, Any] | None], label: Any,
+) -> str | None:
+    """行卡 ``dim`` 标签 → 显示名(值级映射,FR-DEC-1)。
+
+    单维:标签即值。多维:``_to_map`` 用 ``" / "`` 拼标签,这里按同一
+    分隔符逐段映射 —— 段数与维数对不上(值里自带分隔符)时**整组放弃**:
+    宁可不标注也不把显示名钉到错的段上。任一段无映射 → 该段保留原值;
+    全无 → None(键不出现,老输出逐字节不变)。
+    """
+    text = str(label or "")
+    if not text or not pairs or model is None:
+        return None
+    try:
+        from trove.services.semantic_layer.display import value_display
+    except Exception:
+        return None
+    if len(pairs) == 1:
+        pair = pairs[0]
+        if pair is None:
+            return None
+        try:
+            return value_display(model, pair[0], pair[1].name, text)
+        except Exception:
+            return None
+    parts = text.split(" / ")
+    if len(parts) != len(pairs):
+        return None
+    shown: list[str] = []
+    any_disp = False
+    for pair, part in zip(pairs, parts):
+        disp = None
+        if pair is not None:
+            try:
+                disp = value_display(model, pair[0], pair[1].name, part)
+            except Exception:
+                disp = None
+        shown.append(disp or part)
+        any_disp = any_disp or bool(disp)
+    return " / ".join(shown) if any_disp else None
+
+
+def annotate_dim_display(
+    rows: list[dict[str, Any]], model: Any,
+    pairs: list[tuple[str, Any] | None],
+) -> None:
+    """FR-DEC-1 后置标注 pass(**纯**):行卡加可选 ``dim_display``。
+
+    三条不变量(N34):``dim`` 仍是身份(条件作用域/回评分组键都读它,
+    **不改**);``triggered``/``confidence`` 不改(标注不参与判定);
+    未声明映射 → 键不出现(响应逐字节与旧版相同)。标注失败静默跳过 ——
+    展示面绝不拖垮判定。
+    """
+    if not rows or not pairs or model is None:
+        return
+    for card in rows:
+        shown = label_display(model, pairs, card.get("dim"))
+        if shown:
+            card["dim_display"] = shown
+
+
 class DecisionService:
     """Evaluates decision rules for a datasource.
 
@@ -554,6 +643,21 @@ class DecisionService:
                 matched=list(cur_info.get("datasets") or []),
                 time_field=str(cur_info.get("time_field") or ""))
             triggered = bool(triggered_dims)
+
+        # 本体显示名(FR-DEC-1,E7):judge 之后的一次纯标注 pass —— 行卡
+        # 可选 ``dim_display``(enum_display/value_aliases 或实体自然键
+        # 字段),噪声带 by_dim 条目同款。**判定键一律不动**(N34):
+        # ``dim`` 仍是身份(by_dim 键、回评比较都读它),triggered /
+        # confidence 不改;未声明映射 → 键不出现,证据逐字节与旧版相同。
+        dim_pairs = resolve_dim_pairs(
+            model, list(rule.subject.dimensions),
+            list(cur_info.get("datasets") or []))
+        annotate_dim_display(rows, model, dim_pairs)
+        if significance is not None:
+            for dim_key, entry in (significance.get("by_dim") or {}).items():
+                shown = label_display(model, dim_pairs, str(dim_key))
+                if shown and isinstance(entry, dict):
+                    entry["dim_display"] = shown
 
         # 因果升级梯(B3):显著性之后、桥之前。只在「声明了 causal 且
         # 触发(含显著性门判定后的终态)」时跑。附录纪律:任何失败只

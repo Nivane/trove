@@ -124,6 +124,224 @@ def resolve_metric(semantic_layer: Any, metric_name: str) -> Any:
         return None
 
 
+# ── 层级消费 / 显示名(E7;零声明 → 全部恒等,老路径逐字节不变)────────
+
+def _hierarchy_ranks(semantic_layer: Any, refs: list[str]) -> dict[str, tuple[int, int] | None]:
+    """维度 ref → (层级声明序, 级别序);不属于任何层级 / 歧义 → None。
+
+    一次批量求(probe 前的重排与守卫共用同一份读数,避免同一判断在两个
+    循环里各算一遍)。模型读不到 → 全 None(恒等,绝不猜)。
+    """
+    try:
+        from trove.services.semantic_layer.display import hierarchy_at, resolve_ref
+
+        model = semantic_layer.model()
+    except Exception:
+        model = None
+    if model is None:
+        return {ref: None for ref in refs}
+    ranks: dict[str, tuple[int, int] | None] = {}
+    for ref in refs:
+        try:
+            resolved = resolve_ref(model, ref)
+            hit = (None if resolved is None
+                   else hierarchy_at(model, resolved[0].name, resolved[1].name))
+        except Exception:
+            hit = None
+        ranks[ref] = None if hit is None else (hit[0], hit[1])
+    return ranks
+
+
+def _order_within_hierarchy(
+    refs: list[str], ranks: dict[str, tuple[int, int] | None],
+) -> list[str]:
+    """同属一条层级的候选按级别序(粗→细)落回它们占的位置(干预点 b)。
+
+    「声明序压 probe 序」:层级内部的方向由声明决定 —— 重排只整理**同一条
+    层级**的成员(整组落在首个成员出现的位置),其余候选的位置与相对顺序
+    原样(不插队、不挤占)。无层级(或组内只有一员)→ 恒等。
+    """
+    groups: dict[int, list[str]] = {}
+    for ref in refs:
+        rank = ranks.get(ref)
+        if rank is not None:
+            groups.setdefault(rank[0], []).append(ref)
+    if not any(len(g) >= 2 for g in groups.values()):
+        return list(refs)
+    ordered: list[str] = []
+    placed: set[int] = set()
+    for ref in refs:
+        rank = ranks.get(ref)
+        if rank is None:
+            ordered.append(ref)
+            continue
+        if rank[0] in placed:
+            continue
+        placed.add(rank[0])
+        ordered.extend(sorted(groups[rank[0]], key=lambda r: ranks[r][1]))
+    return ordered
+
+
+def _hierarchy_blocked(
+    refs: list[str], ranks: dict[str, tuple[int, int] | None], ref: str,
+) -> bool:
+    """把 ``ref`` 提前到首位是否会把同层级的一对**倒序**(是 → 禁止提升)。
+
+    probe 提升只改变 ``ref`` 与它之前每个候选的相对次序 —— 若之前已有
+    同层级的更粗级别(级别序更小),提升就把「粗 → 细」倒了过来:声明序
+    压 probe 序,这种提升必须让路。
+    """
+    rank = ranks.get(ref)
+    if rank is None:
+        return False
+    try:
+        idx = refs.index(ref)
+    except ValueError:
+        return False
+    for earlier in refs[:idx]:
+        other = ranks.get(earlier)
+        if other is not None and other[0] == rank[0]:
+            return True
+    return False
+
+
+def _ref_next_level(semantic_layer: Any, ref: str) -> str | None:
+    """层级级别 ref → 同层级细一级的 ref(干预点 c/d);非级别/末级 → None。"""
+    try:
+        from trove.services.semantic_layer.display import ref_next_level
+
+        return ref_next_level(semantic_layer.model(), ref)
+    except Exception:
+        return None
+
+
+def _ref_dim_label(semantic_layer: Any, ref: str) -> str:
+    """ref → 计划维度名回退(追加候选无计划名):取字段名做标签。"""
+    try:
+        from trove.services.semantic_layer.display import resolve_ref
+
+        resolved = resolve_ref(semantic_layer.model(), ref)
+        if resolved is not None:
+            return f"{resolved[1].name}"
+    except Exception:
+        pass
+    return str(ref)
+
+
+def _ref_field_display(semantic_layer: Any, ref: str) -> str:
+    """ref → 层级 display_name(干预点 g);无 → 空串(键不出现,不发明)。"""
+    if not ref:
+        return ""
+    try:
+        from trove.services.semantic_layer.display import ref_field_display
+
+        return ref_field_display(semantic_layer.model(), ref) or ""
+    except Exception:
+        return ""
+
+
+def _related_dim_refs(
+    semantic_layer: Any, matched: list[str], taken: set[str],
+) -> list[str]:
+    """FR-HIER-4:经已声明链接 1 跳可达的相关数据集 → 维度角色字段 ref。
+
+    逐条 ``relationships``(声明序)取**另一端点**数据集:锚点侧命中
+    ``matched``(数据集名或物理 source,与编译器 ``_dataset_allowed``
+    同口径),对端取非时间、非度量/标识符角色的字段(与编译器的可分组
+    字段同口径)。**fan-out 边排除**(复用 ``object_graph._link_fan_out``
+    —— 与编译期基数守卫同一判定:M:N 且未 ``dedup`` 的路不产生候选)。
+    这里只**追加候选**(调用方补在计划维度之后、不插队);选不选得上由
+    probe 信号门定(严格大于 → 同分时既有维度优先)。未声明链接 → []。
+    """
+    try:
+        from trove.services.semantic_layer.object_graph import _link_fan_out
+
+        model = semantic_layer.model()
+        if model is None:
+            return []
+        anchors = {str(m).strip().lower() for m in matched if str(m or "").strip()}
+        if not anchors:
+            return []
+        datasets = list(getattr(model, "datasets", None) or [])
+        by_name = {
+            str(getattr(d, "name", "")).strip().lower(): d for d in datasets
+        }
+
+        def _in_scope(ds: Any) -> bool:
+            name = str(getattr(ds, "name", "") or "").strip()
+            source = str(getattr(ds, "source", "") or "").strip() or name
+            return name.lower() in anchors or source.lower() in anchors
+
+        out: list[str] = []
+        for rel in (getattr(model, "relationships", None) or []):
+            if _link_fan_out(rel):
+                continue  # 基数守卫:会倍增行的边不产生候选
+            a = by_name.get(str(getattr(rel, "from_", "")).strip().lower())
+            b = by_name.get(str(getattr(rel, "to", "")).strip().lower())
+            if a is None or b is None:
+                continue
+            if _in_scope(a) and not _in_scope(b):
+                neighbor = b
+            elif _in_scope(b) and not _in_scope(a):
+                neighbor = a
+            else:
+                continue
+            for fld in (getattr(neighbor, "fields", None) or []):
+                role = str(getattr(fld, "semantic_role", "") or "").strip().lower()
+                if getattr(fld, "is_time", False) or role in ("measure", "identifier", "time"):
+                    continue
+                ref = f"{neighbor.name}.{fld.name}"
+                if ref in taken or ref in out:
+                    continue
+                out.append(ref)
+        return out
+    except Exception:
+        return []
+
+
+def _annotate_displays(
+    semantic_layer: Any, outcome: AnalysisOutcome,
+    d0_ref: str, drill_ref: str, ref_to_dim: dict[str, str],
+) -> None:
+    """行卡 ``dim_display`` + 载荷标签显示名(干预点 g;纯标注,零查询)。
+
+    贡献表行按主拆维字段、下钻行按下钻字段做**值 → 显示名**映射
+    (``semantic_layer.display`` —— 与判定行卡同源的一份);无声明解析不到
+    → 键不出现(缺席容忍,绝不猜)。任何失败静默跳过:标注是展示面,
+    绝不因一个坏引用上抛,也绝不影响判定/产物数值。
+    """
+    try:
+        from trove.services.semantic_layer.display import ref_value_display
+
+        model = semantic_layer.model()
+        if model is None:
+            return
+        for row in outcome.table:
+            shown = ref_value_display(model, d0_ref, row.get("dim"))
+            if shown:
+                row["dim_display"] = shown
+        drill = outcome.drilldown or {}
+        if drill_ref:
+            for row in (drill.get("table") or []):
+                shown = ref_value_display(model, drill_ref, row.get("dim"))
+                if shown:
+                    row["dim_display"] = shown
+        outcome.primary_dim_display = _ref_field_display(semantic_layer, d0_ref)
+        # dimensions_display 与 labels.dimensions 平行(同长同序):至少一个
+        # 条目有显示名才出键,无显示名的条目回退原始维度名。
+        ref_by_dim = {label: ref for ref, label in ref_to_dim.items()}
+        raw = [
+            _ref_field_display(semantic_layer, ref_by_dim.get(name, "")) or None
+            for name in outcome.dimensions
+        ]
+        if any(raw):
+            outcome.dimensions_display = [
+                shown or name for shown, name in zip(raw, outcome.dimensions)
+            ]
+    except Exception:
+        pass
+
+
 # ── SQL 构造(复用语义编译器:hops 由编译器直接产出,失败即降级)────────
 
 def compile_hop(
@@ -352,6 +570,12 @@ class AnalysisOutcome:
     #: 查询账本快照(仅 ``total_query_budget`` 显式设置时非 None ——
     #: 老路径 evidence 不带 budget 键,逐字节兼容)。
     budget: dict[str, Any] | None = None
+    #: 显示名标注(本体声明消费,E7 干预点 g):主拆维的层级 display_name。
+    #: 无层级/未声明 display_name → 空串(payload 不出键,老路径逐字节不变)。
+    primary_dim_display: str = ""
+    #: 与 ``dimensions`` 平行(同长同序)的显示名列表;至少一个条目有显示名
+    #: 才非空,无显示名的条目回退原始维度名(判据是键在不在)。
+    dimensions_display: list[str] = field(default_factory=list)
 
 
 class AnalysisEngine:
@@ -1010,6 +1234,18 @@ class AnalysisEngine:
         # 计划维度名 ↔ 解析 ref 的映射(ref 可被 probe 重排,名字不可)
         ref_to_dim: dict[str, str] = dict(zip(dim_refs, dims))
 
+        # FR-HIER-4:经已声明链接 1 跳可达的相关数据集 → 维度候选**追加**
+        # (不插队:补在计划维度之后;名额 = max_dimensions 余量 —— probe
+        # 成本不超既有窗口)。仍要过 probe 信号门:加进来只是多一个候选,
+        # 选不选得上由双期信号定(严格大于 → 同分时既有维度优先);探测
+        # 关停或未声明链接 → 零变化(恒等)。
+        if lim.probe_dimensions:
+            extra_slots = max(0, lim.max_dimensions - len(dim_refs))
+            if extra_slots:
+                for ref in _related_dim_refs(sl, matched, set(dim_refs))[:extra_slots]:
+                    dim_refs.append(ref)
+                    ref_to_dim.setdefault(ref, _ref_dim_label(sl, ref))
+
         # 度量解析 + 比率判定(方向 2):metric_type=ratio / AVG / A÷B / SAFE_DIVIDE
         metric_obj = resolve_metric(sl, metric_name)
         ratio_parts: tuple[str, str] | None = None
@@ -1024,6 +1260,7 @@ class AnalysisEngine:
         base_total = cur_total = 0.0
         primary_dim = dims[0]
         drill_table: list[dict[str, Any]] = []
+        drill_ref = ""  # 下钻实际使用的维度 ref(层级 L+1 或 dim_refs[1];标注用)
         series: dict[str, Any] | None = None
         try:
             # hop0:整体 Δ(无维度)——当前期 vs 基期总量对比
@@ -1066,23 +1303,36 @@ class AnalysisEngine:
                 and base_period is not None
                 and not focus_conds
             ):
+                # 层级序整理(干预点 b):同属一条层级的候选按级别序
+                # (粗→细)落回它们占的位置 —— 声明序压 probe 序。只动
+                # 层级成员,其余候选原地不动(混合场景 probe 照旧)。
+                ranks = _hierarchy_ranks(sl, dim_refs)
+                dim_refs = _order_within_hierarchy(dim_refs, ranks)
+                d0_ref = dim_refs[0]
                 best_sig, best_ref = -1.0, d0_ref
+                probe_seen: dict[str, dict[str, Any]] = {}
                 for ref in dim_refs[: lim.max_dimensions]:
                     cur_map, base_map, sig, hop_c, hop_b = await self._probe_dim(
                         matched, dialect, metric_name, metric_obj, ratio_parts, ref, [],
                         time_field, cur_period, base_period, datasource,
                     )
+                    probe_seen[ref] = {
+                        "ref": ref,
+                        "cur": cur_map, "base": base_map,
+                        "hop_cur": hop_c, "hop_base": hop_b,
+                    }
                     if sig > best_sig:
                         best_sig, best_ref = sig, ref
-                        probe_cache = {
-                            "ref": ref,
-                            "cur": cur_map, "base": base_map,
-                            "hop_cur": hop_c, "hop_base": hop_b,
-                        }
+                        probe_cache = probe_seen[ref]
                 if best_ref != d0_ref:
-                    # 重排:最佳维居首,其余保持计划顺序
-                    dim_refs = [best_ref] + [r for r in dim_refs if r != best_ref]
-                    d0_ref = dim_refs[0]
+                    if not _hierarchy_blocked(dim_refs, ranks, best_ref):
+                        # 重排:最佳维居首,其余保持计划顺序
+                        dim_refs = [best_ref] + [r for r in dim_refs if r != best_ref]
+                        d0_ref = dim_refs[0]
+                    elif d0_ref in probe_seen:
+                        # 让路给声明序(同层级不倒序):hop1 改用 d0_ref 自己
+                        # 的探测结果 —— 探测已经跑过,不重复查
+                        probe_cache = probe_seen[d0_ref]
             # 记录实际主拆维度(可能被 probe 重排):ref 反查计划维度名
             primary_dim = ref_to_dim.get(d0_ref, dims[0])
 
@@ -1122,12 +1372,17 @@ class AnalysisEngine:
                 table = contribution(base_map, cur_map)
 
             # hop2:下钻(depth>=2 且还有第二个维度)——对 top |contribution|
-            # 项加过滤后按 dimensions[1] 再分解(比率指标同样 shift-share)。
+            # 项加过滤后按维度再分解(比率指标同样 shift-share)。
             if depth >= 2 and len(dim_refs) >= 2:
                 top = table[0] if table else None
                 # 下钻信号用 contribution(比率指标率变化可为 0 但权重移动贡献非 0)
                 if top and top["contribution"] != 0:
-                    d1_ref = dim_refs[1]
+                    # 层级下钻(干预点 c/d):主拆维是层级级别 L → 下钻目标
+                    # 改同层级 L+1(声明序即下钻方向;probe 重排可能把 L+1
+                    # 推离 dim_refs[1]);末级/无层级 → 回退 dim_refs[1]。
+                    # 过滤机制不变:仍按主拆维 top 项钉等值。
+                    d1_ref = _ref_next_level(sl, d0_ref) or dim_refs[1]
+                    drill_ref = d1_ref
                     drill_conds = [{"field": d0_ref, "op": "=", "value": str(top["dim"])}]
                     if is_ratio:
                         cur_sql = compile_ratio_hop(
@@ -1232,11 +1487,25 @@ class AnalysisEngine:
         outcome.degraded = degraded
         outcome.partial = bool(degraded)
         if drill_table:
-            drill_dim = (
-                ref_to_dim.get(dim_refs[1], dims[1])
-                if len(dim_refs) >= 2 else primary_dim
-            )
+            # 下钻维度名:计划名优先(ref → 计划维度名);层级 L+1/追加候选
+            # 无计划名 → 字段名标签(不再回退 dims[1] —— 那会把 L+1 的
+            # 表头写成另一个维度名,标签与数据对不上)。
+            if drill_ref:
+                drill_dim = (
+                    ref_to_dim.get(drill_ref)
+                    or _ref_dim_label(sl, drill_ref)
+                    or primary_dim
+                )
+            else:
+                drill_dim = (
+                    ref_to_dim.get(dim_refs[1], dims[1])
+                    if len(dim_refs) >= 2 else primary_dim
+                )
             outcome.drilldown = {"dimension": drill_dim, "table": drill_table}
+        # 显示名标注(干预点 g):行卡 dim_display + 标签显示键 —— 纯标注、
+        # 零查询,无声明(无层级/枚举/别名/实体)时全为缺席,payload 与
+        # 旧版逐字节相同。
+        _annotate_displays(sl, outcome, d0_ref, drill_ref, ref_to_dim)
         outcome.tree = tree
         outcome.series = series
         outcome.budget = self._budget_snapshot()
@@ -1303,6 +1572,12 @@ def analysis_payload(
         payload["series"] = outcome.series
     if outcome.budget is not None:
         payload["evidence"]["budget"] = outcome.budget
+    # 显示键(干预点 g,本体声明消费):有显示名才出现 —— 缺席容忍同款
+    # (判据是键在不在,不是版本号);无层级声明 → 两键都不出,逐字节不变。
+    if outcome.primary_dim_display:
+        payload["labels"]["primary_dimension_display"] = outcome.primary_dim_display
+    if outcome.dimensions_display:
+        payload["labels"]["dimensions_display"] = list(outcome.dimensions_display)
     # 出门前整包安全化(见 ``core.serialize``):记录视图已在源头逐格化
     # (``_record_rows``),这里再兜一层是因为**标签**也可能是 DB 原生值
     # (日期维度 → ``date`` 键,树/系列/贡献表的 dim 同理)—— 这份 payload

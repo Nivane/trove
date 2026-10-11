@@ -43,7 +43,7 @@ from trove.services.semantic_layer.topics import resolve_topic, topic_names
 logger = logging.getLogger(__name__)
 
 _ANSI = "ANSI_SQL"
-_KINDS = {"metric", "field", "dataset", "topic", "entity", "relationship"}
+_KINDS = {"metric", "field", "dataset", "topic", "entity", "relationship", "hierarchy"}
 _ACTIONS = {"upsert", "delete"}
 
 _DUMP_KWARGS = dict(
@@ -653,6 +653,65 @@ def _apply_relationship(model: dict[str, Any], action: str, name: str,
         relationships.append(rel)
 
 
+def _apply_hierarchy(model: dict[str, Any], action: str, name: str,
+                     payload: dict[str, Any] | None, dialect: str | None) -> None:
+    """钻取层级草稿应用(E7):模型级 ``hierarchies`` 段的唯一写路径。
+
+    ``name`` = 层级名(与 ``_find_entity`` 的口径一致);payload 带 ``dataset``
+    (归属数据集)与 ``levels``(有序级别字段,粗 → 细)。
+
+    两条硬校验都在写盘前:归属数据集必须已声明 —— 级别字段无处解析的层级
+    没有任何消费面(分析下钻/决策标注都按 dataset 找它);级别链至少一个 ——
+    ``levels: []`` 是一条钻不下去的层级,落一个空链看起来"确认成功"却什么
+    都无法消费(与实体空声明同款静默 no-op)。
+
+    级别字段是否解析到 dataset 的 fields / 级别重复 / 单级链条是
+    ``_lint_hierarchies`` 的事(字段解析性是硬错,确认门禁会拦;单级是
+    advisory 警告,写路径不重复一遍 —— 两处判据漂移比缺少一次前置拦截更糟)。
+
+    carryover 保三键:display_name/dataset/levels 未被 payload 覆盖时不抹 ——
+    二次 upsert 只改展示名,不该把已声明的级别链抹掉。
+    """
+    hierarchies = model.setdefault("hierarchies", [])
+    if action == "delete":
+        model["hierarchies"] = [
+            h for h in hierarchies if not (isinstance(h, dict) and h.get("name") == name)]
+        return
+    payload = payload or {}
+    declared = {d.get("name") for d in model.get("datasets", [])
+                if isinstance(d, dict) and d.get("name")}
+    ds = str(payload.get("dataset") or "").strip()
+    if ds and ds not in declared:
+        raise ValueError(
+            f"层级「{name}」声明的数据集「{ds}」未声明"
+            "(级别字段无处解析;改用正确名字,或先声明该数据集)")
+    hierarchy: dict[str, Any] = {"name": name}
+    if ds:
+        hierarchy["dataset"] = ds
+    display = str(payload.get("display_name") or "").strip()
+    if display:
+        hierarchy["display_name"] = display
+    levels = [str(x) for x in (payload.get("levels") or []) if str(x).strip()]
+    if levels:
+        hierarchy["levels"] = list(dict.fromkeys(levels))
+    idx = next((i for i, h in enumerate(hierarchies)
+                if isinstance(h, dict) and h.get("name") == name), None)
+    if idx is not None:
+        _carryover(hierarchies[idx], hierarchy, "display_name", "dataset", "levels")
+    if not hierarchy.get("dataset"):
+        raise ValueError(
+            f"层级「{name}」的 dataset 必填(级别字段无处解析,请指明归属数据集)")
+    final_levels = [str(x) for x in (hierarchy.get("levels") or []) if str(x).strip()]
+    if not final_levels:
+        raise ValueError(
+            f"层级「{name}」的 levels 必填(空级别链没有可钻的下一级)")
+    hierarchy["levels"] = final_levels
+    if idx is not None:
+        hierarchies[idx] = hierarchy
+    else:
+        hierarchies.append(hierarchy)
+
+
 def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | None) -> None:
     model = _model_of(data)
     kind = draft["kind"]
@@ -671,6 +730,8 @@ def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | Non
         _apply_entity(model, action, name, payload, dialect)
     elif kind == "relationship":
         _apply_relationship(model, action, name, payload, dialect)
+    elif kind == "hierarchy":
+        _apply_hierarchy(model, action, name, payload, dialect)
     else:
         raise ValueError(f"未知草稿类型: {kind}")
 

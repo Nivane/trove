@@ -223,6 +223,10 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         enum_fields[ds_name] = enums
 
     seen_metrics: set[str] = set()
+    # 层级级别字段索引(FR-HIER-3):dataset → [(层级名, [级别字段])],按声明序。
+    # 只收解析得动的级别(悬空 dataset/字段已由 _lint_hierarchies 报错);
+    # 未声明层级 → 空索引,覆盖检查整段零动作(存量模型输出不变)。
+    levels_by_ds = _hierarchy_levels_by_dataset(model, ds_fields)
     for m in model.get("metrics", []) or []:
         if not isinstance(m, dict):
             continue
@@ -238,6 +242,8 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         _lint_metric_filter_enum(issues, m, ds_fields, enum_fields, dialect)
         _lint_metric_agg_time(issues, m, ds_fields, temporal_fields)
         _lint_metric_non_additive(issues, m, model)
+        _lint_metric_hierarchy_coverage(
+            issues, m, levels_by_ds, temporal_fields, dialect)
         if m.get("datatype") and str(m.get("datatype")).lower() not in _VALID_OSSIE_DATATYPES:
             issues.append(
                 f"指标「{name}」datatype 非法: {m.get('datatype')} "
@@ -893,6 +899,136 @@ def _lint_hierarchies(
                     issues.append(
                         f"层级「{name}」的级别字段「{level}」不在数据集"
                         f"「{ds}」的 fields 中(层级链在这一跳解析不到)")
+
+
+def _hierarchy_levels_by_dataset(
+    model: dict[str, Any], ds_fields: dict[str, set[str]],
+) -> dict[str, list[tuple[str, list[str]]]]:
+    """层级级别字段索引(FR-HIER-3 的输入侧):dataset → [(层级名, [级别])]。
+
+    只收**解析得动**的层级:条目须是映射、name/dataset 非空、dataset 已声明、
+    级别字段在 dataset 的 fields 里(悬空引用已由 ``_lint_hierarchies`` 报错,
+    这里不重复报,也不拿未声明字段去比对口径)。按声明序遍历、保序去重级别
+    (与装载侧 ``_clean_names`` 同一净化),输出与 PYTHONHASHSEED 无关。
+    """
+    out: dict[str, list[tuple[str, list[str]]]] = {}
+    for h in model.get("hierarchies") or []:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "").strip()
+        ds = str(h.get("dataset") or "").strip()
+        if not name or ds not in ds_fields:
+            continue
+        declared = ds_fields.get(ds, set())
+        levels = [lv for lv in dict.fromkeys(_raw_name_list(h.get("levels")))
+                  if lv in declared]
+        if levels:
+            out.setdefault(ds, []).append((name, levels))
+    return out
+
+
+def _level_col_name(col: exp.Expression) -> str:
+    """谓词左端的列名(非 Column 结构 → 空串,调用方跳过)。"""
+    if isinstance(col, exp.Column):
+        return (col.name or "").strip()
+    return ""
+
+
+def _lint_metric_hierarchy_coverage(
+    issues: list[str], m: dict[str, Any],
+    levels_by_ds: dict[str, list[tuple[str, list[str]]]],
+    temporal_fields: dict[str, set[str]], dialect: str,
+) -> None:
+    """口径覆盖检查(FR-HIER-3):metric 的过滤/派生条件把层级收窄到了某一支。
+
+    判据(确定性、零 LLM):metric 的**内建 filter** 或**表达式**里,对某条
+    已声明层级的级别字段做等值(``=``)/不等(``!=``)/``IN``(含 ``NOT IN``)
+    —— 谓词把口径钉在一个/一组级别值上,层级其余分支被**静默排除**
+    (需求原文的样例:贷款总额排除个人贷款)。命中按 (层级, 级别) 逐条报,
+    消息带层级名与级别名。
+
+    刻意排除的两侧:
+
+    * **顺序比较不算**(``>=``/``<`` 等):它不"收敛"到具名支,且时间窗口
+      类的惯用写法正落在这一侧;
+    * **级别字段是时态字段不报**(N35 边界):时间等值是「时间锚」不是
+      「层级分支」,报出来是误报 —— 层级级别本就以维度/枚举字段为主。
+
+    级别列解析规则与 ``_lint_metric_filter_enum`` 同款:带表限定必须落在该
+    表上;裸列落 metric 的绑定数据集内;无绑定则按声明序在全部数据集里取
+    首个命中(确定性)。**warning 起步、不阻断**(拍板:语义缺口提示),豁免
+    登记在 ``issues._ADVISORY_CODES``。
+    """
+    if not levels_by_ds:
+        return
+    texts: list[str] = []
+    ftext = str(m.get("filter") or "").strip()
+    if ftext:
+        texts.append(ftext)
+    for dia in (m.get("expression") or {}).get("dialects", []) or []:
+        if isinstance(dia, dict):
+            expr = str(dia.get("expression") or "").strip()
+            if expr:
+                texts.append(expr)
+    if not texts:
+        return
+    name = str(m.get("name", ""))
+    bound = [t for t in (m.get("datasets") or []) if t]
+    seen: set[tuple[str, str]] = set()
+
+    def _hits(ds: str, col_name: str) -> list[tuple[str, str]]:
+        """该列在 dataset 上命中的 (层级名, 级别字段) 列表(声明序)。
+
+        时态级别字段直接零命中 —— 时间等值是「时间锚」不是「层级分支」
+        (N35 边界);大小写不敏感(与装载侧/编译器的列名口径同款)。
+        """
+        lower = col_name.lower()
+        if lower in {str(t).lower() for t in temporal_fields.get(ds, set())}:
+            return []
+        return [
+            (hname, lv)
+            for hname, levels in levels_by_ds.get(ds, [])
+            for lv in levels
+            if lv.lower() == lower
+        ]
+
+    for text in texts:
+        tree = _parse(text, dialect)
+        if tree is None:
+            continue  # 解析失败已由 filter_parse / expr_parse 报出
+        predicates: list[exp.Expression] = []
+        for eq in tree.find_all(exp.EQ, exp.NEQ):
+            predicates.append(eq.left)
+        for inn in tree.find_all(exp.In):
+            predicates.append(inn.this)
+        for node in predicates:
+            col_name = _level_col_name(node)
+            if not col_name:
+                continue
+            col_table = (node.table or "").strip()
+            if col_table:
+                candidates = [t for t in levels_by_ds if t.lower() == col_table.lower()]
+            elif bound:
+                candidates = [t for t in bound if t in levels_by_ds]
+            else:
+                candidates = list(levels_by_ds)  # 声明序
+            for ds in candidates:
+                hits = _hits(ds, col_name)
+                if not hits:
+                    continue
+                for hname, lv in hits:
+                    key = (hname, lv)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    issues.append(
+                        f"指标「{name}」的过滤/派生条件对层级「{hname}」的级别字段"
+                        f"「{lv}」做等值/IN 收敛 —— 该口径静默排除层级其他分支"
+                        "(下钻/对比只覆盖被钉住的那一支);如非刻意,请改用维度"
+                        "过滤,或单列独立指标并写明口径")
+                # 首个命中的数据集(与 _lint_metric_filter_enum 同款判定);
+                # 裸列不跨表连报 —— 一条谓词只对一处口径说话。
+                break
 
 
 def _is_many_to_many(cardinality: Any) -> bool:

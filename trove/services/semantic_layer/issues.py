@@ -89,9 +89,10 @@ _HINTS: dict[str, str] = {
     "hierarchy_level_invalid": "级别字段须来自归属数据集的 fields(层级链逐跳都要解析得到)",
     "hierarchy_levels_sparse": "层级至少两级(粗 → 细);单级链条没有可钻的下一级,补一级或删除该层级",
     "hierarchy_level_dup": "同一级别只写一次(装载侧保序去重,重复多半是写错)",
+    "hierarchy_coverage_gap": "该口径在层级级别字段上收敛,会静默排除层级其他分支:如非刻意,改用维度过滤,或单列独立指标并写明口径",
     "entity_misplaced": "entity 写在 semantic_model[0].datasets[].entity(挂在数据集下),顶层会被忽略",
     "hierarchies_misplaced": "hierarchies 写在 semantic_model[0] 下(与 time_spine 同层),顶层会被忽略",
-    "kind_unknown": "kind 必须为 metric / field / dataset / topic 之一",
+    "kind_unknown": "kind 必须为 metric / field / dataset / topic / entity / relationship / hierarchy 之一",
     "lint": "见原文;这条问题尚未归类,请按 lint 描述修正",
 }
 
@@ -219,8 +220,16 @@ _RULES: list[tuple[re.Pattern[str], str, str, Callable[[re.Match[str]], tuple[st
     (re.compile(r"^层级「(?P<name>[^」]+)」的级别字段「"), "hierarchy_level_invalid", SEVERITY_ERROR, _hierarchy_target),
     (re.compile(r"^层级「(?P<name>[^」]+)」的级别「"), "hierarchy_level_dup", SEVERITY_WARNING, _hierarchy_target),
     (re.compile(r"^层级「(?P<name>[^」]+)」解析后只有"), "hierarchy_levels_sparse", SEVERITY_WARNING, _hierarchy_target),
+    # 口径覆盖(FR-HIER-3):消息以指标开头(可修处在 metric 的过滤/表达式),
+    # 目标落 metric;warning 起步、不阻断(拍板:语义缺口提示)。
+    (re.compile(r"^指标「(?P<name>[^」]+)」的过滤/派生条件对层级「"), "hierarchy_coverage_gap", SEVERITY_WARNING, _metric_target),
+    # 写盘路径错误文本(manage._apply_hierarchy)—— 与 lint 措辞不同、判定同一件事
+    (re.compile(r"^层级「(?P<name>[^」]+)」的 dataset 必填"), "hierarchy_dataset_missing", SEVERITY_ERROR, _hierarchy_target),
+    (re.compile(r"^层级「(?P<name>[^」]+)」的 levels 必填"), "hierarchy_levels_sparse", SEVERITY_ERROR, _hierarchy_target),
     # ── 其它写盘路径错误 ──
     (re.compile(r"^未知草稿类型"), "kind_unknown", SEVERITY_ERROR, lambda _m: _TARGET_UNKNOWN),
+    # create_draft / changes 的 kind 白名单消息(闭集;hint 列全部合法 kind)
+    (re.compile(r"^kind 必须为"), "kind_unknown", SEVERITY_ERROR, lambda _m: _TARGET_UNKNOWN),
 ]
 
 
@@ -246,6 +255,7 @@ _ADVISORY_CODES = frozenset({
     "entity_alias_conflict",
     "hierarchy_levels_sparse",
     "hierarchy_level_dup",
+    "hierarchy_coverage_gap",
 })
 
 

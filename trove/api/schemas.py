@@ -189,12 +189,13 @@ class FactPatch(BaseModel):
 class SemanticDraftCreate(BaseModel):
     """POST /v1/admin/semantic/{ds}/drafts body (审批流草稿).
 
-    kind: metric | field | dataset | topic;action: upsert | delete。
+    kind: metric | field | dataset | topic | entity | relationship | hierarchy;
+    action: upsert | delete。
     payload 为平铺友好结构,confirm 时转换为 OSSIE 文档(见
     services/semantic_layer/manage.py)。
     """
 
-    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship", "hierarchy"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -246,7 +247,7 @@ class SemanticValidateRequest(BaseModel):
     不写任何文件。``payload`` 与创建草稿时同形。
     """
 
-    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship", "hierarchy"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -368,7 +369,7 @@ class SemanticBatchResponse(BaseModel):
 class SemanticChangePayload(BaseModel):
     """一条 payload 变更（与草稿 payload 同形）。"""
 
-    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship"]
+    kind: Literal["metric", "field", "dataset", "topic", "entity", "relationship", "hierarchy"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
