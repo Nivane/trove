@@ -3600,13 +3600,15 @@ class SemanticCompiler:
                 contract=_build_contract(
                     sql, dialect=self._dialect, partial=True, gaps=miss_parts,
                     advisory=self._is_advisory_plan(agg_declared, is_agg),
-                    row_filters=tuple(row_filters)),
+                    row_filters=tuple(row_filters),
+                    natural_keys=_declared_natural_keys(self._model)),
                 miss_parts=miss_parts,
             )
         return CompileResult(
             sql=sql,
             contract=_build_contract(
-                sql, dialect=self._dialect, row_filters=tuple(row_filters)),
+                sql, dialect=self._dialect, row_filters=tuple(row_filters),
+                natural_keys=_declared_natural_keys(self._model)),
         )
 
     # ── 窗口分析编译(plan.analysis)────────────────────────────
@@ -4153,6 +4155,37 @@ def _canon_edge(edge: set) -> JoinEdge:
     return (cols[0], cols[1])
 
 
+def _declared_natural_keys(model: Any) -> tuple[tuple[str, str], ...]:
+    """语义模型 → 已声明实体的自然键列 ``(数据集名, 字段名)``,全小写。
+
+    只收 **entity 已声明** 的数据集:未声明时返回空元组,下游的自然键
+    接地断言整体缺席(兼容安全带 —— 未声明 → 校验与现状逐字节一致)。
+    ``natural_keys`` 缺省回退 ``primary_key``(设计 §4.1 的读侧纪律,与
+    ``object_graph.build_object_graph`` 的投影同款);两者都空 → 本数据集
+    不贡献列。名字折小写:校验侧拿到的列形状来自解析器(一律小写),
+    两边不同口径的后果是断言永远静默不触发。
+
+    声明顺序即输出顺序(声明即输出,不排序、不去重),与 PYTHONHASHSEED 无关。
+    """
+    out: list[tuple[str, str]] = []
+    for d in getattr(model, "datasets", None) or []:
+        entity = getattr(d, "entity", None)
+        if entity is None:
+            continue
+        keys = [
+            str(k).strip() for k in (getattr(entity, "natural_keys", None) or [])
+            if str(k).strip()
+        ]
+        if not keys:
+            keys = [
+                str(k).strip() for k in (getattr(d, "primary_key", None) or [])
+                if str(k).strip()
+            ]
+        for k in keys:
+            out.append((str(d.name).lower(), k.lower()))
+    return tuple(out)
+
+
 def _build_contract(
     sql: str,
     *,
@@ -4161,6 +4194,7 @@ def _build_contract(
     gaps: list[dict[str, str]] | None = None,
     advisory: bool = False,
     row_filters: tuple[WhereCond, ...] = (),
+    natural_keys: tuple[tuple[str, str], ...] = (),
 ) -> PlanContract:
     """权威 SQL → 契约。结构**此刻**抽取(编译器刚拼出的 SQL 必然可解析)。
 
@@ -4173,10 +4207,15 @@ def _build_contract(
     advisory 表示"计划本身是退化/未覆盖形态,WHERE 只可参考不可冻结";
     row_filters 是编译器注入的声明层 RLS 谓词 —— 它的校验**不随 advisory
     降级**(安全条件没有"参考"一说,丢了就是丢了)。
+
+    ``natural_keys`` 由编译侧从**模型声明**算好传入(``_declared_natural_keys``):
+    契约是编译侧结构的唯一载体,执行前只剩生成 SQL 需要解析 —— 自然键
+    断言读的就是这份声明事实,未声明 → 空元组 → 没有断言可做。
     """
     base = PlanContract(
         skeleton_sql=sql, gaps=tuple(gaps or ()), partial=partial,
         advisory=advisory, row_filters=tuple(row_filters),
+        natural_keys=tuple(natural_keys),
     )
     try:
         tree = parse_one(sql, read=dialect or "sqlite")
@@ -4380,6 +4419,103 @@ def skeleton_preserved(
     if gen_groups < contract.group_by_width:
         return False, "generated SQL dropped a grouping dimension from the skeleton"
 
+    return True, ""
+
+
+def _col_is_natural_key(
+    col: tuple[str, str], natural_keys: tuple[tuple[str, str], ...],
+) -> bool:
+    """列是否落在已声明自然键上:表名一致,或任一侧未限定(列名是身份)。
+
+    与 ``_skeleton_col_in`` 同一宽严:契约里的自然键带数据集限定(编译 SQL
+    的限定就是数据集名),生成侧可能写裸列 —— 裸列按列名匹配(语义等价,
+    不能因此漏检);限定到**别的**表名则不算命中(那是另一张表的列)。
+    """
+    t, c = col
+    return any(
+        c == nk_c and (t == nk_t or not t or not nk_t)
+        for nk_t, nk_c in natural_keys
+    )
+
+
+def _is_row_filter_cond(
+    cols: frozenset[tuple[str, str]],
+    op: str,
+    vals: tuple[str, ...],
+    row_filters: tuple[WhereCond, ...],
+) -> bool:
+    """生成条件是否就是编译器注入的 RLS 谓词(同算子、同值、列被覆盖)。
+
+    口径与 ``skeleton_preserved._missing`` 的逆向同款:生成条件"覆盖"某条
+    RLS 谓词即算它。RLS 的字面量来自**主体**(登录身份/租户),不来自提问
+    —— 自然键接地断言对它没有意义(拿主体值去问"提问里有没有这个字面量"
+    是把两条不同的规则搅在一起),所以整条豁免。
+    """
+    return any(
+        fop == op and fvals == vals
+        and all(_skeleton_col_in(fc, cols) for fc in fcols)
+        for fcols, fop, fvals in row_filters
+    )
+
+
+def natural_key_literals_grounded(
+    contract: PlanContract,
+    generated: str,
+    question: str,
+    generated_dialect: str = "sqlite",
+) -> tuple[bool, str]:
+    """自然键接地断言:自然键上的等值过滤,字面量必须逐字来自提问。
+
+    自然键是对象身份的锚(设计 §5.2):``name = '李四'`` 配一个问「张伟」的
+    提问,说明生成侧**编了一个键值** —— 对错不由模型定,由提问定。这里做
+    确定性断言(零 LLM):生成 SQL 里落在**已声明自然键**列上的 ``eq``
+    条件,其字面量必须**大小写无关地**逐字出现在提问中;不满足 →
+    ``(False, 原因)``,调用方走既有保真失败路径(打回重生成,预算耗尽响亮
+    降级 —— 不静默交付一个按别的键值过滤的答案)。
+
+    只检查 ``eq``:范围/``IN``/``LIKE`` 的值另有语义(阈值、集合、模式),
+    按"逐字出现"判会误伤 —— 等值才是对象身份的钉。析取的**复合节点**
+    (op=``or``)不逐字断言,但析取的叶子是各自独立的等值条件,照常断言:
+    问张伟、SQL 里写 ``name='李四' OR region='R1'``,李四同样是编出来的,
+    与连接词无关。RLS 谓词整条豁免(见 :func:`_is_row_filter_cond`)。
+
+    缺席容忍(兼容安全带):``contract.natural_keys`` 为空(未声明实体 /
+    旧 wire / 契约由 ``build_contract`` 现抽,没有模型可问)、``generated``
+    或 ``question`` 为空 → 放行;生成 SQL 解析不了 → **打回**(与
+    ``skeleton_preserved`` 同款:它连是不是查询都定不下来,谈不上保真)。
+    """
+    if not contract.natural_keys or not generated:
+        return True, ""
+    q = (question or "").lower()
+    if not q:
+        return True, ""
+    try:
+        gtree = parse_one(generated, read=generated_dialect or "sqlite")
+    except Exception as e:
+        return False, f"generated SQL is unparseable: {e}"
+    g = _inner_select(gtree)
+    if g is None:
+        return False, "generated SQL is not a SELECT"
+
+    # 定序:报第一个失败条件,与 PYTHONHASHSEED 无关(_skeleton_where 是集合)。
+    conds = sorted(_skeleton_where(g), key=lambda c: (sorted(c[0]), c[1], c[2]))
+    for cols, op, vals in conds:
+        if op != "eq" or not vals:
+            continue
+        hits = [c for c in cols if _col_is_natural_key(c, contract.natural_keys)]
+        if not hits:
+            continue
+        if _is_row_filter_cond(cols, op, vals, contract.row_filters):
+            continue
+        for v in vals:
+            if str(v).lower() not in q:
+                field = ", ".join(
+                    f"{t}.{c}" if t else c for t, c in sorted(hits))
+                return False, (
+                    f"filter on declared natural key {field} uses literal "
+                    f"{v!r}, which does not appear in the question — key "
+                    "values must come from the question verbatim"
+                )
     return True, ""
 
 

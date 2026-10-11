@@ -181,6 +181,11 @@ class PlanContract:
       (``{reason, component}``,两个键都由编译器写死,不是自由文本),
       不另立一层具名类型:多一层类型就多一次跨边界丢失的机会。
     - ``partial``:True = 软 MISS 骨架(投影允许补缺);False = 全量编译。
+    - ``natural_keys``:已声明实体的自然键列 ``(数据集名, 字段名)``,全小写
+      (与 ``_skeleton_*`` 抽取器的列形状同款)。执行前的**自然键接地断言**
+      读它:生成 SQL 在自然键上的等值过滤,字面量必须逐字来自提问(大小写
+      无关)—— 键值不是生成侧能编的数,编出来就是"问张伟答李四"。空元组
+      = 没有断言可做(未声明实体 / 旧 wire),校验与现状逐字节一致。
     """
 
     skeleton_sql: str
@@ -192,6 +197,7 @@ class PlanContract:
     partial: bool = False
     advisory: bool = False
     row_filters: tuple[WhereCond, ...] = ()
+    natural_keys: tuple[Col, ...] = ()
 
 
 # 两段固定文案:与 A0 之前 CompileResult/PartialCompile 里硬编码的字符串
@@ -268,6 +274,7 @@ def contract_to_wire(contract: PlanContract) -> dict[str, Any]:
         "partial": contract.partial,
         "advisory": contract.advisory,
         "row_filters": _where_wire(contract.row_filters),
+        "natural_keys": [[t, c] for t, c in contract.natural_keys],
     }
 
 
@@ -309,6 +316,19 @@ def _decode_where(raw: Any) -> tuple[WhereCond, ...] | None:
             str(op or ""),
             tuple(str(v) for v in vals_raw),
         ))
+    return tuple(out)
+
+
+def _decode_cols(raw: Any) -> tuple[Col, ...] | None:
+    """``[[表, 列], ...]`` → 列元组;任何一格坏掉 → ``None``(整份契约作废)。"""
+    if not isinstance(raw, list):
+        return None
+    out: list[Col] = []
+    for item in raw:
+        col = _decode_col(item)
+        if col is None:
+            return None
+        out.append(col)
     return tuple(out)
 
 
@@ -405,7 +425,9 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
 
     ``advisory``/``row_filters`` 是后加的键,按 ``.get(默认值)`` 读取:
     旧 checkpoint 的 wire 里没有它们 → advisory=False、row_filters=()
-    —— 与加这两个字段之前的行为**逐字一致**(不降级任何校验)。
+    —— 与加这两个字段之前的行为**逐字一致**(不降级任何校验)。``natural_keys``
+    同款(旧 wire → ``()``):没有已声明自然键就没有接地断言可做,输出与
+    这条断言存在之前逐字节一致。
     """
     if not isinstance(wire, dict):
         return None
@@ -416,7 +438,11 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
     where = _decode_where(wire.get("where", []))
     gaps = _decode_gaps(wire.get("gaps", []))
     row_filters = _decode_where(wire.get("row_filters", []))
-    if join_edges is None or where is None or gaps is None or row_filters is None:
+    natural_keys = _decode_cols(wire.get("natural_keys", []))
+    if (
+        join_edges is None or where is None or gaps is None
+        or row_filters is None or natural_keys is None
+    ):
         return None
     width = wire.get("group_by_width", 0)
     if not isinstance(width, int) or isinstance(width, bool) or width < 0:
@@ -437,4 +463,5 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
         partial=bool(wire.get("partial")),
         advisory=advisory,
         row_filters=row_filters,
+        natural_keys=natural_keys,
     )
