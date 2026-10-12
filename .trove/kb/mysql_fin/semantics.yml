@@ -915,6 +915,13 @@ semantic_model:
         - other account
         - matching account
       description: Counterparty account involved in the transaction.
+    entity:
+      display_name: 交易
+      natural_keys:
+      - trans_id
+      aliases:
+      - 交易流水
+      - 转账记录
   relationships:
   - name: account_to_district
     from: account

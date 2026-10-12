@@ -615,3 +615,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-adba
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 交易（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T11:01:12+00:00'
+  base_digest: sha256:f93bdd0181a74bd8fa8aa6c1be2a19639ce8bdd23432230f015f34623458ab23
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: trans
+  payloads:
+  - kind: entity
+    action: upsert
+    name: trans
+    payload:
+      display_name: 交易
+      natural_keys:
+      - trans_id
+      aliases:
+      - 交易流水
+      - 转账记录
+  draft_id: c1f8d7b23ffe
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - trans
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: trans
+      action: upsert
+      before: null
+      after:
+        display_name: 交易
+        natural_keys:
+        - trans_id
+        aliases:
+        - 交易流水
+        - 转账记录
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 交易流水 · 转账记录
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 交易
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: trans_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin
