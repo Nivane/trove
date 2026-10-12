@@ -20,6 +20,11 @@
  * rewrites _manifest.json next to the images: capture time, the frontend
  * commit the UI came from, and each file's pixel size. Bitmaps go stale
  * silently, the manifest is what makes that visible.
+ *
+ * TROVE_SHOT_ONLY runs *merge* into the existing manifest instead of
+ * rewriting it — shots that were not recaptured keep their entries, and every
+ * entry carries its own capturedAt / frontendCommit / baseUrl so entries from
+ * different runs stay distinguishable in one file.
  */
 import { execSync } from 'node:child_process'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -336,6 +341,29 @@ const SHOTS = [
     wait: '.sem-preview',
   },
   {
+    // 本体页(E6/O2):语义模型的只读投影 —— 对象/链接/层级 + 声明覆盖率。
+    // 这张拍的是本机 mysql_fin 源(8 个对象全部声明了显示名·自然键·别名,
+    // 链接带业务名,地区层级 A3 → A2);指南实例的 demo/financial 没有这些
+    // 声明,整批重拍时这张需在已声明本体的实例上单独拍,或先给指南实例
+    // 的 KB 补上同样的声明。
+    name: 'admin-ontology',
+    role: 'admin',
+    path: '/admin/ontology?ds=mysql_fin',
+    before: async (page) => {
+      // 选中「银行账户」:右侧详情栏展示它的显示名·自然键·别名、
+      // 统计与出入链接(贷款「发放至」、交易「发生于」…),左下角
+      // 层级卡则是地区层级 —— 一屏把三类声明都摊开。
+      await page.locator('g.node-g[data-dataset="account"]').click()
+    },
+    wait: '.onto-panel-col .onto-panel-title',
+    // 选中态的详情栏比图高,页面因此长过 900 —— 层级卡(第三类声明)
+    // 落在折叠线以下。fullPage 在这层壳里够不着:管理端布局的滚动容器
+    // 是内层 main.admin-main(document 本身恒为一屏),整页截图只会
+    // 重复视口。故这一张用更高的视口把整页装进来(其余管理端截图仍
+    // 是 1440×900 首屏裁切,这张是例外)。
+    viewport: { width: 1440, height: 1200 },
+  },
+  {
     name: 'admin-jobs',
     role: 'admin',
     path: '/admin/jobs',
@@ -543,14 +571,32 @@ async function main() {
       : await login(ADMIN_USER, ADMIN_PASS)
 
   const browser = await chromium.launch({ channel: 'chrome' })
+  // Top-level fields describe *this* run (the write that produced the file);
+  // per-entry fields below describe each shot's own capture.
   const manifest = {
     generatedAt: new Date().toISOString(),
     frontendCommit: frontendCommit(),
     baseUrl: BASE,
+    // Default frame for the run; a shot entry may override it (its own
+    // `captured` size below then reflects that shot's viewport).
     viewport: VIEWPORT,
     deviceScaleFactor: SCALE,
     resizeWidth: RESIZE_W || null,
     shots: [],
+  }
+  // ONLY (dev iteration): merge into the existing manifest — the shots we are
+  // not recapturing keep their entries (each carries its own capturedAt /
+  // frontendCommit / baseUrl, so a merged file stays honest about which run
+  // each bitmap came from).
+  if (ONLY.length) {
+    try {
+      const prev = JSON.parse(readFileSync(path.join(OUT, '_manifest.json'), 'utf8'))
+      if (Array.isArray(prev.shots)) {
+        manifest.shots = prev.shots.filter((s) => !ONLY.includes(s.name))
+      }
+    } catch {
+      // No readable manifest = fresh output dir; start from scratch.
+    }
   }
 
   const wanted = ONLY.length ? SHOTS.filter((s) => ONLY.includes(s.name)) : SHOTS
@@ -560,8 +606,13 @@ async function main() {
   }
 
   for (const shot of wanted) {
+    // Shots are captured at the run's default viewport unless the entry asks
+    // for its own (admin-ontology needs a taller frame: the admin shell
+    // scrolls an inner container, so a page taller than the viewport simply
+    // cannot be captured whole — see the entry's comment).
+    const vp = shot.viewport ?? VIEWPORT
     const ctx = await browser.newContext({
-      viewport: VIEWPORT,
+      viewport: vp,
       deviceScaleFactor: SCALE,
       locale: 'zh-CN',
       colorScheme: 'light',
@@ -590,13 +641,13 @@ async function main() {
     await page.waitForTimeout(shot.settle ?? 450)
 
     const file = path.join(OUT, `${shot.name}.png`)
-    await page.screenshot({ path: file, fullPage: !!shot.fullPage })
+    await page.screenshot({ path: file })
     // postshot runs after the pixels exist: cleanup that must not be visible
     // in the image (e.g. discarding the session a live-run shot created), so
     // re-runs start from the same state the seed left behind.
     if (shot.postshot) await shot.postshot(page)
     const beforeBytes = statSync(file).size
-    const captured = { width: VIEWPORT.width * SCALE, height: VIEWPORT.height * SCALE }
+    const captured = { width: vp.width * SCALE, height: vp.height * SCALE }
     let size = captured
     if (RESIZE_W) {
       size = (await resizeShot(page, file, RESIZE_W)) || captured
@@ -605,6 +656,10 @@ async function main() {
     manifest.shots.push({
       name: shot.name,
       file: `${shot.name}.png`,
+      // Per-shot provenance: merged manifests mix runs, the top level can't.
+      capturedAt: new Date().toISOString(),
+      frontendCommit: manifest.frontendCommit,
+      baseUrl: BASE,
       captured: { width: captured.width, height: captured.height },
       width: size.width,
       height: size.height,
@@ -618,6 +673,12 @@ async function main() {
   }
 
   await browser.close()
+  // 归位:注册表顺序就是这份清单的顺序;合并进来的旧条目若有已不在注册表
+  // 里的名字,排在最后(stable sort 保住它们的相对次序)。
+  const order = new Map(SHOTS.map((s, i) => [s.name, i]))
+  manifest.shots.sort(
+    (a, b) => (order.get(a.name) ?? 1e9) - (order.get(b.name) ?? 1e9),
+  )
   writeFileSync(
     path.join(OUT, '_manifest.json'),
     JSON.stringify(manifest, null, 2) + '\n',

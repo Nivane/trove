@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-10-05T14:54:49.000Z",
-  "frontendCommit": "a6a7c60",
-  "baseUrl": "http://localhost:5174",
+  "generatedAt": "2026-10-12T11:11:23.130Z",
+  "frontendCommit": "4ef7ee9",
+  "baseUrl": "http://localhost:5173",
   "viewport": {
     "width": 1440,
     "height": 900
@@ -12,6 +12,9 @@
     {
       "name": "user-login",
       "file": "user-login.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -23,6 +26,9 @@
     {
       "name": "user-chat-empty",
       "file": "user-chat-empty.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -34,6 +40,9 @@
     {
       "name": "user-topic-select",
       "file": "user-topic-select.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -45,6 +54,9 @@
     {
       "name": "user-chat-answer",
       "file": "user-chat-answer.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -56,6 +68,9 @@
     {
       "name": "user-chat-chart",
       "file": "user-chat-chart.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -67,6 +82,9 @@
     {
       "name": "user-chat-evidence",
       "file": "user-chat-evidence.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -78,6 +96,9 @@
     {
       "name": "user-chat-analysis",
       "file": "user-chat-analysis.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -89,6 +110,9 @@
     {
       "name": "user-chat-attribution",
       "file": "user-chat-attribution.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -100,6 +124,9 @@
     {
       "name": "user-chat-feedback",
       "file": "user-chat-feedback.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -111,6 +138,9 @@
     {
       "name": "user-sessions-search",
       "file": "user-sessions-search.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -122,6 +152,9 @@
     {
       "name": "user-session-menu",
       "file": "user-session-menu.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -133,6 +166,9 @@
     {
       "name": "admin-overview",
       "file": "admin-overview.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -144,6 +180,9 @@
     {
       "name": "admin-todos",
       "file": "admin-todos.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -155,6 +194,9 @@
     {
       "name": "admin-datasources",
       "file": "admin-datasources.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -166,6 +208,9 @@
     {
       "name": "admin-ds-create",
       "file": "admin-ds-create.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -177,6 +222,9 @@
     {
       "name": "admin-kb-pending",
       "file": "admin-kb-pending.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -188,6 +236,9 @@
     {
       "name": "admin-kb-assets",
       "file": "admin-kb-assets.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -199,6 +250,9 @@
     {
       "name": "admin-semantic",
       "file": "admin-semantic.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -210,6 +264,9 @@
     {
       "name": "admin-semantic-detail",
       "file": "admin-semantic-detail.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -221,6 +278,9 @@
     {
       "name": "admin-semantic-draft",
       "file": "admin-semantic-draft.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -230,8 +290,25 @@
       "bytes": 400619
     },
     {
+      "name": "admin-ontology",
+      "file": "admin-ontology.png",
+      "capturedAt": "2026-10-12T11:11:26.018Z",
+      "frontendCommit": "4ef7ee9",
+      "baseUrl": "http://localhost:5173",
+      "captured": {
+        "width": 2880,
+        "height": 2400
+      },
+      "width": 2880,
+      "height": 2400,
+      "bytes": 373135
+    },
+    {
       "name": "admin-jobs",
       "file": "admin-jobs.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -243,6 +320,9 @@
     {
       "name": "admin-jobs-history",
       "file": "admin-jobs-history.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -254,6 +334,9 @@
     {
       "name": "admin-subs",
       "file": "admin-subs.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -265,6 +348,9 @@
     {
       "name": "admin-decisions",
       "file": "admin-decisions.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -276,6 +362,9 @@
     {
       "name": "admin-actions",
       "file": "admin-actions.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -287,6 +376,9 @@
     {
       "name": "admin-verdict-history",
       "file": "admin-verdict-history.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -298,6 +390,9 @@
     {
       "name": "admin-skills-table",
       "file": "admin-skills-table.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -309,6 +404,9 @@
     {
       "name": "admin-skills",
       "file": "admin-skills.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -320,6 +418,9 @@
     {
       "name": "admin-users",
       "file": "admin-users.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -331,6 +432,9 @@
     {
       "name": "admin-user-drawer",
       "file": "admin-user-drawer.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -342,6 +446,9 @@
     {
       "name": "admin-audit",
       "file": "admin-audit.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -353,6 +460,9 @@
     {
       "name": "admin-settings",
       "file": "admin-settings.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -364,6 +474,9 @@
     {
       "name": "admin-model",
       "file": "admin-model.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
@@ -375,6 +488,9 @@
     {
       "name": "admin-ops",
       "file": "admin-ops.png",
+      "capturedAt": "2026-10-05T14:54:49.000Z",
+      "frontendCommit": "a6a7c60",
+      "baseUrl": "http://localhost:5174",
       "captured": {
         "width": 2880,
         "height": 1800
