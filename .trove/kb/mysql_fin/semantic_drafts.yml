@@ -209,3 +209,17 @@ drafts:
   note: refuse:1994 年发放了多少笔贷款?
   status: pending
   created_at: '2026-09-04T06:15:59+00:00'
+- id: 0670c9e0a6c9
+  kind: entity
+  action: upsert
+  name: account
+  payload:
+    display_name: 银行账户
+    natural_keys:
+    - account_id
+    aliases:
+    - 账户
+    - 账号
+  note: 本体声明：对象 银行账户（显示名 · 自然键 · 别名）
+  status: pending
+  created_at: '2026-10-12T10:56:18+00:00'
