@@ -957,6 +957,7 @@ semantic_model:
     - client_id
     to_columns:
     - client_id
+    display_name: 归属于
     cardinality: 1:N
   - name: disp_to_account
     from: disp

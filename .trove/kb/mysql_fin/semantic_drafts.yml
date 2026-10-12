@@ -379,5 +379,5 @@ drafts:
     - client_id
     display_name: 归属于
   note: 本体声明：链接 账户支配关系 → 客户（归属于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:03:27+00:00'
