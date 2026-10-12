@@ -527,3 +527,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-2ab4
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 支付订单（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T11:00:33+00:00'
+  base_digest: sha256:0a0e0e01c31a9de8229ee84aafd689dac7535d1ba33a1f0d076a1f6127f15a80
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: order
+  payloads:
+  - kind: entity
+    action: upsert
+    name: order
+    payload:
+      display_name: 支付订单
+      natural_keys:
+      - order_id
+      aliases:
+      - 付款指令
+      - 转账指令
+  draft_id: 777b9c3875d3
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - order
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: order
+      action: upsert
+      before: null
+      after:
+        display_name: 支付订单
+        natural_keys:
+        - order_id
+        aliases:
+        - 付款指令
+        - 转账指令
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 付款指令 · 转账指令
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 支付订单
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: order_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin
