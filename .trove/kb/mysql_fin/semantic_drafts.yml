@@ -366,3 +366,18 @@ drafts:
   note: 本体声明：链接 客户 → 地区（居住于）
   status: applied
   created_at: '2026-10-12T11:02:50+00:00'
+- id: 607f3e770dbb
+  kind: relationship
+  action: upsert
+  name: disp_to_client
+  payload:
+    from: disp
+    to: client
+    from_columns:
+    - client_id
+    to_columns:
+    - client_id
+    display_name: 归属于
+  note: 本体声明：链接 账户支配关系 → 客户（归属于）
+  status: pending
+  created_at: '2026-10-12T11:03:27+00:00'
