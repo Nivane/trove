@@ -381,3 +381,18 @@ drafts:
   note: 本体声明：链接 账户支配关系 → 客户（归属于）
   status: applied
   created_at: '2026-10-12T11:03:27+00:00'
+- id: d60cc925c100
+  kind: relationship
+  action: upsert
+  name: disp_to_account
+  payload:
+    from: disp
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    display_name: 作用于
+  note: 本体声明：链接 账户支配关系 → 银行账户（作用于）
+  status: pending
+  created_at: '2026-10-12T11:04:04+00:00'
