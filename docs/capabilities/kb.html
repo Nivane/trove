@@ -424,6 +424,23 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L2221">service.py:2221 <span class="ref-line">reject_lesson</span></a>
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-kb-pending.png" alt="管理端待审批队列（KB · financial）：顶部 KPI 待审批 6（教训 2 · 示例 4）与 tab 行；下面每条待审项带来源、票数、置信度与说明，各配「确认 / 编辑后确认 / 拒绝」三个按钮">
+        <span class="pin" style="--x:27.2%;--y:25.3%">1</span>
+        <span class="pin" style="--x:22.7%;--y:33.2%">2</span>
+        <span class="pin" style="--x:49.1%;--y:50.1%">3</span>
+        <span class="pin" style="--x:22.9%;--y:61.5%">4</span>
+      </div>
+      <figcaption>图 2 · 管理端的待审批队列（KB · financial）：两档门禁里「异步确认」那一档落到人眼前的样子——自动回来的内容在这里逐条等一次确认。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>待审批 KPI</strong>——数字即缺口：6 条待审，拆开是教训 2 · 示例 4。待审的不是「脏数据」，是还没人背书的内容。</li>
+        <li><span class="n">2</span><strong>tab 行的数字是过滤器</strong>——待审批 / 资产 / 术语与指标 / 示例 / 教训 / 规则，每一类各自计数；点哪个数字就按哪一类过滤。</li>
+        <li><span class="n">3</span><strong>每条待审项带着它是怎么来的</strong>——来源（用户投票 / 自动捕获）、时间、票数 ▲1 · ▼0 与置信度（这条 0% 照实显示，不粉饰），下面一行是它的说明；这条教训卡还写明确认后的去向：进 Hint Bank 检索、注入后续生成的上下文。</li>
+        <li><span class="n">4</span><strong>逐条处置：确认 / 编辑后确认 / 拒绝</strong>——确认写入认证块（批准人 / 时间）并进入检索；「编辑后确认」是让确认人先改再背书，而不是先背书再指望有人回来修。</li>
+      </ol>
+    </figure>
+
     <h2 id="governance">资产治理：这条 SQL 是谁确认的</h2>
 
     <p>

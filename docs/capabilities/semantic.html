@@ -107,6 +107,23 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L221">models.py:221 <span class="ref-line">cardinality</span></a>
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台（financial）：顶栏数据源切换与「重新检测漂移 / 新建资产」；摘要行 86 指标 · 8 数据集 · 55 字段 · 0 待审批 · 漂移检测 刚刚；KPI 行；问题卡里「校验问题」与「漂移」两节都为空，汇总一行「无校验问题 · 未发现漂移」；底部 tab 行与搜索框">
+        <span class="pin" style="--x:73.5%;--y:13.0%">1</span>
+        <span class="pin" style="--x:30.0%;--y:22.4%">2</span>
+        <span class="pin" style="--x:58.5%;--y:60.8%">3</span>
+        <span class="pin" style="--x:22.7%;--y:89.6%">4</span>
+      </div>
+      <figcaption>图 2 · 语义模型工作台（<code>financial</code>）：可答边界在这里维护——摘要、问题卡与四类构件的入口同屏。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>顶栏：数据源切换 + 动作</strong>——语义模型按源分开（<code>financial · default</code> 与 <code>demo</code> 两枚胶囊），切换即换整份模型；「重新检测漂移」手动跑一次库与模型的对照，「新建资产」是四类构件的统一入口。</li>
+        <li><span class="n">2</span><strong>摘要行</strong>——86 指标 · 8 数据集 · 55 字段 · 0 待审批，后面缀着「最近提交 2 分钟前 · 漂移检测 刚刚」：这是一句 freshness 声明，漂移读数过期时它自己会说。</li>
+        <li><span class="n">3</span><strong>问题卡：校验问题 + 漂移</strong>——两节各自列问题；都为空时卡片底部汇总一行「无校验问题 · 未发现漂移」，而不是渲染两张空表。漂移 = 物理库与模型声明的对照结果。</li>
+        <li><span class="n">4</span><strong>tab 行 + 搜索</strong>——指标 / 数据集 / 字段 / 待审批是四类条目的入口（本图 86 条指标选中中）；改动一律先落 <code>pending</code> 草稿，经审批流应用到 <code>semantics.yml</code>。</li>
+      </ol>
+    </figure>
+
     <h2 id="topics">主题域：把「可答范围」声明成域</h2>
 
     <p>

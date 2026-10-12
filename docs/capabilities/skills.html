@@ -353,6 +353,23 @@ flowchart TB
       如果草案能进提示，那「AI 自己写方法论给自己看」就成了一个自我强化的回路。
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-skills.png" alt="管理端方法论技能页：左侧列表三列（名称 / 描述 / 生效节点），四条内置技能分别绑定 query_sketch、analyze_error、gen_sql 或标「(全局)」；右侧预览抽屉打开着 answer-structure-zh 的正文原文">
+        <span class="pin" style="--x:27.4%;--y:38.7%">1</span>
+        <span class="pin" style="--x:56.6%;--y:75.6%">2</span>
+        <span class="pin" style="--x:56.6%;--y:91.4%">3</span>
+        <span class="pin" style="--x:82.0%;--y:16.0%">4</span>
+      </div>
+      <figcaption>图 2 · 管理端方法论技能页：列表 + 预览抽屉——确认门禁另一头的样子（待确认的草案不进提示、也不进 <code>load_skill</code> 的可取范围，所以这一屏是「已经生效」的资产）。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>列表三列：名称 / 描述 / 生效节点</strong>——「内置」徽标标的是来源（代码技能，随仓库走）；组织技能排在同一张表里，各自带状态徽标（pending / confirmed / rejected / disabled）与相应动作。</li>
+        <li><span class="n">2</span><strong>生效节点</strong>——技能绑定到管线节点：<code>plan_query → query_sketch</code>、<code>diagnose_failure → analyze_error</code>、<code>sql_construction → gen_sql</code>。required 档注入对应节点的系统提示，available 档只被广告、由 <code>load_skill</code> 按需取正文。</li>
+        <li><span class="n">3</span><strong>「(全局)」</strong>——没有 <code>triggers.node</code> 的技能对所有节点生效（图中 <code>answer-structure-zh</code> 就是一条中文回答结构约定，作用于整条生成链）。</li>
+        <li><span class="n">4</span><strong>预览抽屉</strong>——打开看到的是正文原文：模型读到的就是这段文字，改一句话就是改一次行为；正文的每次修改自动 git 提交，可回滚。</li>
+      </ol>
+    </figure>
+
     <h2 id="disable">颗粒停用：停一个资产，不是停一层</h2>
 
     <p>
