@@ -307,3 +307,17 @@ drafts:
   note: 本体声明：对象 支付订单（显示名 · 自然键 · 别名）
   status: applied
   created_at: '2026-10-12T11:00:13+00:00'
+- id: c1f8d7b23ffe
+  kind: entity
+  action: upsert
+  name: trans
+  payload:
+    display_name: 交易
+    natural_keys:
+    - trans_id
+    aliases:
+    - 交易流水
+    - 转账记录
+  note: 本体声明：对象 交易（显示名 · 自然键 · 别名）
+  status: pending
+  created_at: '2026-10-12T11:00:54+00:00'
