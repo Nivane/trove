@@ -56,7 +56,7 @@ def _link_display_name(r: Any) -> str:
     """边的展示名:声明优先;缺省回退列名连接串(设计 §4.2)。
 
     回退串 = ``from_columns → to_columns``(列名 ``", "`` 连接;无列 →
-    数据集名)—— 与前端 ``ontologyChart.columnFallback`` 同一格式:「这条边
+    数据集名)—— 与前端 ``ontologyLayout.linkFallback`` 同一格式:「这条边
     是哪两根键连的」在对象图页与任何后续消费面里必须是同一句话。
     """
     if r.display_name:

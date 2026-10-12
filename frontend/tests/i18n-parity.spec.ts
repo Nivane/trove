@@ -18,6 +18,17 @@ import { messages } from '../src/i18n'
 // URL under the jsdom environment, so it cannot be used here).
 const SOURCE = resolve(process.cwd(), 'src/i18n.ts')
 
+/**
+ * Source as the scanner wants it: `\r\n` folded to `\n`. The repo has no
+ * .gitattributes and autocrlf=true, so a Windows/CRLF checkout would hand the
+ * scanner `\r\n` line ends and every `\n`-anchored pattern here would silently
+ * match nothing — the spec would go red on the checkout, not on the code.
+ * Folding changes no key content, so parity is still checked exactly.
+ */
+function readSource(): string {
+  return readFileSync(SOURCE, 'utf8').replace(/\r\n/g, '\n')
+}
+
 /** Top-level keys of one language block, in file order, duplicates kept. */
 function scanBlockKeys(source: string, block: 'zh' | 'en'): string[] {
   const start = source.indexOf(`\n  ${block}: {`)
@@ -29,8 +40,8 @@ function scanBlockKeys(source: string, block: 'zh' | 'en'): string[] {
   return [...body.matchAll(/^ {4}([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1])
 }
 
-const zhScanned = scanBlockKeys(readFileSync(SOURCE, 'utf8'), 'zh')
-const enScanned = scanBlockKeys(readFileSync(SOURCE, 'utf8'), 'en')
+const zhScanned = scanBlockKeys(readSource(), 'zh')
+const enScanned = scanBlockKeys(readSource(), 'en')
 const zhRuntime = Object.keys(messages.zh)
 const enRuntime = Object.keys(messages.en)
 

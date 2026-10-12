@@ -1084,7 +1084,7 @@ export interface GovernanceDiffValidation {
 
 // ── 本体投影(GET /v1/admin/semantic/{name}/object-graph)─────────────────────
 // 形状 = design §4.5 的投影 DTO(语义模型的只读投影,非第二建模面)。
-// objects/links 两键是形状守卫的判据(缺键 → 页面走错误态,见 utils/ontologyChart)。
+// objects/links 两键是形状守卫的判据(缺键 → 页面走错误态,见 utils/ontologyLayout)。
 
 /** 本体图的一个对象(数据集投影)。declared = 已声明实体(显示名/自然键/别名)。 */
 export interface ObjectNodeInfo {

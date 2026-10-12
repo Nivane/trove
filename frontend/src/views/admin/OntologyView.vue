@@ -29,7 +29,7 @@ import {
   graphScaleHintNeeded,
   isObjectGraph,
   type OntologySelection,
-} from '../../utils/ontologyChart'
+} from '../../utils/ontologyLayout'
 
 const ui = useUiStore()
 const router = useRouter()
@@ -127,6 +127,16 @@ function onSelect(sel: OntologySelection) {
   })
 }
 
+/** 图/侧栏的清空出口（点空白、Esc）：两处共用一条，绝不各自为政。 */
+function onClear() {
+  selection.value = null
+}
+
+/** 层级卡的层级链文案（levels 缺席 = 未声明层级，收敛为一句话）。 */
+function hierarchyName(h: { display_name?: string | null; name: string }): string {
+  return (h.display_name ?? '').trim() || h.name
+}
+
 function goSemantic() {
   void router.push({ name: 'admin-semantic', query: values.ds ? { ds: values.ds } : {} })
 }
@@ -213,7 +223,7 @@ watch(
       </div>
 
       <div v-if="scaleHint" class="onto-scale-hint" role="status">
-        {{ t('ontologyScaleHint', ui.lang) }}
+        {{ t('ontologyScaleHint', ui.lang, objects.length) }}
       </div>
 
       <div class="onto-main">
@@ -222,6 +232,7 @@ watch(
           :links="links"
           :selected="selection"
           @select="onSelect"
+          @clear="onClear"
         />
         <ObjectPanel
           ref="panelEl"
@@ -230,8 +241,33 @@ watch(
           :selection="selection"
           :objects="objects"
           :links="links"
+          @select="onSelect"
+          @clear="onClear"
         />
       </div>
+
+      <!-- 层级卡：投影的第三个面（对象 / 链接之外），空态如实说「没有声明」 -->
+      <section class="onto-hier">
+        <div class="onto-hier-head">
+          <h3>{{ t('ontologyKpiHierarchies', ui.lang) }}</h3>
+          <span class="onto-hier-count">{{ hierarchies.length }}</span>
+        </div>
+        <p v-if="!hierarchies.length" class="onto-hier-empty">
+          {{ t('ontologyHierarchyEmpty', ui.lang) }}
+        </p>
+        <div v-else class="onto-hier-rows">
+          <div v-for="h in hierarchies" :key="h.name" class="onto-hier-row">
+            <span class="onto-hier-name">{{ hierarchyName(h) }}</span>
+            <span class="onto-hier-levels">
+              <template v-for="(lv, i) in h.levels ?? []" :key="lv">
+                <span v-if="i" class="onto-hier-sep">›</span>{{ lv }}
+              </template>
+              <span v-if="!(h.levels ?? []).length" class="onto-dash">—</span>
+            </span>
+            <span v-if="h.dataset" class="onto-hier-chip">{{ h.dataset }}</span>
+          </div>
+        </div>
+      </section>
     </template>
   </div>
 </template>
@@ -348,5 +384,86 @@ watch(
 .onto-panel-col {
   position: sticky;
   top: var(--sp-3);
+}
+
+/* ── 层级卡 ── */
+.onto-hier {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+}
+
+.onto-hier-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.onto-hier-head h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+
+.onto-hier-count {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--surface-muted);
+  color: var(--text-on-muted);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.onto-hier-empty {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+}
+
+.onto-hier-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.onto-hier-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-xs);
+}
+
+.onto-hier-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.onto-hier-levels {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.onto-hier-sep {
+  padding: 0 2px;
+  color: var(--text-secondary);
+}
+
+.onto-hier-chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: var(--text-on-muted);
+}
+
+.onto-dash {
+  color: var(--text-secondary);
 }
 </style>

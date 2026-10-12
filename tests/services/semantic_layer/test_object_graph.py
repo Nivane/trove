@@ -164,7 +164,7 @@ def test_link_display_name_declared_wins():
 
 
 def test_link_display_name_fallback_is_column_arrow():
-    """与前端 ``ontologyChart.columnFallback`` 逐字节同款:``a, b → c, d``。"""
+    """与前端 ``ontologyLayout.linkFallback`` 逐字节同款:``a, b → c, d``。"""
     graph = build_object_graph(_model())
     by_name = {l["name"]: l for l in graph["links"]}
     assert by_name["customer_to_loan"]["display_name"] == "loan_id → loan_id"
