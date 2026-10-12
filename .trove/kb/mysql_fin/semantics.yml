@@ -121,6 +121,13 @@ semantic_model:
           expression: issued
       datatype: Date
       semantic_role: time
+    entity:
+      display_name: 银行卡
+      natural_keys:
+      - card_id
+      aliases:
+      - 卡
+      - 卡片
   - name: client
     source: financial.client
     primary_key:

@@ -87,3 +87,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-f4a9
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 银行卡（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T10:57:24+00:00'
+  base_digest: sha256:8a9aaee5801157888a9102a2d6e9ac8c8cf0b32ca0a6700b39ddcd5f9a3bef3f
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: card
+  payloads:
+  - kind: entity
+    action: upsert
+    name: card
+    payload:
+      display_name: 银行卡
+      natural_keys:
+      - card_id
+      aliases:
+      - 卡
+      - 卡片
+  draft_id: 07101ee5ba54
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - card
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: card
+      action: upsert
+      before: null
+      after:
+        display_name: 银行卡
+        natural_keys:
+        - card_id
+        aliases:
+        - 卡
+        - 卡片
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 卡 · 卡片
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 银行卡
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: card_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin
