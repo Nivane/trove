@@ -223,3 +223,17 @@ drafts:
   note: 本体声明：对象 银行账户（显示名 · 自然键 · 别名）
   status: applied
   created_at: '2026-10-12T10:56:18+00:00'
+- id: 07101ee5ba54
+  kind: entity
+  action: upsert
+  name: card
+  payload:
+    display_name: 银行卡
+    natural_keys:
+    - card_id
+    aliases:
+    - 卡
+    - 卡片
+  note: 本体声明：对象 银行卡（显示名 · 自然键 · 别名）
+  status: pending
+  created_at: '2026-10-12T10:57:07+00:00'
