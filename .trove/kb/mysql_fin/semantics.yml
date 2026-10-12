@@ -1396,4 +1396,11 @@ semantic_model:
       synonyms:
       - 2020 年发放了多少笔贷款
     description: 统计2020年发放的贷款总笔数。
+  hierarchies:
+  - name: region_to_district
+    dataset: district
+    display_name: 地区层级
+    levels:
+    - A3
+    - A2
 version: 0.2.0.dev0
