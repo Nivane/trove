@@ -186,6 +186,13 @@ semantic_model:
       datatype: Integer
       semantic_role: dimension
       description: client age computed from birth date
+    entity:
+      display_name: 客户
+      natural_keys:
+      - client_id
+      aliases:
+      - 顾客
+      - 开户人
   - name: disp
     source: financial.disp
     primary_key:
