@@ -411,3 +411,18 @@ drafts:
   note: 本体声明：链接 贷款 → 银行账户（发放至）
   status: applied
   created_at: '2026-10-12T11:04:41+00:00'
+- id: e10e1fc263ac
+  kind: relationship
+  action: upsert
+  name: order_to_account
+  payload:
+    from: order
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    display_name: 发起于
+  note: 本体声明：链接 支付订单 → 银行账户（发起于）
+  status: pending
+  created_at: '2026-10-12T11:05:20+00:00'
