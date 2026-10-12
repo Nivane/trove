@@ -351,3 +351,18 @@ drafts:
   note: 本体声明：链接 银行卡 → 账户支配关系（绑定于）
   status: applied
   created_at: '2026-10-12T11:02:12+00:00'
+- id: 39bafc92a43a
+  kind: relationship
+  action: upsert
+  name: client_to_district
+  payload:
+    from: client
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    display_name: 居住于
+  note: 本体声明：链接 客户 → 地区（居住于）
+  status: pending
+  created_at: '2026-10-12T11:02:50+00:00'
