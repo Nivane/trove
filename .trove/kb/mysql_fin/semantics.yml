@@ -594,6 +594,13 @@ semantic_model:
           - running and in debt
           - running contract, client in debt
       description: Repayment status code of the loan.
+    entity:
+      display_name: 贷款
+      natural_keys:
+      - loan_id
+      aliases:
+      - 借款
+      - 贷款单
   - name: order
     source: financial.order
     primary_key:

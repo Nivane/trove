@@ -291,5 +291,5 @@ drafts:
     - 借款
     - 贷款单
   note: 本体声明：对象 贷款（显示名 · 自然键 · 别名）
-  status: pending
+  status: applied
   created_at: '2026-10-12T10:59:35+00:00'

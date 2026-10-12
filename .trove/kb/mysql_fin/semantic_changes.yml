@@ -439,3 +439,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-bbc2
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 贷款（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T10:59:54+00:00'
+  base_digest: sha256:aac4dc0f74e6b19cd019c9d8e47baa4d958cdbfd5474b6e17e7e83c8117c931d
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: loan
+  payloads:
+  - kind: entity
+    action: upsert
+    name: loan
+    payload:
+      display_name: 贷款
+      natural_keys:
+      - loan_id
+      aliases:
+      - 借款
+      - 贷款单
+  draft_id: a5bd31f388f3
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - loan
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: loan
+      action: upsert
+      before: null
+      after:
+        display_name: 贷款
+        natural_keys:
+        - loan_id
+        aliases:
+        - 借款
+        - 贷款单
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 借款 · 贷款单
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 贷款
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: loan_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin
