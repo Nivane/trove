@@ -321,3 +321,18 @@ drafts:
   note: 本体声明：对象 交易（显示名 · 自然键 · 别名）
   status: applied
   created_at: '2026-10-12T11:00:54+00:00'
+- id: c381019064f5
+  kind: relationship
+  action: upsert
+  name: account_to_district
+  payload:
+    from: account
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    display_name: 位于
+  note: 本体声明：链接 银行账户 → 地区（位于）
+  status: pending
+  created_at: '2026-10-12T11:01:32+00:00'
