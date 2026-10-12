@@ -975,6 +975,7 @@ semantic_model:
     - account_id
     to_columns:
     - account_id
+    display_name: 发放至
     cardinality: 1:N
   - name: order_to_account
     from: order

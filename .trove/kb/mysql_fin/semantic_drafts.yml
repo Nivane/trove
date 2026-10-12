@@ -409,5 +409,5 @@ drafts:
     - account_id
     display_name: 发放至
   note: 本体声明：链接 贷款 → 银行账户（发放至）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:04:41+00:00'

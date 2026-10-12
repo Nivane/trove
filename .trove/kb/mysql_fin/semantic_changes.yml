@@ -1263,3 +1263,115 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-9216
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：链接 贷款 → 银行账户（发放至）
+  author: admin
+  created_at: '2026-10-12T11:05:01+00:00'
+  base_digest: sha256:71d7270d18ed9e1e5aa636062207b73911e790af575b1a524f464cc1fa3d1da1
+  base_commit: ''
+  subjects:
+  - kind: relationship
+    name: loan_to_account
+  payloads:
+  - kind: relationship
+    action: upsert
+    name: loan_to_account
+    payload:
+      from: loan
+      to: account
+      from_columns:
+      - account_id
+      to_columns:
+      - account_id
+      display_name: 发放至
+  draft_id: 5e66471793a6
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified: []
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified:
+        - loan_to_account
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: relationship
+      name: loan_to_account
+      action: upsert
+      before:
+        name: loan_to_account
+        from: loan
+        to: account
+        from_columns:
+        - account_id
+        to_columns:
+        - account_id
+        cardinality: 1:N
+      after:
+        name: loan_to_account
+        from: loan
+        to: account
+        from_columns:
+        - account_id
+        to_columns:
+        - account_id
+        cardinality: 1:N
+        display_name: 发放至
+      fields:
+      - f: 基数 cardinality
+        before: 1:N
+        after: 1:N
+        changed: false
+      - f: 显示名 display_name
+        before: ''
+        after: 发放至
+        changed: true
+      - f: 起点 from
+        before: loan
+        after: loan
+        changed: false
+      - f: 起点列 from_columns
+        before: account_id
+        after: account_id
+        changed: false
+      - f: 名称 name
+        before: loan_to_account
+        after: loan_to_account
+        changed: false
+      - f: 终点 to
+        before: account
+        after: account
+        changed: false
+      - f: 终点列 to_columns
+        before: account_id
+        after: account_id
+        changed: false
+      error: null
+  reject_reason: ''
+  resolved_by: admin
