@@ -50,7 +50,15 @@ def kb_item_text(kind: str, payload: dict) -> str:
             bits.append(f"maps to {payload['mapping']}")
         return " ".join(str(b) for b in bits if b)
     if kind == "table":
-        return fts_item_text("table", payload) or json.dumps(payload, ensure_ascii=False)
+        # ``fts_item_text`` returns "" for table by design, so this JSON dump
+        # is the *only* text a table entry ever gets. ``default=str`` is
+        # load-bearing: YAML auto-parses unquoted dates (probe output like
+        # ``stats.min: 1993-01-01``) into ``datetime.date``, and plain
+        # ``json.dumps`` then raises — one date anywhere in one entry aborted
+        # the whole file's indexing (``index_file`` throws before
+        # ``delete_source``, so the file's dense docs silently stayed stale).
+        return fts_item_text("table", payload) or json.dumps(
+            payload, ensure_ascii=False, default=str)
     if kind == "rule":
         return str(payload.get("rule") or payload.get("text") or "")
     return ""
