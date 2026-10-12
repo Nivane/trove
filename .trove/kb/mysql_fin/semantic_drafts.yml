@@ -364,5 +364,5 @@ drafts:
     - district_id
     display_name: 居住于
   note: 本体声明：链接 客户 → 地区（居住于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:02:50+00:00'

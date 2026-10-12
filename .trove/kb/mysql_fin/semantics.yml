@@ -948,6 +948,7 @@ semantic_model:
     - district_id
     to_columns:
     - district_id
+    display_name: 居住于
     cardinality: 1:N
   - name: disp_to_client
     from: disp
