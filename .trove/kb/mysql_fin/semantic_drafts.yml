@@ -426,3 +426,18 @@ drafts:
   note: 本体声明：链接 支付订单 → 银行账户（发起于）
   status: applied
   created_at: '2026-10-12T11:05:20+00:00'
+- id: cc8c20a9a820
+  kind: relationship
+  action: upsert
+  name: trans_to_account
+  payload:
+    from: trans
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    display_name: 发生于
+  note: 本体声明：链接 交易 → 银行账户（发生于）
+  status: pending
+  created_at: '2026-10-12T11:05:57+00:00'
