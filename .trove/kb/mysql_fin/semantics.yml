@@ -62,6 +62,13 @@ semantic_model:
           expression: date
       datatype: Date
       semantic_role: time
+    entity:
+      display_name: 银行账户
+      natural_keys:
+      - account_id
+      aliases:
+      - 账户
+      - 账号
   - name: card
     source: financial.card
     primary_key:

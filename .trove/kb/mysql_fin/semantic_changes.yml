@@ -1,0 +1,89 @@
+changes:
+- id: chg-20261012-02f5
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 银行账户（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T10:56:48+00:00'
+  base_digest: sha256:3313c32c220d1dcefba35ac4f782be1902137411896f82a829f30173ef205100
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: account
+  payloads:
+  - kind: entity
+    action: upsert
+    name: account
+    payload:
+      display_name: 银行账户
+      natural_keys:
+      - account_id
+      aliases:
+      - 账户
+      - 账号
+  draft_id: 0670c9e0a6c9
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - account
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: account
+      action: upsert
+      before: null
+      after:
+        display_name: 银行账户
+        natural_keys:
+        - account_id
+        aliases:
+        - 账户
+        - 账号
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 账户 · 账号
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 银行账户
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: account_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin
