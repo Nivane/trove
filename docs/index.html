@@ -263,7 +263,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <a class="card" id="data" href="capabilities/data.html">
         <span class="card-kicker">能力 · 数据侧</span>
         <span class="card-title">数据能力总览</span>
-        <span class="card-desc">语义层、知识库、检索、多数据源、内部存储与评测基建。</span>
+        <span class="card-desc">语义层、本体、知识库、检索、多数据源、内部存储与评测基建。</span>
       </a>
       <a class="card" id="agent" href="capabilities/agent.html">
         <span class="card-kicker">能力 · Agent 侧</span>
@@ -321,6 +321,14 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       </div>
     </div>
 
+    <p style="color:var(--text-secondary);font-size:14.5px;margin-top:18px">
+      而这份语义模型不只是「指标 + 维度」的清单：数据集可以声明成<b>对象</b>（业务名、自然键、别名），
+      表间连接可以声明成<b>关系</b>（业务名），维度链可以声明成<b>层级</b>（粗 → 细）——
+      声明一次，答案表头、拒绝出口、分析取哪一级、判定与行动通知都改说业务的词。
+      它没有自己的存储，就是 <code>semantics.yml</code> 里的三段声明：
+      见 <a href="capabilities/ontology.html">本体</a>。
+    </p>
+
     <div class="cap-where" style="margin-top:18px">
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1374">compiler.py:1374 <span class="ref-line">PartialCompile</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1483">compiler.py:1483 <span class="ref-line">is_hard_miss</span></a>
@@ -335,7 +343,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <span class="sec-label">边界 · 05</span>
       <h2>安全与可核对</h2>
       <p class="sec-intro">
-        问数系统要落地，安全边界不能是提示词里的一句请求。以下七条都在链路上生效——
+        问数系统要落地，安全边界不能是提示词里的一句请求。以下八条都在链路上生效——
         它们全部是代码，不是模型行为。
       </p>
     </div>
@@ -380,6 +388,11 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <td>人在环与审计</td>
             <td>SQL 执行前可交人过目，载荷无法识别时<b>默认拒绝</b>——这道门只在能读懂输入时才开。拒绝、字段改写、凭 scope 读原文三类各记一条审计（只记字段名与模式，从不记值）。</td>
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1903">agent/session.py:1903 <span class="ref-line">_audit_authz</span></a></td>
+          </tr>
+          <tr>
+            <td>语义模型单一写入口</td>
+            <td>草稿确认、自动门放行、变更合入都收敛到<strong>同一个写盘函数</strong>，且合入前先判：基准快照与主线现文件不符、载荷应用失败或有阻断级 lint，都在第一个字节落盘之前拒绝（主线零改动）。「自动批准」标记没有 HTTP 入口——客户端可控的参数会让审计标记可伪造。有一条 AST 守卫逐个文件钉住这条边界。</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L367">services/semantic_layer/changes.py:367 <span class="ref-line">_write_merge</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L614">api/routers/semantic.py:614 <span class="ref-line">merge_semantic_change</span></a></td>
           </tr>
         </tbody>
       </table>

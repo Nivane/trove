@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 语义层治理：语义模型工作台（指标 / 数据集 / 字段 / 待审批）、校验问题与漂移检测、表达式编辑器的校验→试跑→创建草稿、审批 diff 与落盘 semantics.yml。">
+<meta name="description" content="Trove 语义层治理：语义模型工作台（指标 / 数据集 / 字段 / 待审批）、校验问题与漂移检测、表达式编辑器的校验→试跑→创建草稿、审批 diff 与落盘 semantics.yml、以及成批改动的变更评审（隔离区 → 模型级 diff → 沙箱回放 → 影响面 → 合入）。">
 <title>语义层治理 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -30,7 +30,8 @@
       <p class="lede">
         语义模型（<code>semantics.yml</code>）是 Trove 生成答案的<strong>权威口径</strong>：
         指标怎么算、维度锚在哪个数据集，编译器就按它拼 SQL。
-        <code>/admin/semantic</code> 是它的工作台——所有改动<strong>先草稿、后审批</strong>，确认才写入文件。
+        <code>/admin/semantic</code> 是它的工作台——所有改动<strong>先草稿、后审批</strong>，确认才写入文件；
+        成批、需要留一份复核记录的改动走<a href="#changes">变更评审</a>。
       </p>
     </div>
 
@@ -125,6 +126,134 @@
       <a href="../ops/drift.html">漂移检测（运维）</a>与<a href="automation.html">治理中心</a>。
     </p>
 
+    <h2 id="changes">语义变更评审：隔离区 → 回放 → 影响面 → 合入</h2>
+
+    <p>
+      上面那条草稿路是「一次改一条、每条一次确认」。当一次改动涉及多条资产，
+      或者你需要一份能递出去的复核记录时，走<strong>变更评审</strong>。
+      一次变更从开出到合入，中间会为它算三样东西——<strong>它会改什么</strong>、
+      <strong>会不会把原本能跑的东西弄坏</strong>、<strong>还有谁依赖被改的东西</strong>——
+      三样都在合入<strong>之前</strong>给全，而不是合入之后再说。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>步</th><th>做什么</th><th>纪律</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>① 开单</strong></td>
+            <td>把改动作用到当前模型的一份内存副本上干跑一次；通过后把「改之前 / 改之后」两份快照写进数据源目录下的<strong>隔离区</strong>（<code>.staging/&lt;change_id&gt;/</code>）</td>
+            <td>隔离区被 git 忽略、<strong>不参与编译、不被检索</strong>——没被确认的改动在系统里不存在。开单对 <code>semantics.yml</code> 零字节修改（落盘的是快照与一条变更记录）</td>
+          </tr>
+          <tr>
+            <td><strong>② 看 diff</strong></td>
+            <td>模型级对比：按数据集 / 指标 / 关系 / 主题域 / 层级（外加展平的 <code>dataset.field</code>）逐节列出新增、删除、修改；修改逐字段给 before / after</td>
+            <td>合入那一刻把这份 diff <strong>冻结进记录</strong>——事后打开审计面板看到的是当时那份，不是重算出来的</td>
+          </tr>
+          <tr>
+            <td><strong>③ 跑回放</strong></td>
+            <td><strong>零 LLM、零查询的纯编译</strong>：把 KB 里一切以语义查询声明的东西（判定规则的主体、主题域）在改前与改后模型上各编译一遍</td>
+            <td>一条可回放的产物都没有时明说「<strong>不适用</strong>」，不冒充「无变化」；回放中途出错是「判不了」，也不冒充通过</td>
+          </tr>
+          <tr>
+            <td><strong>④ 看影响面</strong></td>
+            <td>谁引用了被改的资产：<strong>结构化引用</strong>（判定规则的指标 / 维度 / 过滤、主题域的数据集 / 指标声明）与<strong>词面提及</strong>（示例、教训的文本）</td>
+            <td>两类依据分开标注强度——「规则声明里引用了它」与「某条示例文本里出现过它」不是同一种把握</td>
+          </tr>
+          <tr>
+            <td><strong>⑤ 合入 / 驳回</strong></td>
+            <td>合入写盘并留一次提交；驳回必须填理由</td>
+            <td>无理由的驳回等于删记录</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>回放给出的结论每种都对应一句说得出的话：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>结论</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>regresses</code></td><td>改前编得过、改后编不过——这次改动弄坏了东西。高亮显示，但<strong>不硬阻断</strong>：修改语义模型本身就是正当的改动方向，判断留给人</td></tr>
+          <tr><td><code>improves</code></td><td>至少有一条从「编不过」变成「编得过」，且没有回归</td></tr>
+          <tr><td><code>neutral</code></td><td>其余情况：跑过了，两边一样</td></tr>
+          <tr><td><code>not_applicable</code></td><td>KB 里没有可回放的产物，这次没有可比的东西——原因原样带出</td></tr>
+          <tr><td><code>unknown</code></td><td>回放本身出错（模型解析失败、读不到产物……）——「判不了」，绝不渲染成通过</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">合入是唯一写入口</span>
+      <div>
+        <p>语义模型的每一次写盘——草稿确认、确定性门放行、变更合入——都收敛到<strong>同一个函数</strong>，
+        按同一条顺序执行：先取漂移警告（只记不拦）→ 快照与主线现文件不符就拒绝
+        （409，主线与隔离区<strong>零字节变化</strong>）→ payload 应用失败或有阻断级 lint 就拒绝（422）→ 全过了才写。
+        这些判定都在第一个字节落盘之前完成。</p>
+        <p>「阻断级」这个词有唯一定义：写前门禁与 git 提交门禁共用<strong>同一个判据</strong>，
+        两处不各自分级——不会出现「合入时说通过、提交时又被拦下」。</p>
+        <p>写盘本身是单文件原子替换，几份文件之间<strong>不是事务</strong>——恢复凭 git，已提交的主线是权威。
+        合入把模型、变更记录、草稿（如果有）放进<strong>一次提交</strong>：谁在什么时候合了什么，一条记录说得清。</p>
+        <p>「自动批准」标记没有 HTTP 入口——它只能由确定性门自己写。客户端可控的参数会让审计标记可伪造：
+        一条被洗成「自动门放行」的人工合入，事后没人分得出来。</p>
+      </div>
+    </div>
+
+    <p>
+      合入前的那道<strong>漂移 warn 门</strong>只做一件事：把这次变更碰到的资产与<strong>尚未处置</strong>的漂移主体求交集，
+      命中就随记录带一条警告。它<strong>只警告、不阻断</strong>（漂移什么时候处置是人的事），
+      而且只在合入前一刻查——开单时查到的是「当时」的漂移，合入前那一刻的才是要看的那份。
+      读不到漂移就说读不到（降级明示），不洗成「没有漂移」。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>动作</th><th>端点（前缀 <code>/v1</code>）</th><th>权限</th></tr></thead>
+        <tbody>
+          <tr><td>开单</td><td class="mono">POST /admin/semantic/{name}/changes → 201</td><td>admin</td></tr>
+          <tr><td>列表 / 详情</td><td class="mono">GET …/changes · GET …/changes/{id}</td><td>admin 或 analyst（只读角色能看不能动）</td></tr>
+          <tr><td>回放</td><td class="mono">POST …/changes/{id}/verify</td><td>admin</td></tr>
+          <tr><td>合入</td><td class="mono">POST …/changes/{id}/merge</td><td>admin</td></tr>
+          <tr><td>驳回</td><td class="mono">POST …/changes/{id}/reject（理由必填）</td><td>admin</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      失败分四档，语义不重合：<strong>400</strong> 确定性错误（payload 形状不对、驳回没写理由、变更不在可评审状态、快照已丢）；
+      <strong>404</strong> 数据源或变更不存在；<strong>409</strong> 基准快照与主线现文件不符——这条变更过期了，要重开；
+      <strong>422</strong> 应用失败或有阻断级 lint，意思是「改动本身不合规」，不是「系统出错了」。
+      变更的状态是 <code>open</code> → <code>merged</code> / <code>rejected</code>（状态机里另有两个保留值，当前没有写入者）。
+    </p>
+
+    <p>
+      评审面板在语义台的「变更」tab：抽屉里 diff、影响面、回放三节依次排开，
+      三个动作按钮是<strong>运行验证</strong>（随时可跑——纯编译、幂等、零成本）、<strong>合并</strong>与<strong>驳回</strong>
+      （非 open 状态禁用，驳回走确认框且理由必填）。<strong>开单目前没有前端入口</strong>，走上面那个 API。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/staging.py#L23">staging.py:23 <span class="ref-line">StagingArea</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L240">changes.py:240 <span class="ref-line">open</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L473">changes.py:473 <span class="ref-line">merge</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L367">changes.py:367 <span class="ref-line">_write_merge</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L280">issues.py:280 <span class="ref-line">blocking_issues</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/diff.py#L121">diff.py:121 <span class="ref-line">build_change_diff</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/sandbox.py#L58">sandbox.py:58 <span class="ref-line">run_replay</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/impact.py#L57">impact.py:57 <span class="ref-line">resolve_impact</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L551">semantic.py:551 <span class="ref-line">open_semantic_change</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L614">semantic.py:614 <span class="ref-line">merge_semantic_change</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/services/semantic_layer/test_semantics_write_posture.py#L130">test_semantics_write_posture.py:130 <span class="ref-line">test_no_unwhitelisted_semantics_writers</span></a>
+    </p>
+
+    <p>
+      「唯一写入口」不是口头承诺：有一份 AST 守卫逐个文件扫描「引用了语义模型文件 × 调用了写盘函数」的落点，
+      白名单外的命中直接让测试失败；草稿服务里的旧写点已被清空，且只许减不许增。
+      它的诚实边界也写在那个测试里——<code>git restore</code> 一类回滚会改写文件而 AST 看不见，
+      白名单不等于「写者全集」。
+    </p>
+
     <h2 id="related">相关页面</h2>
 
     <div class="table-wrap">
@@ -134,6 +263,7 @@
           <tr><td>补词表（术语、同义词、定义）</td><td><a href="kb.html#entries">知识库运营 · 术语与指标</a></td></tr>
           <tr><td>看编译机制（语义编译档位怎么来）</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
           <tr><td>漂移的处置与影响面</td><td><a href="../ops/drift.html">漂移检测</a></td></tr>
+          <tr><td>声明对象、关系名与层级链（本体）</td><td><a href="../capabilities/ontology.html">本体</a></td></tr>
           <tr><td>给用户解释「为什么这个答案来源是编译」</td><td><a href="../user/ask.html#provenance">提问与读懂答案 · 来源四档</a></td></tr>
         </tbody>
       </table>
@@ -147,6 +277,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 287cd52</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
