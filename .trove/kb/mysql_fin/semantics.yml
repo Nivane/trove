@@ -993,6 +993,7 @@ semantic_model:
     - account_id
     to_columns:
     - account_id
+    display_name: 发生于
     cardinality: 1:N
   metrics:
   - name: average Account balance after the transaction; can be negative

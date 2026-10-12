@@ -1487,3 +1487,115 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-d06d
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：链接 交易 → 银行账户（发生于）
+  author: admin
+  created_at: '2026-10-12T11:06:15+00:00'
+  base_digest: sha256:5d7fa6a753e0f20b63c9afe85dc94c5abc0ef828b9c1fea8ce0ebf7d396e0095
+  base_commit: ''
+  subjects:
+  - kind: relationship
+    name: trans_to_account
+  payloads:
+  - kind: relationship
+    action: upsert
+    name: trans_to_account
+    payload:
+      from: trans
+      to: account
+      from_columns:
+      - account_id
+      to_columns:
+      - account_id
+      display_name: 发生于
+  draft_id: cc8c20a9a820
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified: []
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified:
+        - trans_to_account
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: relationship
+      name: trans_to_account
+      action: upsert
+      before:
+        name: trans_to_account
+        from: trans
+        to: account
+        from_columns:
+        - account_id
+        to_columns:
+        - account_id
+        cardinality: 1:N
+      after:
+        name: trans_to_account
+        from: trans
+        to: account
+        from_columns:
+        - account_id
+        to_columns:
+        - account_id
+        cardinality: 1:N
+        display_name: 发生于
+      fields:
+      - f: 基数 cardinality
+        before: 1:N
+        after: 1:N
+        changed: false
+      - f: 显示名 display_name
+        before: ''
+        after: 发生于
+        changed: true
+      - f: 起点 from
+        before: trans
+        after: trans
+        changed: false
+      - f: 起点列 from_columns
+        before: account_id
+        after: account_id
+        changed: false
+      - f: 名称 name
+        before: trans_to_account
+        after: trans_to_account
+        changed: false
+      - f: 终点 to
+        before: account
+        after: account
+        changed: false
+      - f: 终点列 to_columns
+        before: account_id
+        after: account_id
+        changed: false
+      error: null
+  reject_reason: ''
+  resolved_by: admin

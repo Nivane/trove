@@ -439,5 +439,5 @@ drafts:
     - account_id
     display_name: 发生于
   note: 本体声明：链接 交易 → 银行账户（发生于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:05:57+00:00'
