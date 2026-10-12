@@ -351,3 +351,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-5df1
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 地区（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T10:59:17+00:00'
+  base_digest: sha256:b0295d6462d4f6b78a9cc3bd3869fcf6eba24a3987e40f68d8e511231a67c02e
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: district
+  payloads:
+  - kind: entity
+    action: upsert
+    name: district
+    payload:
+      display_name: 地区
+      natural_keys:
+      - district_id
+      aliases:
+      - 行政区
+      - 区县
+  draft_id: 940810eb304f
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - district
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: district
+      action: upsert
+      before: null
+      after:
+        display_name: 地区
+        natural_keys:
+        - district_id
+        aliases:
+        - 行政区
+        - 区县
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 行政区 · 区县
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 地区
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: district_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin

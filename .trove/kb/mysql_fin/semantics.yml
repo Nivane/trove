@@ -467,6 +467,13 @@ semantic_model:
         - committed crimes 1996
         - crime count 1996
       description: number of committed crimes in 1996
+    entity:
+      display_name: 地区
+      natural_keys:
+      - district_id
+      aliases:
+      - 行政区
+      - 区县
   - name: loan
     source: financial.loan
     primary_key:
