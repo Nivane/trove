@@ -334,5 +334,5 @@ drafts:
     - district_id
     display_name: 位于
   note: 本体声明：链接 银行账户 → 地区（位于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:01:32+00:00'

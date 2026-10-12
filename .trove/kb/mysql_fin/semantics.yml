@@ -930,6 +930,7 @@ semantic_model:
     - district_id
     to_columns:
     - district_id
+    display_name: 位于
     cardinality: 1:N
   - name: card_to_disp
     from: card
