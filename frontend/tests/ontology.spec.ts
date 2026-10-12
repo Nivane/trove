@@ -1,16 +1,18 @@
 /**
- * OntologyView — 管理台「本体」页（E6/O2，前端方案 §3/§8）。
+ * OntologyView — 管理台「本体」页（E6/O2；2026-10-12 确定性结构图改版）。
  *
  * 对着页面真正消费的服务器契约做端到端：GET /v1/admin/datasources 与
  * GET /v1/admin/semantic/{ds}/object-graph，配真 router（?ds= 走 URL）。
- * ECharts 挂模块级 mock（jsdom 无画布）：断言「喂给 setOption 的 option」
- * 而不是像素 —— 图规格本身的判据在 tests/ontology-chart.spec.ts。
+ * 图是**真 SVG**（不再是 ECharts）：断言 DOM —— 节点/边/标签/身份砖、
+ * 点击与键盘选中、点空白/Esc 清空。布局与身份的判据在
+ * tests/ontology-layout.spec.ts 与 tests/ontology-identity.spec.ts。
  *
  * 钉住的页面行为：
  *  · KPI 全部纯派生自投影（对象/链接/层级/声明覆盖率；层级键缺席 → 0，不是错误）；
  *  · 三态纪律：零数据集 = 引导卡（有 CTA）；有对象零声明 = 图照常 + 弱化引导；
  *    缺 objects/links 键 = 错误卡 + 重试（绝不渲染假空图）；
  *  · 点选 → 侧栏对象/链接详情 + 深链回语义台（页内无第二编辑面）；
+ *  · 清空出口唯一：点空白 / Esc 走同一条（图与侧栏一起回到未选态）；
  *  · 切数据源 = 换一张图（重新取数 + 选中态清空）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,40 +21,6 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { nextTick } from 'vue'
-
-const { initMock, instances } = vi.hoisted(() => {
-  const instances: {
-    options: Record<string, unknown>[]
-    handlers: Record<string, (p: unknown) => void>
-    setOption: ReturnType<typeof vi.fn>
-    on: ReturnType<typeof vi.fn>
-    dispose: ReturnType<typeof vi.fn>
-    resize: ReturnType<typeof vi.fn>
-    dispatchAction: ReturnType<typeof vi.fn>
-    getDom: () => HTMLElement
-  }[] = []
-  const initMock = vi.fn((el: HTMLElement) => {
-    const inst = {
-      options: [] as Record<string, unknown>[],
-      handlers: {} as Record<string, (p: unknown) => void>,
-      setOption: vi.fn((opt: Record<string, unknown>) => {
-        inst.options.push(opt)
-      }),
-      on: vi.fn((ev: string, cb: (p: unknown) => void) => {
-        inst.handlers[ev] = cb
-      }),
-      dispose: vi.fn(),
-      resize: vi.fn(),
-      dispatchAction: vi.fn(),
-      getDom: () => el,
-    }
-    instances.push(inst)
-    return inst
-  })
-  return { initMock, instances }
-})
-
-vi.mock('echarts', () => ({ init: initMock }))
 
 vi.mock('../src/api/http', () => ({
   apiGet: vi.fn(),
@@ -168,34 +136,6 @@ async function mountView(url = '/admin/ontology?ds=demo') {
   return wrapper
 }
 
-/** 最近一次 init 出来的图表实例（图上屏过才存在）。 */
-function chartInst() {
-  return instances[instances.length - 1]
-}
-
-function lastOption() {
-  const inst = chartInst()
-  return inst.options[inst.options.length - 1]
-}
-
-function graphNodes(): { name: string; label: { formatter: string }; itemStyle: Record<string, unknown> }[] {
-  const series = (lastOption().series as { data: never[] }[])[0]
-  return series.data
-}
-
-function graphLinks(): {
-  source: string
-  label: { formatter: string }
-  lineStyle: { type: string; color: string }
-}[] {
-  const series = (lastOption().series as { links: never[] }[])[0]
-  return series.links
-}
-
-function clickChart(payload: unknown) {
-  chartInst().handlers.click(payload)
-}
-
 function kpiValues(view: VueWrapper): string[] {
   return view.findAll('.kpi-tile .kpi-value').map((el) => el.text())
 }
@@ -208,11 +148,25 @@ function findButton(root: ParentNode, text: string): HTMLButtonElement {
   return el
 }
 
+function nodeIds(view: VueWrapper): string[] {
+  return view.findAll('.node-g').map((g) => g.attributes('data-dataset') ?? '')
+}
+
+/** 点选一个对象（真 DOM 事件，走 @click.stop）。 */
+async function clickNode(view: VueWrapper, dataset: string) {
+  await view.find(`.node-g[data-dataset="${dataset}"]`).trigger('click')
+  await nextTick()
+}
+
+/** 点选一条链接。 */
+async function clickLink(view: VueWrapper, name: string) {
+  await view.find(`.edge-g[data-link="${name}"]`).trigger('click')
+  await nextTick()
+}
+
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
-  instances.length = 0
-  initMock.mockClear()
   graphBody = clone(GRAPH)
   graphError = null
   installApi()
@@ -225,33 +179,63 @@ afterEach(() => {
 })
 
 describe('OntologyView — 渲染与 KPI', () => {
-  it('KPI 纯派生（对象/链接/层级缺席→0/声明覆盖率）；图拿到的 option 就是投影', async () => {
+  it('KPI 纯派生（对象/链接/层级缺席→0/声明覆盖率）；图按投影逐条画出来', async () => {
     const view = await mountView()
     expect(kpiValues(view)).toEqual(['3', '2', '0', '67%'])
-    // 图渲染：节点/边逐条进 option。
-    expect(graphNodes().map((n) => n.name)).toEqual(['loan', 'account', 'district'])
-    expect(graphLinks().map((l) => l.source)).toEqual(['loan', 'account'])
-    // 声明/未声明样式（token 在 jsdom 走缺省 accent）。
-    const loan = graphNodes().find((n) => n.name === 'loan')!
-    const district = graphNodes().find((n) => n.name === 'district')!
-    expect(loan.itemStyle.borderType).toBe('solid')
-    expect(district.itemStyle.borderType).toBe('dashed')
-    expect(district.label.formatter).toBe('district')
+
+    // 节点：声明顺序保留，位置由结构决定（x 随层号递增）。
+    expect(nodeIds(view)).toEqual(['loan', 'account', 'district'])
+    const xs = view.findAll('.node-g').map((g) => Number(/translate\(([-\d.]+),/.exec(g.attributes('transform') ?? '')?.[1]))
+    expect(xs[0]).toBeLessThan(xs[1])
+    expect(xs[1]).toBeLessThan(xs[2])
+
+    // 边：逐条画出，扇出那条带警示类。
+    expect(view.findAll('.edge-g').map((g) => g.attributes('data-link'))).toEqual([
+      'loan_to_account',
+      'account_to_district',
+    ])
+    expect(view.find('.edge-g[data-link="account_to_district"]').classes()).toContain('is-fanout')
+    expect(view.find('.edge-g[data-link="loan_to_account"]').classes()).not.toContain('is-fanout')
+
+    // 标签：声明了名字 → 「名字 · 基数」；未声明 → 只标基数（连接串不进图）。
+    const labels = view.findAll('.elab text').map((t) => t.text())
+    expect(labels).toContain('发放 · 1:N')
+    expect(labels).toContain('M:N')
+    expect(labels.some((l) => l.includes('district_id'))).toBe(false)
+
+    // 卡片文字：显示名 / 自然键 / 度量·字段；未声明用数据集名。
+    const loan = view.find('.node-g[data-dataset="loan"]')
+    expect(loan.find('.nname').text()).toBe('贷款')
+    expect(loan.find('.nsub').text()).toContain('loan_id')
+    expect(loan.find('.nmeta').text()).toContain('2')
+    expect(view.find('.node-g[data-dataset="district"] .nname').text()).toBe('district')
+
     // 未声明但存在 ≠ 空态：引导卡不出现，图与侧栏在位。
     expect(view.find('.state-panel').exists()).toBe(false)
     expect(view.find('.onto-panel').exists()).toBe(true)
   })
 
+  it('身份层：声明对象拿身份色，未声明保持灰「表」（声明即物化）', async () => {
+    const view = await mountView()
+    const loanTile = view.find('.node-g[data-dataset="loan"] .ntile rect')
+    expect(loanTile.attributes('fill')).toBe('#7c3aed') // loan → money 身份色
+    expect(loanTile.attributes('fill-opacity')).toBe('0.13')
+    const districtTile = view.find('.node-g[data-dataset="district"] .ntile rect')
+    expect(districtTile.attributes('fill')).toBe('#a1a1aa')
+    expect(districtTile.attributes('fill-opacity')).toBe('0.35')
+    expect(view.find('.node-g[data-dataset="district"]').classes()).toContain('is-undeclared')
+
+    // 图例在位（已声明 / 未声明 / 箭头 / 扇出四条）。
+    expect(view.findAll('.onto-lg')).toHaveLength(4)
+  })
+
   it('规模 > 60：出提示条（不聚合，节点一个不少）', async () => {
     graphBody = {
-      objects: Array.from({ length: 61 }, (_, i) => ({
-        dataset: `t${i}`,
-        declared: false,
-      })),
+      objects: Array.from({ length: 61 }, (_, i) => ({ dataset: `t${i}`, declared: false })),
       links: [],
     }
     const view = await mountView()
-    expect(graphNodes()).toHaveLength(61)
+    expect(view.findAll('.node-g')).toHaveLength(61)
     expect(view.find('.onto-scale-hint').exists()).toBe(true)
     // 60 个及以下不出提示条。
     graphBody = {
@@ -269,44 +253,162 @@ describe('OntologyView — 渲染与 KPI', () => {
     }
     const view = await mountView()
     expect(view.find('.onto-guide.is-weak').exists()).toBe(true)
-    expect(graphNodes()).toHaveLength(2)
+    expect(view.findAll('.node-g')).toHaveLength(2)
     expect(view.find('.state-panel').exists()).toBe(false)
     expect(kpiValues(view)).toEqual(['2', '0', '0', '0%'])
   })
 
-  it('点选对象：侧栏给声明详情 + 深链回语义台（页内无第二编辑面）', async () => {
+  it('悬空链接（指向未声明数据集）：不画，但图上说得出来', async () => {
+    graphBody = {
+      objects: [{ dataset: 'loan', declared: true }],
+      links: [
+        {
+          name: 'ghost',
+          from: 'loan',
+          to: 'nope',
+          from_columns: ['x'],
+          to_columns: ['y'],
+          display_name: '幽灵链接',
+        },
+      ],
+    }
     const view = await mountView()
-    expect(view.find('.onto-panel').text()).toContain('点击图中对象或链接查看声明详情')
-    clickChart({ data: { onto: { kind: 'object', ref: 'loan' } } })
-    await nextTick()
-    const panel = view.find('.onto-panel')
-    expect(panel.text()).toContain('贷款')
-    expect(panel.text()).toContain('已声明')
-    expect(panel.text()).toContain('loan_id')
-    expect(panel.text()).toContain('借据')
-    expect(panel.text()).toContain('2') // 度量数
-    expect(panel.text()).toContain('8') // 字段数
-    const link = panel.find('a')
-    expect(link.attributes('href')).toBe('/admin/semantic?ds=demo&tab=datasets&q=loan')
+    expect(view.findAll('.edge-g')).toHaveLength(0)
+    expect(view.find('.onto-dangling').text()).toContain('1')
   })
 
-  it('点选链接：方向/连接列/基数 + fan_out 警示 + 关系 tab 深链', async () => {
+  it('层级卡：缺席 → 空态如实说；有声明 → 层级链 + 数据集 chips', async () => {
     const view = await mountView()
-    clickChart({ data: { onto: { kind: 'link', ref: 'account_to_district' } } })
-    await nextTick()
+    expect(view.find('.onto-hier-empty').exists()).toBe(true)
+
+    graphBody = {
+      ...clone(GRAPH),
+      hierarchies: [
+        { name: 'geo', display_name: '地区层级', dataset: 'district', levels: ['region', 'district'] },
+        { name: 'bare', levels: [] },
+      ],
+    }
+    const view2 = await mountView()
+    expect(view2.find('.onto-hier-empty').exists()).toBe(false)
+    const rows = view2.findAll('.onto-hier-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('地区层级')
+    expect(rows[0].text()).toContain('region')
+    expect(rows[0].text()).toContain('district')
+    expect(rows[1].find('.onto-dash').text()).toBe('—')
+    expect(kpiValues(view2)[2]).toBe('2')
+  })
+})
+
+describe('OntologyView — 点选 / 清空', () => {
+  it('点对象：侧栏给身份头 + 统计 + 自然键/别名 + 深链回语义台', async () => {
+    const view = await mountView()
+    expect(view.find('.onto-panel').text()).toContain('点击图中对象或链接查看声明详情')
+
+    await clickNode(view, 'loan')
     const panel = view.find('.onto-panel')
-    expect(panel.text()).toContain('account_to_district')
-    expect(panel.text()).toContain('账户 → district') // 方向（标签回退数据集名）
-    expect(panel.text()).toContain('district_id')
+    expect(panel.find('.onto-panel-title').text()).toBe('贷款')
+    expect(panel.find('.onto-mono').text()).toBe('loan')
+    expect(panel.text()).toContain('已声明')
+    expect(panel.text()).toContain('类型身份 · 按名派生')
+    expect(panel.text()).toContain('loan_id')
+    expect(panel.text()).toContain('借据')
+    // 统计三项：度量 / 字段 / 链接（loan 只有一条出链接）。
+    expect(panel.findAll('.onto-stats b').map((b) => b.text())).toEqual(['2', '8', '1'])
+    // 身份砖用的是同一份派生（loan → money 紫）。
+    expect(panel.find('.onto-tile rect').attributes('fill')).toBe('#7c3aed')
+    expect(panel.find('a').attributes('href')).toBe('/admin/semantic?ds=demo&tab=datasets&q=loan')
+    // 图上同步进入强调态。
+    expect(view.find('.node-g[data-dataset="loan"]').classes()).toContain('is-hot')
+    expect(view.find('.node-g[data-dataset="district"]').classes()).toContain('is-dim')
+  })
+
+  it('对象的出/入链接行是真按钮：点一下切到那条链接的详情', async () => {
+    const view = await mountView()
+    await clickNode(view, 'account')
+    const rows = view.findAll('.onto-lrow')
+    expect(rows.length).toBe(2) // 出：account→district；入：loan→account
+    // 未声明名字的关系行铺列连接串（等宽弱化），不是凭空编一个名字。
+    expect(rows[0].find('.onto-lname').text()).toContain('district_id')
+    expect(rows[0].find('.onto-lname').classes()).toContain('is-unnamed')
+    expect(rows[1].find('.onto-lname').text()).toBe('发放')
+    expect(rows[1].find('.onto-lname').classes()).not.toContain('is-unnamed')
+    // 行尾是「另一端」的数据集名（出看 to、入看 from）。
+    expect(rows[0].find('.onto-ltgt').text()).toBe('district')
+    expect(rows[1].find('.onto-ltgt').text()).toBe('loan')
+    await rows[1].trigger('click')
+    await nextTick()
+    expect(view.find('.onto-panel .onto-mono').text()).toBe('loan_to_account')
+  })
+
+  it('点链接：方向（两端身份砖）/连接列/基数 + fan_out 警示 + 关系 tab 深链', async () => {
+    const view = await mountView()
+    await clickLink(view, 'account_to_district')
+    const panel = view.find('.onto-panel')
+    expect(panel.find('.onto-mono').text()).toBe('account_to_district')
+    // 未声明名字：标题回退列连接串（面板标题给足宽度，不按行内 150px 截）。
+    expect(panel.find('.onto-panel-title').text()).toBe('district_id → district_id')
+    expect(panel.findAll('.onto-dir .onto-mono2').map((e) => e.text())).toEqual([
+      'account',
+      'district',
+    ])
+    // 连接列那一段（.onto-join）：.onto-mono2 在方向行里也用（两端名），必须限定。
+    expect(panel.find('.onto-join').text()).toBe('district_id → district_id')
     expect(panel.text()).toContain('M:N')
     expect(panel.find('.onto-fanout').exists()).toBe(true)
+    expect(panel.findAll('.onto-dir .onto-tile')).toHaveLength(2)
     expect(panel.find('a').attributes('href')).toBe('/admin/semantic?ds=demo&tab=relationships')
+    // 图上那条边 hot，其余 dim。
+    expect(view.find('.edge-g[data-link="account_to_district"]').classes()).toContain('is-hot')
+    expect(view.find('.edge-g[data-link="loan_to_account"]').classes()).toContain('is-dim')
 
-    // 无 fan_out 的链接不挂警示。
-    clickChart({ data: { onto: { kind: 'link', ref: 'loan_to_account' } } })
+    // 声明了名字的关系：标题就是名字；无 fan_out 不挂警示。
+    await clickLink(view, 'loan_to_account')
+    const p2 = view.find('.onto-panel')
+    expect(p2.find('.onto-panel-title').text()).toBe('发放')
+    expect(p2.find('.onto-fanout').exists()).toBe(false)
+    expect(p2.text()).toContain('无')
+  })
+
+  it('键盘可达：卡片可聚焦、Enter 选中；Esc / 点空白清空（图与侧栏同步）', async () => {
+    const view = await mountView()
+    const node = view.find('.node-g[data-dataset="loan"]')
+    expect(node.attributes('tabindex')).toBe('0')
+    await node.trigger('keydown', { key: 'Enter' })
     await nextTick()
-    expect(view.find('.onto-panel .onto-fanout').exists()).toBe(false)
-    expect(view.find('.onto-panel').text()).toContain('1:N')
+    expect(view.find('.onto-panel-title').text()).toBe('贷款')
+
+    // Esc：回到未选态（图示与侧栏一起回）。
+    await view.find('.onto-svg').trigger('keydown', { key: 'Escape' })
+    await nextTick()
+    expect(view.find('.onto-panel').text()).toContain('点击图中对象或链接查看声明详情')
+    expect(view.find('.node-g[data-dataset="loan"]').classes()).not.toContain('is-hot')
+
+    // 点空白（svg 本体，不是卡片/连线）：同一条出口。
+    await node.trigger('keydown', { key: ' ' })
+    await nextTick()
+    expect(view.find('.onto-panel-title').text()).toBe('贷款')
+    await view.find('.onto-svg').trigger('click')
+    await nextTick()
+    expect(view.find('.onto-panel').text()).toContain('点击图中对象或链接查看声明详情')
+  })
+
+  it('缩放只动 viewBox（只放大缩小，没有平移）：按钮禁用态与复位', async () => {
+    const view = await mountView()
+    const svg = view.find('.onto-svg')
+    const base = svg.attributes('viewBox')
+    const zoomIn = view.find('.onto-zoom button:nth-child(2)')
+    const zoomOut = view.find('.onto-zoom button:nth-child(1)')
+    const reset = view.find('.onto-zoom button:nth-child(3)')
+    // 初始：缩小/复位不可用（没有「复位到更小」这回事）。
+    expect(zoomOut.attributes('disabled')).toBeDefined()
+    expect(reset.attributes('disabled')).toBeDefined()
+    await zoomIn.trigger('click')
+    expect(svg.attributes('viewBox')).not.toBe(base)
+    expect(zoomOut.attributes('disabled')).toBeUndefined()
+    await reset.trigger('click')
+    expect(svg.attributes('viewBox')).toBe(base)
+    expect(zoomOut.attributes('disabled')).toBeDefined()
   })
 })
 
@@ -331,7 +433,7 @@ describe('OntologyView — 空态 / 错误态 / 数据源切换', () => {
     expect(panel.exists()).toBe(true)
     expect(panel.text()).toContain('本体视图加载失败')
     expect(panel.text()).toContain('shape: objects/links missing') // 诊断原文照展
-    expect(instances).toHaveLength(0) // 图从未被渲染
+    expect(view.find('.onto-svg').exists()).toBe(false) // 图从未被渲染
     expect(view.find('.onto-main').exists()).toBe(false)
 
     // 重试：服务器恢复 → 图上线，错误卡退场。
@@ -340,7 +442,7 @@ describe('OntologyView — 空态 / 错误态 / 数据源切换', () => {
     await flushPromises()
     await flushPromises()
     expect(view.find('.state-panel.is-error').exists()).toBe(false)
-    expect(graphNodes()).toHaveLength(3)
+    expect(view.findAll('.node-g')).toHaveLength(3)
   })
 
   it('网络失败：错误卡带原始 detail（读不到 ≠ 空）', async () => {
@@ -362,8 +464,7 @@ describe('OntologyView — 空态 / 错误态 / 数据源切换', () => {
 
   it('切数据源：按新源重新取数 + 选中态清空（换的是另一张图）', async () => {
     const view = await mountView()
-    clickChart({ data: { onto: { kind: 'object', ref: 'loan' } } })
-    await nextTick()
+    await clickNode(view, 'loan')
     expect(view.find('.onto-panel').text()).toContain('贷款')
 
     const salesBtn = findButton(view.element, 'sales')
