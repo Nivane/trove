@@ -424,5 +424,5 @@ drafts:
     - account_id
     display_name: 发起于
   note: 本体声明：链接 支付订单 → 银行账户（发起于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:05:20+00:00'

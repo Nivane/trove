@@ -984,6 +984,7 @@ semantic_model:
     - account_id
     to_columns:
     - account_id
+    display_name: 发起于
     cardinality: 1:N
   - name: trans_to_account
     from: trans
