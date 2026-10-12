@@ -263,3 +263,91 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-b0c6
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：对象 账户支配关系（显示名 · 自然键 · 别名）
+  author: admin
+  created_at: '2026-10-12T10:58:39+00:00'
+  base_digest: sha256:0c4312ec5a5f2dbea12b150a49839e2b8a4d5cb3e8aa569e1fc1ec4960d23a4d
+  base_commit: ''
+  subjects:
+  - kind: entity
+    name: disp
+  payloads:
+  - kind: entity
+    action: upsert
+    name: disp
+    payload:
+      display_name: 账户支配关系
+      natural_keys:
+      - disp_id
+      aliases:
+      - 支配关系
+      - 账户授权
+  draft_id: c1172679df3b
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified:
+        - disp
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified: []
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: entity
+      name: disp
+      action: upsert
+      before: null
+      after:
+        display_name: 账户支配关系
+        natural_keys:
+        - disp_id
+        aliases:
+        - 支配关系
+        - 账户授权
+      fields:
+      - f: 动作
+        before: （不存在）
+        after: 新增实体
+        changed: true
+      - f: 别名 aliases
+        before: ''
+        after: 支配关系 · 账户授权
+        changed: true
+      - f: 显示名 display_name
+        before: ''
+        after: 账户支配关系
+        changed: true
+      - f: 自然键 natural_keys
+        before: ''
+        after: disp_id
+        changed: true
+      error: null
+  reject_reason: ''
+  resolved_by: admin

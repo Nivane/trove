@@ -242,6 +242,13 @@ semantic_model:
           - authorized user
           - not eligible
           - not the owner
+    entity:
+      display_name: 账户支配关系
+      natural_keys:
+      - disp_id
+      aliases:
+      - 支配关系
+      - 账户授权
   - name: district
     source: financial.district
     primary_key:
