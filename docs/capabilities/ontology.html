@@ -341,6 +341,23 @@ flowchart LR
       对象数超过 60 时给一条规模提示。
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-ontology.png" alt="本体页（数据源 mysql_fin）：顶部四块 KPI 对象 8 / 链接 8 / 层级 1 / 声明覆盖率 100%；对象图里节点是业务显示名（银行账户、贷款、支付订单、交易、地区…），边带业务名与基数（贷款「发放至」银行账户 1:N）；右侧是选中「银行账户」的详情栏——已声明、自然键 account_id、别名 账户 / 账号、业务度量与出入链接；底部是层级卡：地区层级 A3 · A2（district）">
+        <span class="pin" style="--x:88.2%;--y:17.6%">1</span>
+        <span class="pin" style="--x:54.0%;--y:39.8%">2</span>
+        <span class="pin" style="--x:86.7%;--y:44.7%">3</span>
+        <span class="pin" style="--x:58.6%;--y:85.0%">4</span>
+      </div>
+      <figcaption>图 2 · 本体页（<code>mysql_fin</code>）：三块声明在同一屏——对象、链接、层级，加一行 KPI 把「声明了多少」说成数。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>四块 KPI</strong>——对象 / 链接 / 层级 / <strong>声明覆盖率</strong>（声明了实体的对象占比，图里这个源是 100%）。覆盖率不是打分，是缺口提示：没声明的数据集照样出现在图上（灰色「表」节点），缺口一眼可见而不是被藏起来。</li>
+        <li><span class="n">2</span><strong>对象图</strong>——节点用实体显示名，边用关系声明的业务名 + 基数（贷款「<strong>发放至</strong>」银行账户 1:N）。位置由关系流向决定（左 → 右），同一份语义模型每次渲染都是同一张图；灰色虚线节点是尚未声明实体的数据集。</li>
+        <li><span class="n">3</span><strong>详情栏</strong>——选中对象后是它的声明原文：自然键 <code>account_id</code>、别名「账户 / 账号」（这两个别名就是表锚定里会被认的词）、业务度量与出入链接。页面唯一的动作是「编辑（回语义台）」深链——本体页不建模、不编辑。</li>
+        <li><span class="n">4</span><strong>层级卡</strong>——第三块声明：地区层级 <code>A3 · A2</code>（粗 → 细，级别按声明序）。分析引擎的下钻读的就是这条链：候选维度按层级序重排、钻下一级取同链的细一级；没声明链的维度不会被硬凑成上下级。</li>
+      </ol>
+    </figure>
+
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/views/admin/OntologyView.vue#L54">OntologyView.vue:54 <span class="ref-line">coverageText</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/components/ontology/OntologyGraph.vue#L58">OntologyGraph.vue:58 <span class="ref-line">ZOOM_MAX</span></a>
