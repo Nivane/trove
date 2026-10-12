@@ -939,6 +939,7 @@ semantic_model:
     - disp_id
     to_columns:
     - disp_id
+    display_name: 绑定于
     cardinality: 1:N
   - name: client_to_district
     from: client

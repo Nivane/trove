@@ -349,5 +349,5 @@ drafts:
     - disp_id
     display_name: 绑定于
   note: 本体声明：链接 银行卡 → 账户支配关系（绑定于）
-  status: pending
+  status: applied
   created_at: '2026-10-12T11:02:12+00:00'

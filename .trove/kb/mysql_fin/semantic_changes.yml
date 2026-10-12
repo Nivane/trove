@@ -815,3 +815,115 @@ changes:
       error: null
   reject_reason: ''
   resolved_by: admin
+- id: chg-20261012-7e73
+  datasource: mysql_fin
+  origin: draft_confirm
+  status: merged
+  question: ''
+  note: 本体声明：链接 银行卡 → 账户支配关系（绑定于）
+  author: admin
+  created_at: '2026-10-12T11:02:31+00:00'
+  base_digest: sha256:02decf0d5ba1acaa8a5f5a9066eca90da372214b63d8b2cbc9183687672b742f
+  base_commit: ''
+  subjects:
+  - kind: relationship
+    name: card_to_disp
+  payloads:
+  - kind: relationship
+    action: upsert
+    name: card_to_disp
+    payload:
+      from: card
+      to: disp
+      from_columns:
+      - disp_id
+      to_columns:
+      - disp_id
+      display_name: 绑定于
+  draft_id: dde54a1bce59
+  auto: false
+  warnings: []
+  degraded: []
+  dialect: mysql
+  diff:
+    entities:
+      datasets:
+        added: []
+        removed: []
+        modified: []
+      metrics:
+        added: []
+        removed: []
+        modified: []
+      relationships:
+        added: []
+        removed: []
+        modified:
+        - card_to_disp
+      topics:
+        added: []
+        removed: []
+        modified: []
+      hierarchies:
+        added: []
+        removed: []
+        modified: []
+      fields:
+        added: []
+        removed: []
+        modified: []
+    details:
+    - kind: relationship
+      name: card_to_disp
+      action: upsert
+      before:
+        name: card_to_disp
+        from: card
+        to: disp
+        from_columns:
+        - disp_id
+        to_columns:
+        - disp_id
+        cardinality: 1:N
+      after:
+        name: card_to_disp
+        from: card
+        to: disp
+        from_columns:
+        - disp_id
+        to_columns:
+        - disp_id
+        cardinality: 1:N
+        display_name: 绑定于
+      fields:
+      - f: 基数 cardinality
+        before: 1:N
+        after: 1:N
+        changed: false
+      - f: 显示名 display_name
+        before: ''
+        after: 绑定于
+        changed: true
+      - f: 起点 from
+        before: card
+        after: card
+        changed: false
+      - f: 起点列 from_columns
+        before: disp_id
+        after: disp_id
+        changed: false
+      - f: 名称 name
+        before: card_to_disp
+        after: card_to_disp
+        changed: false
+      - f: 终点 to
+        before: disp
+        after: disp
+        changed: false
+      - f: 终点列 to_columns
+        before: disp_id
+        after: disp_id
+        changed: false
+      error: null
+  reject_reason: ''
+  resolved_by: admin
