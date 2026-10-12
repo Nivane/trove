@@ -336,3 +336,18 @@ drafts:
   note: 本体声明：链接 银行账户 → 地区（位于）
   status: applied
   created_at: '2026-10-12T11:01:32+00:00'
+- id: dde54a1bce59
+  kind: relationship
+  action: upsert
+  name: card_to_disp
+  payload:
+    from: card
+    to: disp
+    from_columns:
+    - disp_id
+    to_columns:
+    - disp_id
+    display_name: 绑定于
+  note: 本体声明：链接 银行卡 → 账户支配关系（绑定于）
+  status: pending
+  created_at: '2026-10-12T11:02:12+00:00'
