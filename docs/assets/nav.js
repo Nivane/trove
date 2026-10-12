@@ -63,6 +63,7 @@
       items: [
         { href: "capabilities/data.html", text: "数据能力总览" },
         { href: "capabilities/semantic.html", text: "语义层" },
+        { href: "capabilities/ontology.html", text: "本体" },
         { href: "capabilities/kb.html", text: "知识库" },
         { href: "capabilities/retrieval.html", text: "混合检索" }
       ]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 数据能力总览：语义层、判定规则、知识库、混合检索、多数据源接入、统一存储与评测基建七组能力的机制与设计取舍。">
+<meta name="description" content="Trove 数据能力总览：语义层、本体、判定规则、知识库、混合检索、多数据源接入、统一存储与评测基建八组能力的机制与设计取舍。">
 <title>数据能力总览 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -36,7 +36,7 @@
 
     <nav class="doc-toc" data-toc></nav>
 
-    <h2 id="map">七组能力对照</h2>
+    <h2 id="map">八组能力对照</h2>
 
     <div class="table-wrap">
       <table>
@@ -52,36 +52,42 @@
           </tr>
           <tr>
             <td>02</td>
+            <td>本体</td>
+            <td>数据集声明成对象、关系声明业务名、维度链声明成层级——声明一次，全链用业务的词说话</td>
+            <td><a href="ontology.html">本体</a></td>
+          </tr>
+          <tr>
+            <td>03</td>
             <td>判定规则</td>
             <td>同一份语义模型换个问法：「算不算有问题」，定时求值且零 LLM</td>
             <td><a href="decisions.html">判定规则</a></td>
           </tr>
           <tr>
-            <td>03</td>
+            <td>04</td>
             <td>知识库</td>
             <td>五个 YAML 按「谁能写」分工，自动写入一律 pending</td>
             <td><a href="kb.html">知识库</a></td>
           </tr>
           <tr>
-            <td>04</td>
+            <td>05</td>
             <td>混合检索</td>
             <td>关键词 + 向量两路，加权 RRF 融合，分数归一化</td>
             <td><a href="retrieval.html">混合检索</a></td>
           </tr>
           <tr>
-            <td>05</td>
+            <td>06</td>
             <td>多数据源</td>
             <td>一个注册表，驱动懒加载，注册即连接探测</td>
             <td><a href="#adapters">本页</a></td>
           </tr>
           <tr>
-            <td>06</td>
+            <td>07</td>
             <td>统一存储</td>
             <td>内部状态一个抽象两档后端，迁移版本化且各自幂等</td>
             <td><a href="#storage">本页</a></td>
           </tr>
           <tr>
-            <td>07</td>
+            <td>08</td>
             <td>评测基建</td>
             <td>离线回放 + 带方向容差的回归门，判定不花钱</td>
             <td><a href="../ops/eval.html">评测与回归门</a></td>
@@ -96,16 +102,17 @@
 flowchart LR
     subgraph can["决定能答什么"]
         SEM["01 语义层<br/>计划 → 权威 SQL / 骨架"]:::gen
-        KB["03 知识库<br/>五个 YAML 按谁能写分工"]:::entry
-        RET["04 混合检索<br/>两路召回 → 加权 RRF"]:::exec
+        ONT["02 本体<br/>对象 / 关系 / 层级声明"]:::gen
+        KB["04 知识库<br/>五个 YAML 按谁能写分工"]:::entry
+        RET["05 混合检索<br/>两路召回 → 加权 RRF"]:::exec
     end
     subgraph trust["决定答得对不对"]
-        DEC["02 判定规则<br/>同一份语义模型，换个问法"]:::gate
-        EV["07 评测基建<br/>离线回放 + 回归门：判定不花钱"]:::gate
+        DEC["03 判定规则<br/>同一份语义模型，换个问法"]:::gate
+        EV["08 评测基建<br/>离线回放 + 回归门：判定不花钱"]:::gate
     end
     subgraph where["决定在哪跑"]
-        DS["05 多数据源<br/>注册表 + 驱动懒加载"]:::ext
-        ST["06 统一存储<br/>一个抽象，两档后端"]:::entry
+        DS["06 多数据源<br/>注册表 + 驱动懒加载"]:::ext
+        ST["07 统一存储<br/>一个抽象，两档后端"]:::entry
     end
     %% 无连线也要按左→右排：三组之间没有依赖关系，只是并列
     can ~~~ trust ~~~ where
@@ -117,7 +124,7 @@ flowchart LR
         </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 七组能力按「管什么」分成三撮：划定可答边界的三组、判定对不对的两组、以及决定跑在哪的两组。编号与上表一致。</span>
+        <span class="cap-rendered">图 1 · 八组能力按「管什么」分成三撮：划定可答边界的四组、判定对不对的两组、以及决定跑在哪的两组。编号与上表一致。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -125,7 +132,7 @@ flowchart LR
     <h2 id="theme">一条贯穿的取舍：确定性优先</h2>
 
     <p>
-      七组能力背后是同一个判断准则——<strong>能用代码算准的，不要交给模型</strong>。
+      八组能力背后是同一个判断准则——<strong>能用代码算准的，不要交给模型</strong>。
       这不是对模型能力的怀疑，而是三个具体的好处：
     </p>
 
@@ -162,7 +169,7 @@ flowchart LR
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L414">gate.py:414 <span class="ref-line">compare_metrics</span></a>）。
     </p>
 
-    <h2 id="adapters">05 多数据源：注册表与懒加载</h2>
+    <h2 id="adapters">06 多数据源：注册表与懒加载</h2>
 
     <p>
       数据源类型由一张注册表管理。关键设计是<strong>驱动懒导入</strong>：
@@ -181,7 +188,7 @@ flowchart LR
       完整流程见<a href="../guide/datasource.html">接入数据源</a>。
     </p>
 
-    <h2 id="storage">06 统一存储：抽象管什么、不管什么</h2>
+    <h2 id="storage">07 统一存储：抽象管什么、不管什么</h2>
 
     <p>
       会话、任务、记忆、认证、设置、调度、检查点等内部状态，统一在一个
@@ -201,7 +208,7 @@ flowchart LR
       </div>
     </div>
 
-    <h2 id="eval">07 评测基建：不花钱的判定</h2>
+    <h2 id="eval">08 评测基建：不花钱的判定</h2>
 
     <p>
       这一组能力的目标很具体：<strong>让「这次改动有没有让系统变差」这个问题可以在不调用模型的前提下回答</strong>。

@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 本体（对象层）：把数据集声明成业务对象、给关系起业务名、把维度链声明成层级——三块声明长在语义模型里，一次声明全链消费；对象图是它的只读投影，/admin/ontology 只读且三态诚实。">
+<title>本体 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>本体
+      </div>
+      <h1>本体</h1>
+      <p class="lede">
+        <a href="data.html">数据能力</a>的第二组。<a href="semantic.html">语义层</a>管的是「这句话怎么编译成 SQL」，
+        本体管的是<strong>「这些表和列在业务里叫什么」</strong>——数据集是「贷款」这个对象，
+        两列相等是「属于」这条关系，维度字段串成「大区 › 省 › 市」这条链。
+        本体不是另一份模型：它就长在 <code>semantics.yml</code> 里，是语义模型的<strong>对象视角</strong>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么要有对象层</h2>
+
+    <p>
+      表名的世界和业务的世界之间隔着三处具体的落差。每一处都不是「叫法不好听」，
+      而是缺了它，链路某一段就只能说物理的词——或者更糟，自己发明一个。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>物理世界的说法</th><th>业务世界的说法</th><th>缺了它会怎样</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>loan</code> 表</td>
+            <td>「贷款」这个对象，业务键是贷款号</td>
+            <td>答案卡表头只有 <code>loan_id</code>；提问说「借款」时检索不到这张表</td>
+          </tr>
+          <tr>
+            <td><code>customer_id = customer_id</code></td>
+            <td>「这笔贷款属于某个客户」</td>
+            <td>关系只是一对列名，拒绝文案里说不出是哪两个对象之间缺一条链接</td>
+          </tr>
+          <tr>
+            <td><code>region</code> / <code>province</code> / <code>city</code></td>
+            <td>「地区：大区 › 省 › 市」</td>
+            <td>下钻顺序取决于字段在模型里出现的偶然次序，而不是业务的粗细次序</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      本体的做法是把这三样声明进语义模型，然后<strong>在整个链路上按同一个词说话</strong>：
+      检索时当别名用、生成时写进提示、答案卡上做表头、拒绝文案里说人话、
+      分析时定下钻次序、判定与行动里带出对象身份。
+      <strong>一次声明，全链消费</strong>——所以它不会有第二份定义，也不会跟语义层漂移。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">本体没有自己的存储</span>
+      <div>
+        <p>对象视角没有独立的持久化、没有独立的写路径。所有改动走语义模型既有的那条路：
+        <strong>草稿 → 校验 → 确认 → 写入 <code>semantics.yml</code></strong>。
+        对象图页、拒绝文案里的「X → Y 链接」、分析的下钻选路，读的都是同一份声明。</p>
+        <p>这是「不飘」的机制保证：没有第二份真源，就没有两份真源对不上的那一天。</p>
+      </div>
+    </div>
+
+    <h2 id="declare">三块声明</h2>
+
+    <p>
+      全部写在语义模型里，位置是固定的一种（放错层会被拦，见下）。
+      下面用金融演示库的词汇写一份示例：
+    </p>
+
+<pre><code>semantic_model:
+- name: financial
+  datasets:
+  - name: loan
+    primary_key: [loan_id]
+    fields: [...]
+    entity:                       <span class="cmt"># ① 对象声明：这个数据集是什么业务对象</span>
+      display_name: 贷款
+      natural_keys: [loan_id]
+      aliases: [借款, 贷款单]
+  - name: customer
+    primary_key: [customer_id]
+    fields: [...]
+    entity:
+      display_name: 客户
+      aliases: [用户]
+  relationships:
+  - name: loan_to_customer        <span class="cmt"># ② 关系声明：这条边在业务里叫什么</span>
+    from: loan
+    to: customer
+    from_columns: [customer_id]
+    to_columns: [customer_id]
+    cardinality: N:1
+    display_name: 属于
+  hierarchies:                    <span class="cmt"># ③ 层级声明：维度链，粗 → 细</span>
+  - name: region_chain
+    display_name: 地区层级
+    dataset: district
+    levels: [region, province, city]</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L165">models.py:165 <span class="ref-line">SemanticEntity</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L190">models.py:190 <span class="ref-line">SemanticRelationship</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L332">models.py:332 <span class="ref-line">Hierarchy</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L354">models.py:354 <span class="ref-line">SemanticModel</span></a>
+    </p>
+
+    <h3>① 对象声明 <code>datasets[].entity</code></h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>键</th><th>含义</th><th>没声明时</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">display_name</td><td>对象的业务名（「贷款」）</td><td>读侧回退数据集名</td></tr>
+          <tr><td class="mono">natural_keys</td><td>自然键：业务上拿来指认一个对象的字段（如 <code>loan_id</code>）</td><td>读侧回退 <code>primary_key</code></td></tr>
+          <tr><td class="mono">aliases</td><td>对象的别称（「借款」），供词法锚定消费</td><td>没有回退——没有就别称，不发明</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三个键全空（写了个 <code>entity: {}</code>）与整个块缺席<strong>同义</strong>，
+      都归一成「未声明」——空声明不会在投影里变成一个空壳对象。
+    </p>
+
+    <h3>② 关系声明 <code>relationships[].display_name</code></h3>
+
+    <p>
+      关系本身（<code>from</code> / <code>to</code> / 列对 / 基数）是语义层本来就有的，
+      join 路径与 fan-out 保护都靠它。本体给关系补的是<strong>业务名</strong>：
+      <code>display_name: 属于</code>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L226">models.py:226 <span class="ref-line">display_name</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L221">models.py:221 <span class="ref-line">cardinality</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">display_name 是展示字段，cardinality 不是</span>
+      <div>
+        <p>关系的业务名<strong>不进 SQL、不改 join 语义</strong>；真正决定「这条边能不能走」的是
+        <code>cardinality</code> 与 <code>fan_out</code>——后者在编译期决定 M:N 边是拒绝还是去重。
+        把这两个搞混会得到一个很危险的印象：以为起个好名字就等于建模了。</p>
+      </div>
+    </div>
+
+    <h3>③ 层级声明 <code>hierarchies[]</code></h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>键</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">name</td><td>层级标识（草稿与 lint 按它寻址）</td></tr>
+          <tr><td class="mono">display_name</td><td>展示名；<strong>没有文档化的回退</strong>——不发明，原样透出</td></tr>
+          <tr><td class="mono">dataset</td><td>层级归属的数据集，级别字段必须来自它</td></tr>
+          <tr><td class="mono">levels</td><td>字段名有序链，<strong>粗 → 细</strong>；至少两级才成为一条链</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L151">ossie.py:151 <span class="ref-line">_entity_declaration</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L826">lint.py:826 <span class="ref-line">_lint_hierarchies</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">放错层 = 一次无痕的失败</span>
+      <div>
+        <p><code>entity</code> 只有<strong>一个</strong>合法位置：数据集子块下。
+        <code>hierarchies</code> 与 <code>time_spine</code> 同层，在 <code>semantic_model[0]</code> 下。
+        写在文档顶层会被解析器忽略——「看起来声明了、投影里却没有」是最难查的一类问题。</p>
+        <p>所以这条边界守两次：解析层出声（日志警告），写盘层拦下（lint 报错，附上该写到哪的完整路径）。</p>
+      </div>
+    </div>
+
+    <h2 id="consume">一次声明，全链消费</h2>
+
+    <p>
+      三块声明各自喂给不同的消费面。这张表是「声明一次」这句话的兑现清单——
+      每一行都能在源码里指到具体的读点。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    E["① datasets[].entity<br/>对象名 · 别名 · 自然键"]:::gen
+    R["② relationships[]<br/>业务名（基数另管编译）"]:::gen
+    H["③ hierarchies[]<br/>字段链：粗 → 细"]:::gen
+    P["对象图投影<br/>纯函数 · 零 I/O"]:::entry
+    C1["表锚定与生成提示<br/>别名 · 对象摘要行"]:::exec
+    C2["答案卡表头<br/>列名 · 实体"]:::exec
+    C3["拒绝文案与一键起草"]:::gate
+    C4["分析次序 · 判定标签 · 行动身份"]:::ext
+    E --> P
+    R --> P
+    H --> P
+    E --> C1
+    E --> C2
+    R --> C3
+    H --> C4
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gen fill:#6366f114,stroke:#6366f199,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 三块声明与它们的消费面。对象图是所有消费面共用的那一份投影，不是另一个模型。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>消费面</th><th>本体在这里做什么</th><th>读点</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>表锚定</strong></td>
+            <td>别名并入<strong>既有</strong>的同义词子串通道（不新开一路），问题里出现「借款」也能锚定到 <code>loan</code>；未声明实体时打分与旧行为逐字节一致</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/schema_linking.py#L91">schema_linking.py:91 <span class="ref-line">_lexical_terms</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>生成提示</strong></td>
+            <td>已声明的数据集多一行确定性事实：<code>Object: 贷款 (aliases: 借款; natural keys: loan_id)</code>——计划书写对象语言时有可依的规范词，不必猜表名或发明键名</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/schema_linking.py#L248">schema_linking.py:248 <span class="ref-line">_object_summary_line</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>答案卡表头</strong></td>
+            <td>结果列能<strong>唯一</strong>精确匹配到某个已声明对象的字段时，表头变成「列名 · 实体」；匹配不唯一或没声明就不标（宁缺不猜）</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/object_columns.py#L31">object_columns.py:31 <span class="ref-line">build_object_columns</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>拒绝出口</strong></td>
+            <td>关系类拒绝用对象的显示名说人话，并附「X → Y 链接」与一键起草修复的入口——补的正是关系声明本身</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L268">refuse.py:268 <span class="ref-line">_related_links</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>分析</strong></td>
+            <td>维度按层级排次序（粗维度先拆），下钻沿声明的链选下一级，行卡与载荷标签用显示名</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L129">engine.py:129 <span class="ref-line">_hierarchy_ranks</span></a>
+                <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L208">engine.py:208 <span class="ref-line">_ref_next_level</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>判定</strong></td>
+            <td>判定行卡带可选 <code>dim_display</code>——纯标注、零查询，判的仍是同一份数字</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L315">service.py:315 <span class="ref-line">annotate_dim_display</span></a></td>
+          </tr>
+          <tr>
+            <td><strong>行动</strong></td>
+            <td>提案创建时把「这次说的是哪个对象」冻结成对象引用（类型 + 自然键取值），之后验收读的是当时那一份</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L132">propose.py:132 <span class="ref-line">entity_ref</span></a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这些消费面共用的还有同一份<strong>读侧回退</strong>：显示名缺省回退数据集名这件事只写在
+      一个函数里（
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/object_graph.py#L43">object_graph.py:43 <span class="ref-line">entity_display_name</span></a>），
+      对象图页与答案卡表头调的是同一个它——同一份声明在任何地方给出的是同一个名字。
+      纪律是：<strong>声明层保持缺失即缺失，回退只发生在读侧</strong>。
+    </p>
+
+    <h2 id="graph">对象图：投影 ≡ 声明</h2>
+
+    <p>
+      对象图是把语义模型映射成「对象 + 链接 + 层级」的一份只读投影，
+      由
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/object_graph.py#L85">object_graph.py:85 <span class="ref-line">build_object_graph</span></a>
+      产出：<strong>纯函数、零 I/O、零 LLM、同输入逐字节同输出</strong>，并且绝不抛异常。
+      它有三条由测试钉住的往返不变量：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>不变量</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>对象指回声明</td><td>图上每个对象都指回一个数据集声明；每条边都指回一条 relationship 声明</td></tr>
+          <tr><td>未声明的也在图上</td><td>没声明实体的数据集照样出现，标 <code>declared: false</code>、弱化为「表」节点——图不缺角，「声明覆盖率」才是一眼可见的缺口</td></tr>
+          <tr><td>派生值同源</td><td>边的「会不会放大行数」是布尔派生值，判定复用编译器的同一个函数——不会出现「图上看着安全、编译期被拒」</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      列表顺序 = 声明顺序（不排序、不去重——声明即输出，顺序是文档的一部分）；
+      空模型给的是三键恒在的空图，「投影为空」与「读不到」由调用方用错误形状区分，
+      投影自己不替调用方判 404。
+    </p>
+
+    <h2 id="console">管理台：只读，但三态诚实</h2>
+
+    <p>
+      <code>/admin/ontology</code> 是这份投影的图形界面。
+      它<strong>不建模、不编辑</strong>——页面上唯一的动作是深链回语义台去声明。
+      只读不是省事，是为了让「这里看到的」永远等于「模型里声明的」。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>页面遇到的情况</th><th>渲染成什么</th></tr></thead>
+        <tbody>
+          <tr><td>数据源还没有语义模型</td><td>引导卡 + 「去语义台声明」——不渲染一张空图</td></tr>
+          <tr><td>有对象、但一个都没声明</td><td>图<strong>照常渲染</strong>（全是灰色「表」节点）+ 弱化的引导卡——「没声明」不是「没数据」，这不是空态</td></tr>
+          <tr><td>读不到，或响应形状不对</td><td>显式错误卡 + 重试——<strong>绝不把读失败渲染成一张空的图</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      页面顶部四块 KPI：对象数 / 链接数 / 层级数 / <strong>声明覆盖率</strong>（声明了实体的对象占比）。
+      图本身是确定性的：位置由关系流向决定，同一份语义模型在任何一次渲染里都是同一张图；
+      只放大缩小（1×–3×）、不平移，节点键盘可达，指向未声明数据集的悬空链接明确提示而不是静默丢掉。
+      对象数超过 60 时给一条规模提示。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/views/admin/OntologyView.vue#L54">OntologyView.vue:54 <span class="ref-line">coverageText</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/components/ontology/OntologyGraph.vue#L58">OntologyGraph.vue:58 <span class="ref-line">ZOOM_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L196">semantic.py:196 <span class="ref-line">semantic_object_graph</span></a>
+    </p>
+
+    <h2 id="grow">声明从哪来</h2>
+
+    <p>
+      三条路，出口全在同一个门槛上：<strong>改动一律先落 pending 草稿，确认才写入</strong>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>来源</th><th>产出什么</th><th>边界</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>管理端手写</strong></td>
+            <td>数据集详情里的实体声明表单（显示名 / 自然键 / 别名）与「新增关系」对话框；保存前先校验，通过才建草稿</td>
+            <td>空字段不写进 payload——缺席就是没声明</td>
+          </tr>
+          <tr>
+            <td><strong><code>/kb init</code> 起草</strong></td>
+            <td>从 schema 注释的标题词与表级计数词起草 <code>display_name</code> / <code>aliases</code>，自然键取模型主键</td>
+            <td>全状态幂等（管理员拒绝过的不回灌）；三个键全空的草稿根本不会产生；起草的显示名必须含中文且不同于表名——英文散文的首词是坏名字，宁可不给</td>
+          </tr>
+          <tr>
+            <td><strong>软 MISS 候选</strong></td>
+            <td>提问因字段/枚举缺口走骨架路径时，顺带起草一条实体声明候选，进待审队列</td>
+            <td>只从缺口形状发射，单轮上限 3 条</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L368">init_pipeline.py:368 <span class="ref-line">_draft_entity_naming</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L215">candidates.py:215 <span class="ref-line">_entity_spec</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1129">manage.py:1129 <span class="ref-line">create_draft</span></a>
+    </p>
+
+    <p>
+      确认时的写路径与语义层其他改动完全同一条：先跑一次「应用后的文档」lint，
+      <strong>有阻断级问题就拒绝写盘</strong>（
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L280">issues.py:280 <span class="ref-line">blocking_issues</span></a>），
+      通过才写入并留一次 git 提交。本体声明的 lint 是分级的：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>级别</th><th>包含</th><th>后果</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>error</strong>（拦写盘）</td>
+            <td>实体块形状坏掉；自然键引用了本数据集没声明的字段；别名形状坏掉；层级字段不在归属数据集里；层级重名 / 未声明数据集</td>
+            <td>声明本身不成立，确认会被拒</td>
+          </tr>
+          <tr>
+            <td><strong>advisory</strong>（只提示）</td>
+            <td>声明了实体但没有可用的自然键；别名与别处重复；层级只有一级 / 级别重复 / 覆盖有缺口</td>
+            <td>照常出现、照常可确认——它们是「可以更好」，不是「不成立」</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L253">issues.py:253 <span class="ref-line">_ADVISORY_CODES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L723">lint.py:723 <span class="ref-line">_lint_entities</span></a>
+    </p>
+
+    <p>
+      还有一类草稿值得单独说：撞上<strong>已声明实体</strong>或重名关系的改动。
+      它照常落到待审队列（覆盖是正当的修正路径），但<strong>不能直接确认</strong>——
+      确认按钮前置禁用，管理端以它为蓝本预填「新建」。
+      草稿是用来审的材料，不是用来一键覆盖现有声明的开关。
+    </p>
+
+    <h2 id="limits">诚实边界</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>边界</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>业务名不进 SQL</td>
+            <td>对象显示名、关系显示名、层级显示名全是<strong>展示字段</strong>：不改 join 语义、不改口径、不改编译判定。层级也不进编译器——它服务分析的次序与标签</td>
+          </tr>
+          <tr>
+            <td>未声明 ≠ 不能用</td>
+            <td>对象声明是可选的增强：没有它，问题照答，只是全链说表的词。覆盖率因此是进度指标，不是可用性开关。<strong>但关系声明不是可选项</strong>——join 路径与 fan-out 保护本来就依赖它</td>
+          </tr>
+          <tr>
+            <td>冲突草稿的落库面</td>
+            <td>拒绝卡上的实体/关系冲突目前只在文案里说明，不落进待审收件箱（自动落库那一路只覆盖指标与字段）；需要建的时候走管理端表单或草稿 API</td>
+          </tr>
+          <tr>
+            <td>层级的创作面</td>
+            <td>管理台前端还没有层级的编辑表单；层级声明走通用草稿 API 或直接手写 YAML。写错照样会被 lint 拦在写盘前</td>
+          </tr>
+          <tr>
+            <td>图上不编数据</td>
+            <td>对象图不编实例数据、不编基数、不编名字：图上没有的东西就是没声明的东西</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>想了解</th><th>去哪</th></tr></thead>
+        <tbody>
+          <tr><td>语义模型本身的编译机制</td><td><a href="semantic.html">语义层</a></td></tr>
+          <tr><td>在管理台怎么声明与审批</td><td><a href="../admin/semantic.html">语义层治理</a></td></tr>
+          <tr><td>改动怎么安全合入（隔离、回放、影响面）</td><td><a href="../admin/semantic.html#changes">语义层治理 · 语义变更评审</a></td></tr>
+          <tr><td>关系类拒绝长什么样</td><td><a href="../user/ask.html">提问与读懂答案</a></td></tr>
+          <tr><td>层级在下钻与分解里怎么用</td><td><a href="../engineering/decomposition.html">分解数学与驱动器树</a></td></tr>
+          <tr><td>对象身份在行动与验收里怎么传</td><td><a href="actions.html">行动与审批</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 287cd52</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>
