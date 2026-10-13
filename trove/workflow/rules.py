@@ -245,6 +245,9 @@ REWRITE_RULES: frozenset[str] = frozenset({
 #: 钉住相等。tests/workflow/test_rules.py 的元测试钉「注册表 ⊆ 本表」——
 #: 新增规则不登记家族会被拦下,而不是静默落进 other。
 #: 注意 F1-c 不存在(注册表里只有 a/b/d),清单以 :348-916 的 20 条注册为准。
+#: ``F5-*`` 是**平行的一遍**(object_check,语义声明的结构检查),不在
+#: ``_RULES`` 注册表里(规则链签名装不下语义模型),但命中同样落
+#: ``validation_hits`` —— 家族登记是给评测聚合用的,不是注册表的附属。
 RULE_FAMILIES: dict[str, str] = {
     "F1-a": "shape",
     "F1-b": "shape",
@@ -266,6 +269,7 @@ RULE_FAMILIES: dict[str, str] = {
     "F4-a": "ordering",
     "F4-b": "ordering",
     "limit-without-order": "ordering",
+    "F5-a": "structure",
 }
 
 

@@ -24,6 +24,10 @@ from trove.llm.agent_loop import observation_text
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.services.errors import is_transient, tag_error
+from trove.services.semantic_layer.object_check import (
+    check_object_sql,
+    context_from_provider,
+)
 from trove.workflow.rules import verify
 from trove.workflow.state import GenSQLState
 from trove.workflow.versions import EXEC_FAILURE_SIG
@@ -804,6 +808,7 @@ async def check_result(
     timeout_s: float = PROBE_TIMEOUT_S,
     allowed_tables: set[str] | None = None,
     datasource: str | None = None,
+    object_ctx: Any | None = None,
 ) -> tuple[str, list[dict]]:
     """确定性校验工具:执行草稿 SQL 后跑规则链,返回 (观测文本, hits)。
 
@@ -811,6 +816,11 @@ async def check_result(
     把判断变成硬规则(workflow.rules 的注册表——结果形状、行数、值域、
     整数除法等)。违规原因即修复指令,模型拿到后直接改 SQL,而不是等
     execute→validate 事后打回(那要浪费一整轮 retry 预算)。
+
+    ``object_ctx``(可选):语义声明派生的对象约束上下文 —— 规则链通过后
+    再跑一遍结构检查(与 validate 节点同一份实现、同一套判据)。放在这里
+    的意义:模型**定稿前**自己看到扇出违规,当场修正,省掉交付前拦截的
+    一整轮重写预算。``None`` → 整段静默(未声明部署逐字节不变)。
 
     返回 (text, hits):
       - 通过: ``"OK (N rows)"``,hits 为空
@@ -828,6 +838,9 @@ async def check_result(
     )
     if reason:
         return f"VIOLATION {reason}", hits
+    obj_hits = check_object_sql(sql, object_ctx, lang=lang, dialect=dialect)
+    if obj_hits:
+        return f"VIOLATION {obj_hits[0]['reason']}", obj_hits
     return f"OK ({obs['row_count']} rows)", []
 
 
@@ -1053,6 +1066,7 @@ def build_sql_registry(
     skill_ctx: dict | None = None,
     budget: Any = None,
     profiles: Any = None,
+    semantic_provider: Any = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -1091,8 +1105,16 @@ def build_sql_registry(
             判定用它、不用另建一个:报价说允许、执行被拒是比不报价更糟的答案。
         profiles: 画像服务(可选),给报价补上每张表的行数/字节数。未接不影响
             判定,只是 ``tables`` 里的数字为 null(「不可得 ≠ 0」)。
+        semantic_provider: 语义层 provider(可选)。给了就把声明的对象约束
+            (M:N 扇出边)折成上下文挂给 check_result —— 模型定稿前自己
+            看到结构违规、当场修正。读不出 / 无声明 → None,check_result
+            整段静默。注册表生命周期 = 一次生成轮,上下文在这里取一次
+            快照(一轮内声明不会变;跨轮的现读由每轮重建注册表保证)。
     """
     from trove.llm.agent_loop import ToolRegistry
+
+    # 对象约束上下文:一次生成轮取一次快照(never-raise,见 object_check)。
+    object_ctx = context_from_provider(semantic_provider)
 
     registry = ToolRegistry(finish=finish, allowed_roles=roles)
     registry.check_hits = []
@@ -1251,6 +1273,7 @@ def build_sql_registry(
             connectors, question, sql_text, dialect, lang=lang,
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
+            object_ctx=object_ctx,
         )
         registry.check_hits.extend(hits)
         # 通过 = hits 为空且不是 ERROR。ERROR(不可执行)不算通过,也不算违规

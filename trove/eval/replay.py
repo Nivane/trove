@@ -195,6 +195,7 @@ _RULE_FAMILIES: dict[str, str] = {
     "F4-a": "ordering",
     "F4-b": "ordering",
     "limit-without-order": "ordering",
+    "F5-a": "structure",
 }
 
 
@@ -249,7 +250,13 @@ def cache_hit_stats(entries: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 #: 口径拦截率的家族清单(固定键序;``caliber_block`` 全家族合并 + 每族一枚)。
-_CALIBER_FAMILIES = ("filter", "shape", "values", "ordering", "plan", "validator", "other")
+#: 新家族必须进这里 —— 漏登记的行只算 ``other`` 的话,「合并率」会把它
+#: 静默漏掉(族内命中却不计入合并口径 = 一次拦截在评测里不存在)。
+#: 新增族落在 ``other`` 之前(``other`` 保持兜底末位)。
+_CALIBER_FAMILIES = (
+    "filter", "shape", "values", "ordering", "plan", "validator",
+    "structure", "other",
+)
 
 
 def _rule_family(name: str) -> str:

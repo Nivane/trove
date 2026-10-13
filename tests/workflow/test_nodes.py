@@ -3086,6 +3086,124 @@ class TestValidateRules:
         assert await node(state) == {}
 
 
+def _mn_provider():
+    """声明一条 M:N 边的最小 provider(students ↔ courses)。"""
+    from trove.services.semantic_layer.models import (
+        SemanticDataset,
+        SemanticModel,
+        SemanticRelationship,
+    )
+
+    class _P:
+        def model(self):
+            return SemanticModel(
+                name="test_db",
+                datasets=[
+                    SemanticDataset(name="students", source="students"),
+                    SemanticDataset(name="courses", source="courses"),
+                ],
+                relationships=[SemanticRelationship(
+                    name="student_course", from_="students", to="courses",
+                    from_columns=["id"], to_columns=["student_id"],
+                    cardinality="M:N",
+                )],
+            )
+
+    return _P()
+
+
+#: 连接了声明 M:N 边、SUM 聚合、未按声明键分组 —— F5-a 的目标形状。
+_FANOUT_SQL = (
+    "SELECT SUM(s.grade) FROM students s "
+    "JOIN courses c ON s.id = c.student_id"
+)
+
+
+class TestValidateObjectCheck:
+    """对象约束检查在 validate 节点(声明进生成侧的交付前拦截)。
+
+    与规则链平行的一遍:命中走同一条 error_feedback 通道与修正预算,
+    hits 落 validation_hits(``{"name": "F5-a"}`` 形状,与规则链同款)。
+    权威编译 SQL 豁免(同改写型规则的理由:拦它 = 烧预算换必然失败的
+    契约比对);无 provider / 无 M:N 声明 → 整段静默,老路径不变。
+    """
+
+    async def test_fanout_hit_intercepts_with_feedback(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(semantic_layer=_mn_provider())
+        state = make_state(
+            question="total grade",
+            sql=_FANOUT_SQL,
+            columns=["SUM(s.grade)"],
+            rows=[[400]],
+            row_count=1,
+        )
+        update = await node(state)
+        assert "error" not in update
+        assert "[F5-a]" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        # hits 形状与规则链一致({"name", "reason"})——下游归因零分支
+        assert update["validation_hits"][0]["name"] == "F5-a"
+        assert set(update["validation_hits"][0]) == {"name", "reason"}
+        assert update["rules_passed"] is False
+
+    async def test_budget_exhausted_degrades_to_error(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(semantic_layer=_mn_provider())
+        update = await node(make_state(
+            question="total grade", sql=_FANOUT_SQL,
+            columns=["SUM(s.grade)"], rows=[[400]], row_count=1,
+            retry_count=10,
+        ))
+        assert "[F5-a]" in update["error"]
+        assert update["rules_passed"] is False
+
+    async def test_group_by_declared_key_passes(self):
+        """按声明键分组 → 不拦(组内口径不受整行倍增影响)。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(semantic_layer=_mn_provider())
+        update = await node(make_state(
+            question="total grade per student",
+            sql=_FANOUT_SQL + " GROUP BY c.student_id",
+            columns=["SUM(s.grade)"],
+            rows=[[400]],
+            row_count=1,
+        ))
+        assert update["rules_passed"] is True
+
+    async def test_no_provider_is_silent(self):
+        """未接语义层 → 同一 SQL 不拦(缺省逐字节兼容)。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(make_state(
+            question="total grade", sql=_FANOUT_SQL,
+            columns=["SUM(s.grade)"], rows=[[400]], row_count=1,
+        ))
+        assert update["rules_passed"] is True
+        assert "validation_hits" not in update
+
+    async def test_authoritative_sql_exempts_object_check(self, monkeypatch):
+        """权威编译 SQL 豁免:命中只 log,不烧修正预算、不写 validation_hits。"""
+        from trove.workflow.nodes import validate as validate_mod
+
+        monkeypatch.setattr(
+            validate_mod, "_authoritative_sql", lambda state: (True, ""),
+        )
+        node = validate_mod.make_validate_rules(semantic_layer=_mn_provider())
+        update = await node(make_state(
+            question="total grade", sql=_FANOUT_SQL,
+            columns=["SUM(s.grade)"], rows=[[400]], row_count=1,
+        ))
+        assert "error_feedback" not in update
+        assert "retry_count" not in update
+        assert "validation_hits" not in update
+        assert update["rules_passed"] is True
+
+
 class TestValidateAuthoritativeExemption:
     """权威编译 SQL 的改写型规则豁免(B2,0480 死锁的收窄修法)。
 
@@ -4642,6 +4760,56 @@ class TestMakeSQLTools:
         assert data["ok"] is True and data["plan"] and "scan" in data["plan"][0].lower()
         assert json.loads(await handlers["explain_plan"]({"sql": "SELEC broken"}))["ok"] is False
         assert json.loads(await handlers["explain_plan"]({}))["ok"] is False
+
+
+class TestCheckResultObjectCheck:
+    """check_result 内的对象约束检查(生成循环内的及时反馈)。
+
+    与 validate 节点**同一份实现**(object_check.check_object_sql):模型
+    在 agentic 循环里自己 check 一眼就能看到扇出违规、当场修 —— 比交付前
+    被 validate 打回省一整轮修正预算。无 provider / 无 M:N 声明 → 旧
+    路径逐字节不变(OK 文本不变)。
+    """
+
+    async def test_fanout_edge_flows_into_check_result(self, sqlite_registry):
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        adapter = await sqlite_registry.get(sqlite_registry.default_name)
+        await adapter.execute("CREATE TABLE courses (student_id INTEGER, title TEXT)")
+        await adapter.execute("INSERT INTO courses VALUES (1, 'math')")
+        sql = (
+            "SELECT SUM(s.grade) FROM students s "
+            "JOIN courses c ON s.id = c.student_id"
+        )
+
+        registry = build_sql_registry(
+            sqlite_registry, "total grade", "en", "sqlite",
+            semantic_provider=_mn_provider(),
+        )
+        text = await registry.handlers()["check_result"]({"sql": sql})
+        assert text.startswith("VIOLATION")
+        assert "[F5-a]" in text
+        assert [h["name"] for h in registry.check_hits] == ["F5-a"]
+        # 违规轮不记"通过"(正样本计数只认全过)
+        assert registry.check_passed == 0
+
+    async def test_without_provider_old_path_unchanged(self, sqlite_registry):
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        adapter = await sqlite_registry.get(sqlite_registry.default_name)
+        await adapter.execute("CREATE TABLE courses (student_id INTEGER, title TEXT)")
+        await adapter.execute("INSERT INTO courses VALUES (1, 'math')")
+        sql = (
+            "SELECT SUM(s.grade) FROM students s "
+            "JOIN courses c ON s.id = c.student_id"
+        )
+        registry = build_sql_registry(
+            sqlite_registry, "total grade", "en", "sqlite",
+        )
+        text = await registry.handlers()["check_result"]({"sql": sql})
+        assert text.startswith("OK")
+        assert registry.check_hits == []
+        assert registry.check_passed == 1
 
 
 class TestStaticSemanticWarnings:
