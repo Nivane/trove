@@ -20,6 +20,10 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
+from trove.services.semantic_layer.object_check import (
+    check_object_sql,
+    context_from_provider,
+)
 from trove.services.skills.validators import (
     VALIDATOR_HOST,
     format_hit,
@@ -42,6 +46,7 @@ logger = get_logger(__name__)
 def make_validate_rules(
     max_retries: int = 10,
     skills: Any | None = None,
+    semantic_layer: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the validate node.
 
@@ -55,6 +60,13 @@ def make_validate_rules(
             node's feedback channel and retry budget (no new node, no new
             graph edge); advisory verdicts and "cannot evaluate" go to
             ``state.validator_hits`` only.
+        semantic_layer: Optional ``SemanticLayerProvider``. When present
+            and the model declares fan-out (M:N) relationships, the
+            object-constraint check (``object_check``) runs as a parallel
+            pass right after the rule chain — same interception shape,
+            same retry budget. Declarations are re-read per invocation
+            (the provider reloads on mtime), so admin edits apply to the
+            next question. Absent/undeclared → byte-identical old path.
 
     The verify_step assertion layer reports structured hits
     (rule name + reason) via state.validation_hits for eval attribution.
@@ -115,6 +127,48 @@ def make_validate_rules(
                 "validation_hits": hits,
                 "rules_passed": False,
             }
+
+        # ── 对象约束检查(F5-a 扇出守卫;平行一遍,与 org validator 同位置纪律)──
+        #
+        # 声明进生成侧的确定性闸:语义模型声明的 M:N(行倍增)关系出现在
+        # 聚合查询的连接图上、且未按声明键分组 → 聚合会被扇出静默放大。
+        # 与规则链平行而不是进 _RULES:规则链签名
+        # ``(question, sql, columns, rows, row_count, lang)`` 装不下语义模型;
+        # 复用它的通道(error_feedback + 同一份修正预算),不复用它的形状。
+        #
+        # 声明**每次现读**:provider 按 mtime 重载,管理端改完下一问生效
+        # (与 skills 治理同一条纪律:读路径无缓存)。读不出 / 无声明 → None
+        # → 整段静默,老路径逐字节不变。
+        #
+        # 权威编译 SQL 同样豁免:同"改写型规则"的理由 —— 那条 SQL 是契约的
+        # 照抄对象,拦它 = 烧修正预算换一个必然失败的比对(0480 的形状)。
+        # 豁免留 info 日志:豁免是"少拦了一次",可以说,但不能不说。
+        object_ctx = context_from_provider(semantic_layer)
+        object_hits = check_object_sql(
+            state.sql, object_ctx, lang=state.lang, dialect=state.dialect,
+        )
+        if object_hits:
+            if authoritative:
+                logger.info(
+                    "object check exempted for authoritative compiled SQL (%r): %s",
+                    state.question[:80],
+                    object_hits[0]["reason"],
+                )
+            elif budget_exhausted(state.retry_count, max_retries):
+                return {"error": object_hits[0]["reason"], "rules_passed": False}
+            else:
+                feedback = L(
+                    state.lang,
+                    f"校验规则: {object_hits[0]['reason']}",
+                    f"Validation rule: {object_hits[0]['reason']}",
+                )
+                return {
+                    "error_feedback": feedback,
+                    "retry_count": state.retry_count + 1,
+                    "correction_history": [feedback],
+                    "validation_hits": object_hits,
+                    "rules_passed": False,
+                }
 
         # 层2:answer_columns 与执行结果列的一致性检查(plan 的钦点列必须
         # 能在结果里看到;全部缺失才是冲突——别名/表达式会制造单列噪音,

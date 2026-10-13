@@ -22,6 +22,7 @@
     "caliber_block:ordering": 0.0,
     "caliber_block:plan": 0.0,
     "caliber_block:validator": 0.0,
+    "caliber_block:structure": 0.0,
     "caliber_block:other": 0.0
   }
 }
