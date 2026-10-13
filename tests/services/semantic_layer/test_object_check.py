@@ -88,9 +88,13 @@ class TestBuildContext:
     def test_no_relationships_is_none(self):
         assert build_object_context(_model_with()) is None
 
-    def test_one_to_n_only_is_none(self):
-        """1:N 不构成行倍增 —— 只声明 1:N 的部署检查整体静默。"""
-        assert build_object_context(_model_with(_rel(cardinality="1:N"))) is None
+    def test_one_to_n_has_no_fanout_edge_but_declares_the_join(self):
+        """1:N 不构成行倍增(F5-a 静默),但连接键仍然是被声明的路径
+        (F5-b 用它)—— 两份视图同源、判据不同。"""
+        ctx = build_object_context(_model_with(_rel(cardinality="1:N")))
+        assert ctx is not None
+        assert ctx.fanout_edges == ()
+        assert [j.name for j in ctx.declared_joins] == ["r"]
 
     def test_mn_edge_extracted_with_physical_tables(self):
         ctx = _ctx()
@@ -108,11 +112,13 @@ class TestBuildContext:
         ctx = build_object_context(_model_with(_rel(cardinality=cardinality)))
         assert ctx is not None and len(ctx.fanout_edges) == 1
 
-    def test_dedup_exemption_silences(self):
-        """显式 dedup 豁免 → 不是行倍增边(与编译器同款豁免串比较)。"""
-        assert build_object_context(
-            _model_with(_rel(fan_out="dedup"))
-        ) is None
+    def test_dedup_exemption_silences_fanout_only(self):
+        """显式 dedup 豁免 → 不是行倍增边(与编译器同款豁免串比较),
+        但键的声明仍在(F5-b 视图照收)。"""
+        ctx = build_object_context(_model_with(_rel(fan_out="dedup")))
+        assert ctx is not None
+        assert ctx.fanout_edges == ()
+        assert len(ctx.declared_joins) == 1
 
     def test_empty_model_is_none(self):
         assert build_object_context(SemanticModel(name="empty")) is None
@@ -275,8 +281,9 @@ class TestNoFalsePositives:
         assert hits == []
 
     def test_one_to_n_declaration_does_not_hit(self):
+        """1:N 边:不构成行倍增(F5-a 静默);按声明键连接(F5-b 放行)。"""
         ctx = build_object_context(_model_with(_rel(cardinality="1:N")))
-        assert ctx is None  # 无行倍增边 → 上下文整体静默
+        assert ctx is not None
         assert check_object_sql(
             "SELECT SUM(t.amount) FROM trans t JOIN disp_tbl d ON t.account_id = d.client_id",
             ctx, dialect="sqlite",
@@ -322,6 +329,166 @@ class TestNoFalsePositives:
             self_ctx, dialect="sqlite",
         )
         assert hits == []
+
+
+# ── F5-b 声明键守卫 ─────────────────────────────────────────
+
+#: 声明对:trans.account_id → disp_tbl.client_id(跨名,任何方向都合法)。
+DECLARED_EQ = "ON t.account_id = d.client_id"
+
+
+def _same_name_ctx() -> ObjectContext:
+    """同名列声明(account_id → account_id):USING 判定用。"""
+    ctx = build_object_context(
+        _model_with(_rel(from_columns=["account_id"], to_columns=["account_id"]))
+    )
+    assert ctx is not None
+    return ctx
+
+
+class TestDeclaredKeyGuard:
+    """F5-b:有声明关系的两张表按**非声明键**连接 → 拦(未声明的连接路径)。
+
+    编译期对位:``ambiguous_join_path`` 硬 MISS —— 生成侧自由 SQL 没有
+    骨架保真兜底,这里补上。合法模式(塌缩连接)的前提是两张表**没有**
+    直接声明;有声明时,声明就是唯一被认可的路径。
+    """
+
+    def _hit(self, sql, ctx=None, lang="zh"):
+        return check_object_sql(sql, ctx or _ctx(), lang=lang, dialect="sqlite")
+
+    def test_wrong_key_join_hits(self):
+        hits = self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d ON t.bank = d.region"
+        )
+        assert [h["name"] for h in hits] == ["F5-b"]
+        assert "[F5-b]" in hits[0]["reason"]
+        assert "trans.account_id" in hits[0]["reason"]  # 声明键进报文
+
+    def test_declared_key_join_passes(self):
+        assert self._hit(
+            f"SELECT t.trans_id FROM trans t JOIN disp_tbl d {DECLARED_EQ}"
+        ) == []
+
+    def test_reversed_orientation_passes(self):
+        assert self._hit(
+            "SELECT d.disp_id FROM disp_tbl d JOIN trans t "
+            "ON d.client_id = t.account_id"
+        ) == []
+
+    def test_declared_key_plus_extra_condition_passes(self):
+        """声明键在场 + 额外非键条件(t.date = d.opened) → 放行。"""
+        assert self._hit(
+            f"SELECT t.trans_id FROM trans t JOIN disp_tbl d {DECLARED_EQ} "
+            "AND t.date = d.opened"
+        ) == []
+
+    def test_where_form_join(self):
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t, disp_tbl d "
+            "WHERE t.account_id = d.client_id"
+        ) == []
+        hits = self._hit(
+            "SELECT t.trans_id FROM trans t, disp_tbl d WHERE t.bank = d.region"
+        )
+        assert [h["name"] for h in hits] == ["F5-b"]
+
+    def test_one_sided_declared_column_still_hits(self):
+        """一端用了声明列、另一端没有 → 键对不成对,不是声明路径。"""
+        hits = self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.account_id = d.region"
+        )
+        assert [h["name"] for h in hits] == ["F5-b"]
+
+    def test_composite_keys_pair_positionally(self):
+        """zip 位置配对(与编译器同款):b=y 命中;a=y 不成对。"""
+        ctx = build_object_context(_model_with(_rel(
+            from_columns=["account_id", "client_id"],
+            to_columns=["region", "branch"],
+        )))
+        assert ctx is not None
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.client_id = d.branch", ctx,
+        ) == []
+        hits = self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.account_id = d.branch", ctx,
+        )
+        assert [h["name"] for h in hits] == ["F5-b"]
+
+    def test_using_declared_same_name_passes(self):
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d USING (account_id)",
+            _same_name_ctx(),
+        ) == []
+
+    def test_collapsed_join_without_declaration_passes(self):
+        """塌缩连接(trans ↔ disp 经共有的 account_id,两张表间**没有**
+        声明)→ 不在守卫范围内,放行 —— 这正是设计要避开的那类误报。"""
+        model = _mn_model()  # 声明只连 trans ↔ disp_tbl
+        ctx = build_object_context(model)
+        assert ctx is not None
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN other o ON t.account_id = o.account_id",
+            ctx,
+        ) == []
+
+    def test_second_table_pair_without_declaration_passes(self):
+        hits = self._hit(
+            "SELECT o.x FROM other o JOIN another n ON o.y = n.y"
+        )
+        assert hits == []
+
+    def test_no_linking_equality_passes(self):
+        """交叉连接 / 范围连接:没有等值 → 不判(漏判不误拦)。"""
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t, disp_tbl d"
+        ) == []
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.date BETWEEN d.start AND d.end"
+        ) == []
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t NATURAL JOIN disp_tbl d"
+        ) == []
+
+    def test_or_subtree_not_counted(self):
+        """OR 下的等值不保证成立 → 不下钻;无其他连接等值 → 不判。"""
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.bank = d.region OR t.account_id = d.client_id"
+        ) == []
+
+    def test_unqualified_columns_not_attributed(self):
+        """无限定符的列归属不明 → 不参与认定(偏漏判一侧)。"""
+        assert self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d "
+            "ON t.bank = region"
+        ) == []
+
+    def test_aliases_resolve_to_physical_tables(self):
+        hits = self._hit(
+            "SELECT x.trans_id FROM trans AS x JOIN disp_tbl AS y "
+            "ON x.bank = y.region"
+        )
+        assert [h["name"] for h in hits] == ["F5-b"]
+
+    def test_english_message(self):
+        hits = self._hit(
+            "SELECT t.trans_id FROM trans t JOIN disp_tbl d ON t.bank = d.region",
+            lang="en",
+        )
+        assert "undeclared" in hits[0]["reason"]
+
+    def test_fanout_takes_precedence_in_same_layer(self):
+        """同层两个守卫都成立 → 报 F5-a(静默放大优先)。"""
+        hits = self._hit(
+            "SELECT SUM(t.amount) FROM trans t JOIN disp_tbl d "
+            "ON t.bank = d.region"
+        )
+        assert [h["name"] for h in hits] == ["F5-a"]
 
 
 # ── 确定性 ──────────────────────────────────────────────────

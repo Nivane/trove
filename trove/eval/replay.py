@@ -196,6 +196,7 @@ _RULE_FAMILIES: dict[str, str] = {
     "F4-b": "ordering",
     "limit-without-order": "ordering",
     "F5-a": "structure",
+    "F5-b": "structure",
 }
 
 

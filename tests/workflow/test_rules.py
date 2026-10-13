@@ -916,6 +916,7 @@ class TestRuleFamilies:
         # F5-* 是平行一遍(object_check)的命中,不在 _RULES 注册表里 ——
         # 家族登记为评测聚合(validation_hits 按家族归并)。
         "F5-a": "structure",
+        "F5-b": "structure",
     }
 
     def test_registered_rules_all_mapped(self):

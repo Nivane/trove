@@ -3186,6 +3186,39 @@ class TestValidateObjectCheck:
         assert update["rules_passed"] is True
         assert "validation_hits" not in update
 
+    async def test_undeclared_key_join_intercepts(self):
+        """F5-b 在 validate 节点:声明的是 students.id → courses.student_id,
+        按 grade = title 连接 = 未声明的连接路径 → 拦。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(semantic_layer=_mn_provider())
+        update = await node(make_state(
+            question="course titles",
+            sql="SELECT s.name FROM students s JOIN courses c ON s.grade = c.title",
+            columns=["name"],
+            rows=[["Alice"]],
+            row_count=1,
+        ))
+        assert "error" not in update
+        assert "[F5-b]" in update["error_feedback"]
+        assert update["validation_hits"][0]["name"] == "F5-b"
+        assert update["retry_count"] == 1
+
+    async def test_declared_key_join_passes_validate(self):
+        """按声明键连接 → 两个守卫都不命中,走正常路径。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(semantic_layer=_mn_provider())
+        update = await node(make_state(
+            question="course titles",
+            sql="SELECT s.name FROM students s JOIN courses c "
+                "ON s.id = c.student_id",
+            columns=["name"],
+            rows=[["Alice"]],
+            row_count=1,
+        ))
+        assert update["rules_passed"] is True
+
     async def test_authoritative_sql_exempts_object_check(self, monkeypatch):
         """权威编译 SQL 豁免:命中只 log,不烧修正预算、不写 validation_hits。"""
         from trove.workflow.nodes import validate as validate_mod
