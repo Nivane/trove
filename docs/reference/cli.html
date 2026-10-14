@@ -179,7 +179,7 @@ trove schedule --daemon      # 常驻循环</code></pre>
 trove validate --datasource demo   # 只体检一个数据源
 trove validate --json | jq .       # 机器可读（CI 消费）
 trove validate --strict            # 警告也算失败
-trove validate --live              # 连真源：枚举缺口 + 真方言编译
+trove validate --live              # 连真源：枚举缺口 + 真方言编译 + 声明验证（键/基数/fan-out 前提）
 trove validate --run               # 装前试跑：语料对已确认资产做装/不装双态消融
 trove validate --impact &lt;包|目录&gt;   # 影响面回放：候选资产装上前后判定差分（与 --run 互斥）
 trove validate --packs             # 反作弊：KB 示例 SQL vs 本地 gold 集（gold.sql）</code></pre>

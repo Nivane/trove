@@ -688,6 +688,98 @@ async def test_live_probe_closes_connection_on_probe_failure(tmp_path, monkeypat
     assert adapter._connected is False
 
 
+# ── 声明验证:声明 vs 库(live-gated) ─────────────────────
+
+
+def _declared_semantics() -> dict:
+    """带实体声明与一条关系的语义模型(其余同 ``_SEMANTICS``)。"""
+    import copy
+
+    data = copy.deepcopy(_SEMANTICS)
+    model = data["semantic_model"][0]
+    by_name = {d["name"]: d for d in model["datasets"]}
+    by_name["loan"]["entity"] = {
+        "display_name": "贷款", "natural_keys": ["loan_id"]}
+    by_name["branch"]["entity"] = {
+        "display_name": "分行", "natural_keys": ["branch_id"]}
+    model["relationships"] = [{
+        "name": "loan_to_branch", "from": "loan", "to": "branch",
+        "from_columns": ["branch_id"], "to_columns": ["branch_id"],
+        "cardinality": "1:N",
+    }]
+    return data
+
+
+async def _live_fixture(tmp_path, monkeypatch, *, ddl: list[str]):
+    import sqlite3
+
+    from trove.core.types import DatasourceConfig
+    from trove.services.datasource.registry import ConnectorRegistry
+
+    db = tmp_path / "probe.db"
+    con = sqlite3.connect(db)
+    for stmt in ddl:
+        con.execute(stmt)
+    con.commit()
+    con.close()
+
+    registry = ConnectorRegistry()
+    adapter = await registry.register(DatasourceConfig(
+        name="mini", type="sqlite", connection_params={"path": str(db)}))
+
+    async def _fake(datasource, project_root):
+        return registry, adapter
+
+    monkeypatch.setattr(validate_service, "_resolve_live_adapter", _fake)
+
+
+async def test_live_declaration_violation_is_error(tmp_path, monkeypatch):
+    """声明的自然键在库里重复 → 硬错误(与 kb.enums 同款:声明与库不一致),
+    exit 1;同一次探测里成立的关系照常计入 decl_verified。"""
+    _make_kb(tmp_path, semantics=_declared_semantics())
+    await _live_fixture(tmp_path, monkeypatch, ddl=[
+        "CREATE TABLE loan (loan_id INTEGER, amount REAL, date TEXT)",
+        "CREATE TABLE branch (branch_id INTEGER, name TEXT)",
+        "INSERT INTO loan VALUES (1, 10.0, '2024-01-01'), (1, 20.0, '2024-01-02')",
+        "INSERT INTO branch VALUES (1, 'a'), (2, 'b')",
+    ])
+    report = await run_validate("mini", project_root=tmp_path, live=True)
+
+    keys = _checks(report, "semantic.keys")
+    assert [i.severity for i in keys] == ["error"]
+    assert any("不唯一" in i.message for i in keys)
+    assert _checks(report, "semantic.relationships") == []   # to 侧唯一 → 通过
+    assert report.counts["mini.decl_violated"] == 1
+    assert report.counts["mini.decl_verified"] == 2          # branch 键 + 关系
+    assert report.exit_code() == 1
+
+
+async def test_live_unverifiable_never_counts_as_verified(tmp_path, monkeypatch):
+    """探测失败 → warning(unverifiable),绝不折算成 verified。"""
+    _make_kb(tmp_path, semantics=_declared_semantics())
+    await _live_fixture(tmp_path, monkeypatch, ddl=[
+        "CREATE TABLE branch (branch_id INTEGER, name TEXT)",
+    ])   # loan 表刻意缺席 → 键与 from 侧探测都跑不了
+    report = await run_validate("mini", project_root=tmp_path, live=True)
+
+    keys = _checks(report, "semantic.keys")
+    assert [i.severity for i in keys] == ["warning"]
+    assert "探测失败" in keys[0].message
+    # 能证的照样证(branch 键 + 关系 to 侧 = 2),证不了的诚实单列 ——
+    # loan 那条绝不混进 verified,也不冒充硬拦(unverifiable 是 warning)
+    assert report.counts["mini.decl_verified"] == 2
+    assert report.counts["mini.decl_unverifiable"] >= 1
+    assert report.exit_code() == 0
+
+
+async def test_live_off_reports_no_declaration_findings(tmp_path):
+    """缺省档(不带 --live):声明验证整族不存在 —— 老的输出逐字节不变。"""
+    _make_kb(tmp_path, semantics=_declared_semantics())
+    report = await run_validate("mini", project_root=tmp_path)
+    assert _checks(report, "semantic.") == []
+    assert not any(k.endswith("decl_verified") for k in report.counts)
+
+
 # ── SKILL_NODES 与运行期调用点同源(pin) ───────────────────
 
 
