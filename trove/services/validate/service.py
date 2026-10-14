@@ -54,6 +54,12 @@ from trove.services.kb.live_lint import check_enums, check_undocumented_columns
 from trove.services.kb.service import KbService, _parse_file
 from trove.services.presets.models import Preset, parse_preset
 from trove.services.presets.service import _builtin_root
+from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.verify import (
+    VERIFIED,
+    VIOLATED,
+    verify_declarations,
+)
 from trove.services.skills.guards import GUARD_HOST
 from trove.services.skills.service import (
     FRONTMATTER_FIELDS,
@@ -267,14 +273,17 @@ def _check_kb(datasource: str, ds_dir: Path) -> tuple[list[Issue], dict[str, int
 
 async def _live_kb_checks(
     datasource: str, project_root: Path, ds_dir: Path,
-) -> tuple[list[Issue], str | None]:
-    """Optional live enum + undocumented-column probe (needs a connection).
+) -> tuple[list[Issue], str | None, dict[str, int]]:
+    """Optional live probes (need a connection): enum gaps, undocumented
+    columns, and declaration verification (keys / edges vs the live tables —
+    see ``semantic_layer.verify``).
 
-    Returns the issues and, when the datasource could be resolved, its real
+    Returns the issues, when the datasource could be resolved its real
     dialect (used by the decision compile gate so the dry run compiles the
-    same SQL the scheduler would).
+    same SQL the scheduler would), and the per-verdict declaration counts.
     """
     issues: list[Issue] = []
+    decl_counts: dict[str, int] = {}
     registry = adapter = None
     try:
         registry, adapter = await _resolve_live_adapter(datasource, project_root)
@@ -282,12 +291,12 @@ async def _live_kb_checks(
         issues.append(_warn(
             "kb.live", f"live 探测跳过:数据源解析失败: {e}",
             datasource=datasource))
-        return issues, None
+        return issues, None, {}
     if adapter is None:
         issues.append(_warn(
             "kb.live", "live 探测跳过:数据源未注册(先到管理端注册该数据源)",
             datasource=datasource))
-        return issues, None
+        return issues, None, {}
 
     _, _, tables, _ = _collect_entries(ds_dir)
     table_payloads = {str(t["name"]): t for t in tables}
@@ -310,6 +319,9 @@ async def _live_kb_checks(
                 f"列覆盖检查(对照 information_schema)仅 MySQL 档可用,"
                 f"本次 dialect={dialect or '未知'},跳过",
                 datasource=datasource))
+        sem_issues, decl_counts = await _live_semantic_checks(
+            datasource, ds_dir, adapter, dialect or "")
+        issues += sem_issues
     except Exception as e:  # noqa: BLE001
         issues.append(_warn(
             "kb.live", f"live 探测失败: {e}", datasource=datasource))
@@ -318,7 +330,42 @@ async def _live_kb_checks(
         # worker 线程,解释器退出时会 join 它 —— 结果是「报告打完了、进程
         # 永不退出」(CI 上表现为挂死)。探测成功与否都要关。
         await _close_quietly(registry=registry, adapter=adapter)
-    return issues, dialect
+    return issues, dialect, decl_counts
+
+
+async def _live_semantic_checks(
+    datasource: str, ds_dir: Path, adapter, dialect: str,
+) -> tuple[list[Issue], dict[str, int]]:
+    """Declared keys / edges vs the live database (``semantic_layer.verify``).
+
+    Severity: ``violated`` = error —— 声明在当下就是假的(键重复、「一」
+    侧不唯一、dedup 前提不成立),与 kb.enums 同类:KB 说 X、库说不是。
+    ``advisory`` / ``unverifiable`` = warning —— 未声明与"判不了"都拦不住
+    任何东西,但也不许静默;**判不了绝不折算成 verified**。
+
+    ``semantics.yml`` 缺席 → 静默跳过:静态侧已按「缺少语义模型」硬错误
+    报过,这里再报一次只会是回声。解析失败 → 一条 warning 如实说跳过
+    (静态侧报的是文件级问题,不替它下"就是解析问题"的结论)。
+    """
+    path = ds_dir / "semantics.yml"
+    if not path.exists():
+        return [], {}
+    try:
+        model = parse_ossie(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 — 如实跳过,不当通过
+        return [_warn("semantic.verify", f"语义模型解析失败,声明验证跳过: {e}",
+                      datasource=datasource)], {}
+    counts = {"decl_verified": 0, "decl_violated": 0,
+              "decl_advisory": 0, "decl_unverifiable": 0}
+    issues: list[Issue] = []
+    for p in await verify_declarations(adapter, model, dialect):
+        counts[f"decl_{p.verdict}"] += 1
+        if p.verdict == VERIFIED:
+            continue
+        make = _err if p.verdict == VIOLATED else _warn
+        issues.append(make(f"semantic.{p.kind}", p.message,
+                           target=p.target, datasource=datasource))
+    return issues, counts
 
 
 async def _close_quietly(*, registry=None, adapter=None) -> None:
@@ -1438,8 +1485,11 @@ async def run_validate(
         dialect = "sqlite"
         if live:
             try:
-                live_issues, live_dialect = await _live_kb_checks(name, root, ds_dir)
+                live_issues, live_dialect, live_counts = await _live_kb_checks(
+                    name, root, ds_dir)
                 report.issues += live_issues
+                for k, v in live_counts.items():
+                    report.counts[f"{name}.{k}"] = v
                 if live_dialect:
                     dialect = live_dialect
             except Exception as e:  # noqa: BLE001
