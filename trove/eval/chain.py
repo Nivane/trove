@@ -10,8 +10,8 @@ _cols_match;verdict 集合用 replay.JUDGED_VERDICTS。列限定词的**别名�
 """
 from __future__ import annotations
 
-# json/re 由本文件后段(plan 解析 / 责任跳 / 报告)消费 —— 一次导入到位,
-# 免得后段各写一份;本轮(L1 档位梯)尚未引用它们,故仍挂 F401 noqa。
+# re 由下文的 plan 侧解析器消费;json 是**有意的前置声明**(plan JSON 路径收的
+# 是已解码的 dict,CLI 自己 import json),目前仍无消费者 → F401 noqa 留着。
 import json  # noqa: F401
 import re
 from dataclasses import dataclass
@@ -462,6 +462,10 @@ def ladder(gold: SqlFacts | None, pred: SqlFacts | None, *,
 
 
 # ══ plan 侧事实(设计 §3.1 保真度 / §3.2 可比深度)═══════════
+#
+# 唯一口径(R21–R28):**解析不出 ≠ 计划说了「没有」**。读不出来的节**退出可比
+# 集**(PlanFacts.comparable),绝不冒充「该维度无分歧」;能从形状里用统一规则读
+# 出来的就读(带注解的 none、in 列表、裸函数名),一个字都不猜。
 
 
 @dataclass(frozen=True)
@@ -479,8 +483,18 @@ class PlanFacts:
     truncated: bool = False
 
 
-#: 结构化 plan(未来 eval_bird records):完整 dict → 六个档位全可比。
-_PLAN_JSON_RUNGS: frozenset[str] = frozenset(_RUNG_ORDER)
+#: 结构化 plan 的**键 → 档位**(R27:键在不在 = 可比不可比;缺 ``joins`` 键 ≠ 计划
+#: 说「没有连接」)。键表是这份映射的**单一来源**: ``_PLAN_JSON_RUNGS`` 由它派生,
+#: 两张手抄清单不许各写一份(否则迟早漂移)。
+_PLAN_JSON_KEY_RUNGS: tuple[tuple[str, str], ...] = (
+    ("tables", "table_set"), ("joins", "join_shape"), ("conditions", "filter_diff"),
+    ("aggregation", "agg_diff"), ("answer_columns", "projection_diff"),
+)
+#: 计划侧的**可比档位上限**(R22,设计 §3.2):排序/取值不参与比对 —— 真实
+#: ``PlanQuery.to_dict()`` 的 ``ordering`` 是 ``[{"column","direction"}]``,``str()``
+#: 出来是 Python repr,拿它比只会造假分歧;``limit`` 同理(文本侧根本不渲染)。
+#: gold 侧 L1 梯仍是六档,不受影响。值由键表派生,不另写一份。
+_PLAN_JSON_RUNGS: frozenset[str] = frozenset(r for _, r in _PLAN_JSON_KEY_RUNGS)
 #: 渲染文本的节标题 → 档位(行序固定为渲染序,截断取"最后一个出现的节"要用它)。
 _PLAN_TEXT_SECTION_RUNGS: tuple[tuple[str, str], ...] = (
     ("Tables:", "table_set"),
@@ -502,6 +516,16 @@ _JOIN_EDGE_RE = re.compile(
 _PLAN_COND_RE = re.compile(
     r"^([A-Za-z0-9_.]+)\s*(=|!=|<=|>=|<|>)\s*(.+)$")  # 值不折大小写(见 _plan_value)
 _PLAN_AGG_RE = re.compile(r"^([a-z_]+)(?:\s+distinct)?\s*[\s(]([a-z0-9_.]*)")
+#: 计划文本里的 `in` 条件(`in ('B','D')` / `in ['1996','1997']`,实测 3 种写法)。
+_PLAN_IN_RE = re.compile(r"^([A-Za-z0-9_.]+)\s+in\s*[\(\[](.*)[\)\]]$", re.I)
+#: `distinct` 认**词**不认子串(R25):`count_distinct` 里的 `distinct` 没有词边界。
+_PLAN_DISTINCT_RE = re.compile(r"\bdistinct\b")
+#: 聚合节的**结构化形状**(R28):`fn` / `fn(cols)` / `fn distinct cols` / `fn cols`。
+#: 摘掉尾注后仍不落这个形状的 = 散文(`percentage = count(…) / count(*) * 100`),
+#: 调用方把 agg 档退出可比集,绝不从散文里抽列。
+_PLAN_AGG_SHAPE_RE = re.compile(
+    r"^[a-z_]+(?: distinct(?: [a-z0-9_.]+)?|\s+[a-z0-9_.]+"
+    r"|\([a-z0-9_.,\s]*\))?$")
 #: runlog 的截断标记(`value[:600] + "…(N chars)"`,tracing/runlog.py::_fmt)。
 #: 它钉在**最后一行行尾**,实测会把节标题切成两半(8 月语料原文 ``Answ…(627 chars)``)——
 #: 当内容读会把它读进列名/节名,故解析前从末行摘掉:标记是 runlog 的注记,不是计划的话。
@@ -536,6 +560,94 @@ def _cols_from_plan_sql_fragment(fragment: str) -> tuple[Col, ...]:
     """
     cols = re.findall(r"([a-z0-9_]+)\.([a-z0-9_]+)", fragment.lower())
     return tuple(sorted({(t, c) for t, c in cols}))
+
+
+def _is_plan_none(raw: str) -> bool:
+    """渲染态空值可以带注解(实测 6/48:`none (GROUP BY district …)`),入参须已小写。
+
+    逐字相等不够 —— 带注解的 `none` 会被读成一个**叫 `none` 的聚合函数**
+    (gold 无聚合 → 伪造 agg_diff)。注解只是解释,不改「这一节说了没有」这个事实。
+    """
+    return raw == "none" or raw.startswith("none ") or raw.startswith("none(")
+
+
+def _plan_note_cuts(body: str) -> tuple[str, ...]:
+    """渲染格式 ``field op value (note)`` 的**切法候选**(由短到长,原文殿后)。
+
+    不给"尾注从哪开始"猜**一个**位置 —— 两侧的实测形态都会让位置规则翻车:
+    `in ('B','D')` 里的 `in (` 自己就是个 ` (`,而尾注**自己也常带括号**
+    (``IN ('B','D') (not eligible (finished unpaid, or running))``),从最后一个
+    ` (` 切会切在注解内部(残缺注解会让可读条件降成 raw,实测 6 条),从第一个
+    ` (` 切又会切进 IN 列表里。故:每个 ` (` 处给一种切法,由调用方拿各自的识别器
+    逐个试,**谁先读出来用谁**;一个都读不出就原样回去(调用方记 raw / 退出该档)。
+    值本身可以是子查询(``aa.k = (SELECT MAX(k) FROM aa)``,M2):它的切法读不出
+    条件,原文兜底后由 :func:`_plan_value` 归一到 ``"(subquery)"``。
+    """
+    if not (body.endswith(")") and " (" in body):
+        return (body,)
+    cuts: list[str] = []
+    pos = body.find(" (")
+    while pos != -1:
+        cuts.append(body[:pos])
+        pos = body.find(" (", pos + 2)
+    cuts.append(body)
+    return tuple(cuts)
+
+
+def _plan_condition(body: str) -> Predicate | None:
+    """一行条件文本 → 谓词(含尾注切法);读不出 → ``None``。"""
+    for cand in _plan_note_cuts(body):
+        m = _PLAN_COND_RE.match(cand)  # 原样匹配:值的大小写是事实,不折
+        if m:
+            field, op, value = m.groups()
+            return Predicate((_plan_col(field),), op, _plan_value(value))
+        mi = _PLAN_IN_RE.match(cand)
+        vals = _plan_in_values(mi.group(2)) if mi else None
+        if vals:  # `in ('B','D')`:与 SQL 侧 IN 词汇表同口径(排序去引号)
+            return Predicate((_plan_col(mi.group(1)),), "in", vals)
+    return None
+
+
+def _plan_in_values(raw: str) -> tuple[str, ...] | None:
+    """``in ('B','D')`` / ``in ['1996','1997']`` → 排序、去引号的字面量元组。
+
+    与 SQL 侧 ``_predicates`` 的 ``tuple(sorted(v for x in e.expressions
+    for v in _lit(x)))`` 同口径(设计 §2.3);子查询 / 读不出 → None(调用方记
+    raw 并把该档退出可比集,R24)。
+    """
+    if "select" in raw.lower():
+        return None
+    vals = [v.strip().strip("'\"").strip() for v in raw.split(",")]
+    vals = [v for v in vals if v]
+    return tuple(sorted(vals)) or None
+
+
+def _plan_aggs(raw: str) -> tuple[tuple[tuple[str, tuple[Col, ...]], ...], bool]:
+    """聚合节 → (aggs, 结构化可读?)。
+
+    实测 11 种写法里,模型常把聚合写成**散文**:`percentage = count(…) / count(*) * 100`、
+    `sum(loan.amount) grouped by year(loan.date), then growth rate = …`、
+    `count (percentage = …)`。口径(**读不出 ≠ 计划说没有**):某个尾注切法下仍是
+    `fn` / `fn(cols)` / `fn distinct col` 形状才可比;哪个切法都不落形状 = 散文
+    → ``False``,调用方把 `agg_diff` 从可比集摘掉,绝不从散文里抽列。
+    `distinct` 在摘注**前**的原文里认(R25)——`count (distinct client.client_id
+    for numerator: …)` 的 distinct 是**声明**,不是注(裸函数名那一支同样认它)。
+    裸函数名(`count` / `avg`)可比:它没说列 → 空列集当通配(聚合档既有的宽容
+    口径),这是「未表态」而不是「说没有列」。
+    """
+    low = raw.strip().lower()
+    if not low or _is_plan_none(low):
+        return (), True
+    for cand in _plan_note_cuts(low):
+        if not _PLAN_AGG_SHAPE_RE.match(cand):
+            continue
+        m = _PLAN_AGG_RE.match(cand)
+        fn = m.group(1) if m else cand             # 匹配不上 = 裸函数名
+        if _PLAN_DISTINCT_RE.search(low):          # 原文里认 distinct(R25)
+            fn = f"{fn}_distinct"
+        cols = _cols_from_plan_sql_fragment(cand)  # 只从结构部分抽列,不碰散文
+        return ((fn, cols if fn != "count_distinct" or cols else ()),), True
+    return ((low[:20], ()),), False
 
 
 def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
@@ -586,7 +698,7 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
     tables: tuple[str, ...] = ()
     if "table_set" in sections:
         raw = " ".join(sections["table_set"]).strip()
-        if raw and raw.lower() != "none":
+        if raw and not _is_plan_none(raw.lower()):
             tables = tuple(sorted(t.strip().lower()
                                   for t in raw.split(",") if t.strip()))
 
@@ -594,7 +706,7 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
     unresolved = 0
     if "join_shape" in sections:
         raw = " ".join(sections["join_shape"]).strip()
-        if raw and raw.lower() != "none":
+        if raw and not _is_plan_none(raw.lower()):
             for frag in raw.split(" AND "):
                 m = _JOIN_EDGE_RE.match(frag.strip().lower())
                 if not m:
@@ -604,34 +716,26 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
                 edges.add(tuple(sorted(((t1, c1), (t2, c2)))))
 
     conds: list[Predicate] = []
+    unparsed = 0  # 读不出的条件数:>0 时 filter 档整体退出可比集(R24)
     for ln in sections.get("filter_diff", []):
         body = ln.strip()
         if body.startswith("-"):
             body = body[1:].strip()
-        if not body or body.lower() == "none":
+        if not body or _is_plan_none(body.lower()):
             continue
-        if body.endswith(")") and " (" in body:
-            body = body[: body.rindex(" (")]  # 摘掉尾注
-        m = _PLAN_COND_RE.match(body)  # 原样匹配:值的大小写是事实,不折
-        if not m:
-            conds.append(Predicate((), "raw", (body[:60],)))
+        pred = _plan_condition(body)
+        if pred is not None:
+            conds.append(pred)
             continue
-        field, op, value = m.groups()
-        conds.append(Predicate((_plan_col(field),), op, _plan_value(value)))
+        # 读不出的条件**不冒充计划说过的话**:记原文,并把 filter 档退出可比集
+        # (读不出 ≠ 计划说「没有过滤」)。
+        conds.append(Predicate((), "raw", (body[:60],)))
+        unparsed += 1
 
     aggs: tuple[tuple[str, tuple[Col, ...]], ...] = ()
+    agg_readable = True
     if "agg_diff" in sections:
-        raw = " ".join(sections["agg_diff"]).strip().lower()
-        if raw and raw != "none":
-            m = _PLAN_AGG_RE.match(raw)
-            if m:
-                fn = m.group(1)
-                if "distinct" in raw:
-                    fn = f"{fn}_distinct"
-                cols = _cols_from_plan_sql_fragment(raw)
-                aggs = ((fn, cols if fn != "count_distinct" or cols else ()),)
-            else:
-                aggs = ((raw[:20], ()),)
+        aggs, agg_readable = _plan_aggs(" ".join(sections["agg_diff"]))
 
     projections: tuple[tuple[str | None, tuple[Col, ...]], ...] = ()
     if "projection_diff" in sections:
@@ -642,6 +746,10 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
                 for c in raw.split(",") if c.strip())
 
     comparable = {r for _, r in _PLAN_TEXT_SECTION_RUNGS if r in sections}
+    if unparsed:
+        comparable.discard("filter_diff")   # 读不出的条件混在里面:整档不判
+    if not agg_readable:
+        comparable.discard("agg_diff")      # 聚合节是散文:整档不判
     if truncated and comparable:
         last = max(comparable, key=lambda r: [x for _, x in _PLAN_TEXT_SECTION_RUNGS].index(r))
         comparable.discard(last)
@@ -656,18 +764,18 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
 
 
 def plan_facts_from_json(d: dict) -> PlanFacts:
-    """结构化 plan(未来 eval_bird records 的 ``plan`` 字段):完整 dict → 全档可比。
+    """结构化 plan(未来 eval_bird records 的 ``plan`` 字段):按键存在性定可比集。
 
-    键缺席才是"这个维度没得比":``ordering``/``answer_columns`` 键在(哪怕值为空)
-    即代表计划就该维度表过态。取值/排序同样不进可比集(``order_limit_diff`` 只认
-    ``ordering`` 键,不认 ``extreme`` —— 极值风格不在这六个结构维度里)。
+    键缺席才是"这个维度没得比":键在(哪怕值为空)即代表计划就该维度表过态,
+    键缺 ≠ 计划说「没有」。取值/排序**整体**不进可比集(R22:``ordering`` 是
+    ``[{"column","direction"}]``,``str()`` 出来是 repr 垃圾,拿它比只造假分歧)。
     """
     tables = tuple(sorted(str(t).strip().lower()
                           for t in (d.get("tables") or ()) if str(t).strip()))
     edges: set[tuple[tuple[str, str], tuple[str, str]]] = set()
     unresolved = 0
     raw_joins = str(d.get("joins") or "").strip()
-    if raw_joins and raw_joins.lower() != "none":
+    if raw_joins and not _is_plan_none(raw_joins.lower()):
         for frag in raw_joins.split(" AND "):
             m = _JOIN_EDGE_RE.match(frag.strip().lower())
             if not m:
@@ -676,49 +784,52 @@ def plan_facts_from_json(d: dict) -> PlanFacts:
             t1, c1, t2, c2 = m.groups()
             edges.add(tuple(sorted(((t1, c1), (t2, c2)))))
     conds: list[Predicate] = []
+    unparsed = 0  # 形态读不出的条件:>0 时 filter 档整体退出可比集(R24)
     for c in d.get("conditions") or ():
         if not isinstance(c, dict):
+            unparsed += 1        # 非 dict 条件:读不出 ≠ 计划说「没有条件」
             continue
         field = str(c.get("field") or "").strip().lower()
-        op = str(c.get("op") or "=").strip().lower()
         if not field:
+            unparsed += 1
+            continue
+        op = str(c.get("op") or "=").strip().lower()
+        raw_val = c.get("value")
+        if op == "in":
+            # 与文本路径同一个 `in` 词汇表(排序去引号);list 形态先摊成同一路
+            text = (",".join(map(str, raw_val))
+                    if isinstance(raw_val, (list, tuple))
+                    else str(raw_val or ""))
+            vals = _plan_in_values(text)
+            if vals:
+                conds.append(Predicate((_plan_col(field),), "in", vals))
+            else:
+                conds.append(Predicate((_plan_col(field),), "raw", (text[:60],)))
+                unparsed += 1
             continue
         conds.append(Predicate((_plan_col(field),), op,
-                               _plan_value(str(c.get("value") or ""))))
-    raw_agg = str(d.get("aggregation") or "").strip().lower()
-    aggs: tuple[tuple[str, tuple[Col, ...]], ...] = ()
-    if raw_agg and raw_agg != "none":
-        m = _PLAN_AGG_RE.match(raw_agg)
-        if m:
-            fn = m.group(1)
-            if "distinct" in raw_agg:
-                fn = f"{fn}_distinct"
-            cols = _cols_from_plan_sql_fragment(raw_agg)
-            aggs = ((fn, () if fn == "count_distinct" and not cols else cols),)
-        else:
-            aggs = ((raw_agg[:20], ()),)
+                               _plan_value(str(raw_val or ""))))
+    raw_agg = d.get("aggregation")
+    if isinstance(raw_agg, (list, tuple)):
+        # 多聚合列表形态(PlanQuery.aggregation 允许 str | list[str]):
+        # 与 _render_plan 同一条规则摊平 —— 压成 repr 等于凭空判它读不出。
+        raw_agg = ", ".join(str(a) for a in raw_agg)
+    aggs, agg_readable = _plan_aggs(str(raw_agg or ""))
     projections: tuple[tuple[str | None, tuple[Col, ...]], ...] = ()
     if "answer_columns" in d:
         projections = tuple(
             (None, (_plan_col(str(c)),))
             for c in (d.get("answer_columns") or ()) if str(c).strip())
-    has_order_key = "ordering" in d
-    order_raw = str(d.get("ordering") or "").strip().lower()
-    order: tuple[tuple[str, str], ...] = ()
-    if order_raw:
-        parts = order_raw.replace(",", " ").split()
-        if parts:
-            order = ((parts[0].split(".")[-1], "desc" if "desc" in parts[1:]
-                      else "asc"),)
     facts = SqlFacts(
         ok=True, tables=tables, join_edges=tuple(sorted(edges)),
         unresolved_joins=unresolved, conds=tuple(sorted(conds)), aggs=aggs,
-        groups=(), groups_known=False, order=order, has_limit=False,
+        groups=(), groups_known=False, order=(), has_limit=False,
         projections=projections,
     )
-    comparable = set(_PLAN_JSON_RUNGS)
-    if not has_order_key:
-        comparable.discard("order_limit_diff")
-    if "answer_columns" not in d:
-        comparable.discard("projection_diff")
+    comparable = {rung for key, rung in _PLAN_JSON_KEY_RUNGS
+                  if key in d and rung in _PLAN_JSON_RUNGS}
+    if unparsed:
+        comparable.discard("filter_diff")
+    if not agg_readable:
+        comparable.discard("agg_diff")
     return PlanFacts(facts=facts, comparable=frozenset(comparable))

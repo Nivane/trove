@@ -253,7 +253,7 @@ def test_plan_json_full_depth():
     })
     assert pf.comparable == frozenset(
         {"table_set", "join_shape", "filter_diff", "agg_diff",
-         "order_limit_diff", "projection_diff"})
+         "projection_diff"})  # 计划侧五档(R22):排序/取值不可比
     assert pf.facts.aggs == (("sum", (("loan", "amount"),)),)
     assert pf.facts.conds[0].values == ("A",)
     assert pf.facts.projections == ((None, (("", "account_id"),)),)
@@ -269,6 +269,129 @@ def test_plan_json_none_aggregation_and_subquery_value():
     })
     assert pf.facts.aggs == ()
     assert pf.facts.conds[0].values == ("(subquery)",)
+
+
+# ── R21–R28:解析不出 ≠ 计划说了「没有」(修订轮,零 LLM 离线实测)─────────
+
+
+def test_plan_text_truncation_marker_is_stripped():
+    cut = (PLAN_TEXT[:PLAN_TEXT.index("Answer columns:")]
+           + "Answer columns: account_id…(627 chars)")
+    pf = plan_facts_text(cut, truncated=True)
+    assert pf.facts.projections == ((None, (("", "account_id"),)),)  # 标记不是列名
+    assert "projection_diff" not in pf.comparable                    # 截断:最后一个节退出可比
+
+
+def test_plan_text_half_cut_header_still_registers_the_section():
+    cut = PLAN_TEXT[:PLAN_TEXT.index("Answer columns:")] + "Answer col…(627 chars)"
+    pf = plan_facts_text(cut, truncated=True)
+    assert "projection_diff" not in pf.comparable
+    assert "agg_diff" in pf.comparable   # 半截表头仍登记该节 →「摘最后出现的节」不摘错
+
+
+def test_plan_agg_none_with_note_is_not_an_aggregate():
+    pf = plan_facts_text("Tables: d\nJoins: none\nConditions: none\n"
+                         "Aggregation: none (GROUP BY district to list each once)\n"
+                         "Answer columns: district")
+    assert pf.facts.aggs == () and "agg_diff" in pf.comparable
+
+
+def test_plan_agg_prose_is_not_comparable():
+    pf = plan_facts_text("Tables: d\nJoins: none\nConditions: none\n"
+                         "Aggregation: percentage = count(d.x) / count(*) * 100\n"
+                         "Answer columns: pct")
+    assert "agg_diff" not in pf.comparable       # 读不出 → 退可比集,不猜
+
+
+def test_plan_agg_note_columns_are_not_extracted():
+    pf = plan_facts_text("Tables: d\nJoins: none\nConditions: none\n"
+                         "Aggregation: count (percentage = count(d.gender='M') / count(*))\n"
+                         "Answer columns: pct")
+    assert pf.facts.aggs == (("count", ()),)     # 注里的 d.gender 不是聚合的列
+    assert "agg_diff" in pf.comparable
+
+
+def test_plan_agg_distinct_word_not_substring():
+    pf = plan_facts_text("Tables: d\nJoins: none\nConditions: none\n"
+                         "Aggregation: count_distinct d.client_id\n"
+                         "Answer columns: n")
+    assert pf.facts.aggs == (("count_distinct", (("d", "client_id"),)),)
+
+
+def test_plan_text_in_list_cond_is_readable():
+    pf = plan_facts_text("Tables: aa\nJoins: none\n"
+                         "Conditions:\n  - aa.k in ('D','B') (eligible)\n"
+                         "Aggregation: none\nAnswer columns: x")
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "in", ("B", "D")),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_unreadable_cond_drops_filter_depth():
+    pf = plan_facts_text("Tables: aa\nJoins: none\n"
+                         "Conditions:\n  - aa.k between 1 and 3\n"
+                         "Aggregation: none\nAnswer columns: x")
+    assert "filter_diff" not in pf.comparable
+    assert any(p.op == "raw" for p in pf.facts.conds)
+
+
+def test_plan_json_comparable_follows_key_presence():
+    pf = plan_facts_from_json({"tables": ["aa"]})
+    assert pf.comparable == frozenset({"table_set"})
+
+
+def test_plan_json_ordering_is_not_comparable():
+    pf = plan_facts_from_json({
+        "tables": ["loan"], "joins": "none", "conditions": [],
+        "aggregation": "none", "answer_columns": ["x"],
+        "ordering": [{"column": "loan.amount", "direction": "desc"}],
+        "limit": 1,
+    })
+    assert "order_limit_diff" not in pf.comparable
+    assert pf.facts.order == ()
+
+
+def test_plan_note_strip_keeps_note_less_subquery_value():
+    # M2:尾注摘除不得吃掉「值本身是子查询」的括号(无尾注时更不该动它)
+    pf = plan_facts_text("Tables: aa\nJoins: none\n"
+                         "Conditions:\n  - aa.k = (SELECT MAX(k) FROM aa)\n"
+                         "Aggregation: none\nAnswer columns: x")
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "=", ("(subquery)",)),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_note_with_inner_parens_is_stripped_whole():
+    # 尾注自己带括号(实测 4+2 条 IN 条件):从第一个非子查询的 " (" 摘,
+    # 既不把注解切进值里,也不因残缺注解把可读条件降成 raw
+    listed = plan_facts_text(
+        "Tables: loan\nJoins: none\n"
+        "Conditions:\n"
+        "  - loan.status IN ('B','D') (not eligible (finished unpaid, or running))\n"
+        "Aggregation: none\nAnswer columns: x")
+    assert listed.facts.conds == (Predicate((("loan", "status"),), "in", ("B", "D")),)
+    assert "filter_diff" in listed.comparable
+    polluted = plan_facts_text(
+        "Tables: district\nJoins: none\n"
+        "Conditions:\n"
+        "  - district.A11 > 8000 (average income (average salary) exceeds)\n"
+        "Aggregation: none\nAnswer columns: x")
+    assert polluted.facts.conds == (Predicate((("district", "a11"),), ">", ("8000",)),)
+
+
+def test_plan_json_in_list_and_unparsed_cond_depth():
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"field": "aa.k", "op": "in", "value": ["D", "B"]}],
+        "aggregation": "none", "answer_columns": ["x"],
+    })
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "in", ("B", "D")),)
+    assert "filter_diff" in pf.comparable
+    # 缺 field 的条件读不出 → filter 档退出可比集(缺键 ≠ 计划说「没有条件」)
+    bad = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"op": "=", "value": "1"}],
+        "aggregation": "none", "answer_columns": ["x"],
+    })
+    assert "filter_diff" not in bad.comparable
 
 
 def test_alias_resolved_to_base_table_when_used_once():
