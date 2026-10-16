@@ -33,6 +33,15 @@ def test_conds_flattened_including_subquery():
     assert any(p.op == "raw" for p in got.conds)  # IS NULL 走原文兜底
 
 
+def test_in_subquery_marker():
+    # IN (SELECT …):sqlglot 把它存在 args["query"],不折成 (empty)——
+    # 否则它与真·空 IN 列表同形,且与 `= (SELECT …)` 的标记词汇不一致
+    got = _f("SELECT * FROM t WHERE t.a IN (SELECT b FROM t2)")
+    assert got.conds[0].values == ("(subquery)",)
+    lit = _f("SELECT * FROM t WHERE t.a IN (1, 2, 3)")
+    assert lit.conds[0].values == ("1", "2", "3")
+
+
 def test_join_on_is_not_a_cond():
     got = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i WHERE a.k = 7")
     assert len(got.conds) == 1

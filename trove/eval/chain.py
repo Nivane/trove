@@ -115,6 +115,9 @@ def _predicates(cond: exp.Expression) -> list[Predicate]:
             stack.extend((e.this, e.expression))
             continue
         if isinstance(e, exp.In):
+            if e.args.get("query") is not None:  # IN (SELECT …) 存 args["query"],不在 expressions
+                out.append(Predicate(_cols_of(e.this), "in", ("(subquery)",)))
+                continue
             vals = tuple(sorted(v for x in e.expressions for v in _lit(x)))
             out.append(Predicate(_cols_of(e.this), "in", vals or ("(empty)",)))
             continue
