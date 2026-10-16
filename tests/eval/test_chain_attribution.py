@@ -45,7 +45,8 @@ def test_in_subquery_marker():
 def test_join_on_is_not_a_cond():
     got = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i WHERE a.k = 7")
     assert len(got.conds) == 1
-    assert got.conds[0].cols == (("a", "k"),)
+    # 列限定词归一到基表名(别名 a → aa;基表只出现一次)
+    assert got.conds[0].cols == (("aa", "k"),)
 
 
 def test_aggs_groups_order_limit_projections():
@@ -53,8 +54,9 @@ def test_aggs_groups_order_limit_projections():
         "SELECT s.region, COUNT(DISTINCT s.id) FROM sales s "
         "GROUP BY s.region ORDER BY s.region DESC LIMIT 5"
     )
-    assert got.aggs == (("count_distinct", (("s", "id"),)),)
-    assert got.groups == ((("s", "region"),),)
+    # 别名归一:限定词按基表名记账(s → sales),列宽容仍由比对层兜底
+    assert got.aggs == (("count_distinct", (("sales", "id"),)),)
+    assert got.groups == ((("sales", "region"),),)
     assert got.order == (("region", "desc"),)
     assert got.has_limit is True
     assert len(got.projections) == 2
@@ -267,3 +269,25 @@ def test_plan_json_none_aggregation_and_subquery_value():
     })
     assert pf.facts.aggs == ()
     assert pf.facts.conds[0].values == ("(subquery)",)
+
+
+def test_alias_resolved_to_base_table_when_used_once():
+    # 列限定词写别名还是基表名是拼写:基表只出现一次时归一到基表名
+    got = sql_facts("SELECT c.gender FROM client c WHERE c.gender = 'F'")
+    assert Predicate((("client", "gender"),), "=", ("F",)) in got.conds
+    assert got.projections == ((None, (("client", "gender"),)),)
+
+
+def test_self_join_aliases_keep_their_identity():
+    # 自连接:同一基表出现两次,别名承载身份,绝不合并
+    got = sql_facts("SELECT a.x FROM aa a JOIN aa b ON a.i = b.i WHERE a.x = 1")
+    assert Predicate((("a", "x"),), "=", ("1",)) in got.conds
+
+
+def test_alias_vs_base_name_is_not_a_filter_divergence():
+    # 实测语料里最常见的假分歧:一侧别名、一侧基表名
+    gold = _f("SELECT c.gender FROM client c JOIN disp d ON c.client_id = d.client_id"
+              " WHERE c.gender = 'F'")
+    pred = _f("SELECT client.gender FROM client JOIN disp"
+              " ON client.client_id = disp.client_id WHERE client.gender = 'F'")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"

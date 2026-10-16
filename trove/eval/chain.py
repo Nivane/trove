@@ -5,14 +5,15 @@
 
 口径单点定义(不许私有副本):表/连接复用 attribution.parse_path;列宽容
 (裸列≡限定列、COUNT(*)≡COUNT(col))复用 PlanSignature._col_matches/
-_cols_match;verdict 集合用 replay.JUDGED_VERDICTS。
+_cols_match;verdict 集合用 replay.JUDGED_VERDICTS。列限定词的**别名归一**
+(别名→基表名;基表在语句里只出现一次才归、自连接保留别名身份)见 :func:`_alias_map`。
 """
 from __future__ import annotations
 
 # json/re 由本文件后段(plan 解析 / 责任跳 / 报告)消费 —— 一次导入到位,
 # 免得后段各写一份;本轮(L1 档位梯)尚未引用它们,故仍挂 F401 noqa。
 import json  # noqa: F401
-import re  # noqa: F401
+import re
 from dataclasses import dataclass
 
 import sqlglot
@@ -99,6 +100,45 @@ def _lit(node: exp.Expression) -> tuple[str, ...]:
     if isinstance(node, exp.Neg):
         return tuple("-" + v for v in _lit(node.this))
     return (node.sql(dialect="").lower()[:40],)
+
+
+def _alias_map(stmts: list[exp.Expression]) -> dict[str, str]:
+    """别名 → 基表名;基表在整条语句里**只出现一次**才归(含子查询里的出现)。
+
+    列限定词写别名还是基表名是拼写,不是事实(实测语料里最常见的假分歧:
+    gold 写 `c.gender`、plan 写 `client.gender`)。单次出现的基表,两侧指的是同一
+    张表,归一到基表名后比的才是**列身份**。
+    **自连接绝不合并**:同一基表出现两次时两个别名承载两条不同的行流,合并会把
+    真实差异抹平(设计 §2.3 的宽容只到"列怎么写",不到"说的是哪张表");同一别名
+    在不同子查询里指向不同基表(嵌套复用别名)→ 整个别名不归:宁可不归,不猜。
+    **不复用 attribution._alias_map**:那把尺子答"别名指向哪张基表"(派生表/CTE
+    归空串、自连接别名同归一张基表),服务于"路径在不在声明内";这把尺子答
+    "别名的拼写何时可与基表名互换",自连接的合并正是它必须拒绝的事。
+    """
+    counts: dict[str, int] = {}
+    alias_bases: dict[str, set[str]] = {}
+    for stmt in stmts:
+        for t in stmt.find_all(exp.Table):
+            base = (t.name or "").lower()
+            if not base:
+                continue
+            counts[base] = counts.get(base, 0) + 1
+            alias = (t.alias or "").lower()
+            if alias:
+                alias_bases.setdefault(alias, set()).add(base)
+    out: dict[str, str] = {}
+    for alias, bases in alias_bases.items():
+        if len(bases) != 1:
+            continue
+        base = next(iter(bases))
+        if counts.get(base, 0) == 1:
+            out[alias] = base
+    return out
+
+
+def _map_cols(cols: tuple[Col, ...], amap: dict[str, str]) -> tuple[Col, ...]:
+    """按别名表归一列限定词(只换表名;升序去重不变式原样保留)。"""
+    return tuple(sorted({(amap.get(t, t), c) for t, c in cols}))
 
 
 def _predicates(cond: exp.Expression) -> list[Predicate]:
@@ -217,6 +257,14 @@ def sql_facts(sql: str, dialect: str = "mysql") -> SqlFacts | None:
                     order.append((col, "desc" if o.args.get("desc") else "asc"))
         if stmt.args.get("limit") is not None:
             has_limit = True
+    # 别名归一(列限定词只有这一处口径):conds/groups/projections 后处理一遍,
+    # aggs 由归一后的 projections 派生。没有可归的别名时**整段跳过** ——
+    # 无别名 SQL 的事实逐字节不变。
+    amap = _alias_map(stmts)
+    if amap:
+        conds = [Predicate(_map_cols(p.cols, amap), p.op, p.values) for p in conds]
+        projections = [(n, _map_cols(c, amap)) for n, c in projections]
+        groups = [_map_cols(g, amap) for g in groups]
     aggs = tuple(sorted({(p[0], p[1]) for p in projections if p[0]}))
     return SqlFacts(
         ok=True,
