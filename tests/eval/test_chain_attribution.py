@@ -192,3 +192,78 @@ def test_conds_exact_duplicate_is_not_a_divergence():
     g2 = _f("SELECT a.x, a.x FROM aa a")
     p2 = _f("SELECT a.x FROM aa a")
     assert ladder(g2, p2, verdict="MISMATCH").bucket == "projection_diff"
+
+
+from trove.eval.chain import plan_facts_from_json, plan_facts_text
+
+PLAN_TEXT = (
+    "Tables: client, disp, account, district\n"
+    "Joins: client.client_id = disp.client_id AND disp.account_id = account.account_id\n"
+    "Conditions:\n"
+    "  - district.A11 = (SELECT MAX(A11) FROM district) (最高平均工资)\n"
+    "  - client.gender = F\n"
+    "Aggregation: count distinct client.client_id\n"
+    "Extreme: max(client.birth_date) · scope: after all filters\n"
+    "Answer columns: account_id"
+)
+
+
+def test_plan_text_sections_and_depth():
+    pf = plan_facts_text(PLAN_TEXT)
+    assert pf is not None
+    assert pf.facts.tables == ("account", "client", "disp", "district")
+    assert pf.facts.join_edges == (
+        (("account", "account_id"), ("disp", "account_id")),
+        (("client", "client_id"), ("disp", "client_id")),
+    )  # 边内、边间都排序(升序)
+    assert ("filter_diff" in pf.comparable) and ("projection_diff" in pf.comparable)
+    assert "order_limit_diff" not in pf.comparable  # 文本不渲染 ORDER BY
+    assert pf.facts.aggs == (("count_distinct", (("client", "client_id"),)),)
+    assert pf.facts.projections == ((None, (("", "account_id"),)),)
+    assert any(p.values == ("(subquery)",) for p in pf.facts.conds)
+    assert any(p.values == ("F",) for p in pf.facts.conds)
+
+
+def test_plan_text_truncated_drops_last_section():
+    cut = PLAN_TEXT[:PLAN_TEXT.index("Answer columns:")] + "Answer col"
+    pf = plan_facts_text(cut, truncated=True)
+    assert "projection_diff" not in pf.comparable
+    assert "agg_diff" in pf.comparable
+
+
+def test_plan_text_none_variants():
+    pf = plan_facts_text("Tables: none\nJoins: none\nConditions: none\n"
+                         "Aggregation: none\nExtreme: none() · scope: none")
+    assert pf.facts.tables == () and pf.facts.aggs == () and pf.facts.conds == ()
+    assert "projection_diff" not in pf.comparable  # 无 Answer columns 行
+
+
+def test_plan_json_full_depth():
+    pf = plan_facts_from_json({
+        "tables": ["loan", "account"],
+        "joins": "loan.account_id = account.account_id",
+        "conditions": [{"field": "loan.status", "op": "=", "value": "A",
+                        "note": "finished"}],
+        "aggregation": "sum(loan.amount)",
+        "extreme": {"func": "max", "column": "loan.date", "scope": "global"},
+        "ordering": "",
+        "answer_columns": ["account_id"],
+    })
+    assert pf.comparable == frozenset(
+        {"table_set", "join_shape", "filter_diff", "agg_diff",
+         "order_limit_diff", "projection_diff"})
+    assert pf.facts.aggs == (("sum", (("loan", "amount"),)),)
+    assert pf.facts.conds[0].values == ("A",)
+    assert pf.facts.projections == ((None, (("", "account_id"),)),)
+    assert pf.facts.groups_known is False  # plan 不渲染分组
+
+
+def test_plan_json_none_aggregation_and_subquery_value():
+    pf = plan_facts_from_json({
+        "tables": ["d"], "joins": "none",
+        "conditions": [{"field": "d.A11", "op": "=",
+                        "value": "(SELECT MAX(A11) FROM d)"}],
+        "aggregation": "none", "answer_columns": [],
+    })
+    assert pf.facts.aggs == ()
+    assert pf.facts.conds[0].values == ("(subquery)",)
