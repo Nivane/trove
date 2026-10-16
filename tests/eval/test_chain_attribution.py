@@ -68,3 +68,78 @@ def test_count_star_is_wildcard_zero_cols():
 def test_unparseable_returns_none():
     assert sql_facts("SELECT FROM WHERE ((", "mysql") is None
     assert sql_facts("", "mysql") is None
+
+
+from trove.eval.chain import ladder
+
+
+def test_no_sql_on_refused_and_blank():
+    gold = _f("SELECT 1 FROM a")
+    v = ladder(gold, None, verdict="REFUSED", had_sql=False)
+    assert v.bucket == "no_sql"
+    v2 = ladder(gold, None, verdict="", had_sql=False)
+    assert v2.bucket == "no_sql"
+
+
+def test_pred_unparseable_is_its_own_bucket():
+    v = ladder(_f("SELECT 1 FROM a"), None, verdict="MISMATCH", had_sql=True)
+    assert v.bucket == "pred_unparseable"
+
+
+def test_exec_error_rung():
+    v = ladder(_f("SELECT 1 FROM a"), _f("SELECT 1 FROM a"),
+               verdict="EXECUTION_ERROR")
+    assert v.bucket == "exec_error"
+
+
+def test_rung_order_first_wins_with_also_differ():
+    gold = _f("SELECT a.x FROM aa a WHERE a.k = 'F'")
+    pred = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i WHERE a.k = 'M'")
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "table_set"
+    assert "join_shape" in v.also_differ and "filter_diff" in v.also_differ
+
+
+def test_table_set_observations():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pred = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i JOIN cc c ON c.i = a.i")
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "table_set"
+    assert "extra_table_read" in v.observations
+    v2 = ladder(pred, gold, verdict="MISMATCH")
+    assert "needed_table_never_read" in v2.observations
+
+
+def test_structure_equal():
+    sql = "SELECT a.x FROM aa a JOIN bb b ON a.i = b.i WHERE a.k = 1"
+    v = ladder(_f(sql), _f(sql), verdict="MISMATCH")
+    assert v.bucket == "structure_equal"
+
+
+def test_filter_diff_case_only_observation():
+    gold = _f("SELECT a.x FROM aa a WHERE a.gender = 'F'")
+    pred = _f("SELECT a.x FROM aa a WHERE a.gender = 'f'")
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "filter_diff"
+    assert "case_only_value_diff" in v.observations
+
+
+def test_extreme_style_mismatch_observation():
+    gold = _f("SELECT a.x FROM aa a ORDER BY a.x DESC LIMIT 1")
+    pred = _f("SELECT MAX(a.x) FROM aa a")
+    v = ladder(gold, pred, verdict="MISMATCH")
+    # 聚合档先于排序档命中(一侧有 MIN/MAX、另一侧没有);观察照发
+    assert v.bucket == "agg_diff"
+    assert "order_limit_diff" in v.also_differ
+    assert "extreme_style_mismatch" in v.observations
+
+
+def test_gold_unparseable_undecidable():
+    v = ladder(None, _f("SELECT 1 FROM a"), verdict="MISMATCH")
+    assert v.bucket == "undecidable"
+
+
+def test_projection_diff_tolerates_qualified_and_count_star():
+    gold = _f("SELECT COUNT(*) FROM aa a")
+    pred = _f("SELECT COUNT(a.i) FROM aa a")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"

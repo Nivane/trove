@@ -9,9 +9,8 @@ _cols_match;verdict 集合用 replay.JUDGED_VERDICTS。
 """
 from __future__ import annotations
 
-# json/re 与模块 docstring 点名的两个口径单点定义(replay.JUDGED_VERDICTS /
-# PlanSignature 的列宽容)由本文件后段(plan 解析 / 责任跳 / 报告)消费 ——
-# 一次导入到位,免得后段各写一份。抽取部分本轮尚未引用,故挂 F401 noqa。
+# json/re 由本文件后段(plan 解析 / 责任跳 / 报告)消费 —— 一次导入到位,
+# 免得后段各写一份;本轮(L1 档位梯)尚未引用它们,故仍挂 F401 noqa。
 import json  # noqa: F401
 import re  # noqa: F401
 from dataclasses import dataclass
@@ -20,8 +19,8 @@ import sqlglot
 from sqlglot import exp
 
 from trove.eval.attribution import parse_path
-from trove.eval.replay import JUDGED_VERDICTS  # noqa: F401
-from trove.services.semantic_layer.contract import Col, PlanSignature  # noqa: F401
+from trove.eval.replay import JUDGED_VERDICTS
+from trove.services.semantic_layer.contract import Col, PlanSignature
 
 # ── 桶常量(设计 §2.2 / §3.2)─────────────────────────────
 L1_BUCKETS: tuple[str, ...] = (
@@ -231,3 +230,123 @@ def sql_facts(sql: str, dialect: str = "mysql") -> SqlFacts | None:
         has_limit=has_limit,
         projections=tuple(projections),
     )
+
+
+# ══ L1 档位梯(设计 §2.2 / §2.3)══════════════════════════
+
+
+@dataclass(frozen=True)
+class LadderVerdict:
+    """L1 档位判决:首个分歧档即 ``bucket``,其余进 ``also_differ``。"""
+
+    bucket: str
+    also_differ: tuple[str, ...] = ()
+    observations: tuple[str, ...] = ()
+    reason: str = ""
+
+
+def _entries_match(
+        g: tuple[tuple[str | None, tuple[Col, ...]], ...],
+        p: tuple[tuple[str | None, tuple[Col, ...]], ...]) -> bool:
+    """项集匹配:顺序无关,逐元素 (聚合名相同 + 列宽容匹配)。
+
+    列宽容复用 PlanSignature._cols_match(空列集 = 通配,COUNT(*)≡COUNT(col);
+    裸列≡限定列)。**聚合档与投影档共用这一套容差**(设计 §2.1 `aggs` 行 /
+    §2.2 的 projection 档):两档的差别只在名字的取值集合(投影名可空),
+    不在匹配规则 —— 各写一份必然漂移。
+    """
+    if len(g) != len(p):
+        return False
+    remaining = list(g)
+    for pe in p:
+        for i, ge in enumerate(remaining):
+            if pe[0] == ge[0] and PlanSignature._cols_match(ge[1], pe[1]):
+                remaining.pop(i)
+                break
+        else:
+            return False
+    return True
+
+
+def _differ(rung: str, g: SqlFacts, o: SqlFacts) -> bool:
+    if rung == "table_set":
+        return set(g.tables) != set(o.tables)
+    if rung == "join_shape":
+        return (g.join_edges != o.join_edges
+                or g.unresolved_joins != o.unresolved_joins)
+    if rung == "filter_diff":
+        return set(g.conds) != set(o.conds)
+    if rung == "agg_diff":
+        if not _entries_match(g.aggs, o.aggs):
+            return True
+        # plan 侧分组信息不可得(groups_known=False)时只比聚合,不冤枉计划
+        if o.groups_known and g.groups_known:
+            return set(g.groups) != set(o.groups)
+        return False
+    if rung == "order_limit_diff":
+        return g.order != o.order or g.has_limit != o.has_limit
+    if rung == "projection_diff":
+        return not _entries_match(g.projections, o.projections)
+    return False
+
+
+def _diff_rungs(gold: SqlFacts, other: SqlFacts,
+                rungs: frozenset[str] | None = None) -> list[str]:
+    """按档位序返回 gold 与 other 有分歧的档(rungs=None → 全档)。"""
+    return [r for r in _RUNG_ORDER
+            if (rungs is None or r in rungs) and _differ(r, gold, other)]
+
+
+def _case_insensitive_same(g: SqlFacts, o: SqlFacts) -> bool:
+    def key(p: Predicate) -> tuple:
+        return (p.cols, p.op)
+
+    def lower(p: Predicate) -> tuple:
+        return (p.cols, p.op, tuple(v.lower() for v in p.values))
+
+    gk = {key(p) for p in g.conds}
+    if gk != {key(p) for p in o.conds}:
+        return False
+    return ({lower(p) for p in g.conds} == {lower(p) for p in o.conds}
+            and set(g.conds) != set(o.conds))
+
+
+def _observations(gold: SqlFacts, pred: SqlFacts) -> tuple[str, ...]:
+    """跨档观察码(设计 §2.3):不换桶,只给读者折扣尺。"""
+    obs: list[str] = []
+    if set(gold.tables) - set(pred.tables):
+        obs.append("needed_table_never_read")
+    if set(pred.tables) - set(gold.tables):
+        obs.append("extra_table_read")
+    if _case_insensitive_same(gold, pred):
+        obs.append("case_only_value_diff")
+    if gold.has_limit != pred.has_limit and (
+            any(f in ("min", "max") for f, _ in gold.aggs)
+            or any(f in ("min", "max") for f, _ in pred.aggs)):
+        obs.append("extreme_style_mismatch")
+    return tuple(obs)
+
+
+def ladder(gold: SqlFacts | None, pred: SqlFacts | None, *,
+           verdict: str = "", had_sql: bool = True) -> LadderVerdict:
+    """L1 档位梯(设计 §2.2):首个分歧即桶;判不了独立成档,绝不混入 structure_equal。"""
+    if verdict not in JUDGED_VERDICTS:
+        verdict = ""  # 词表单点定义在 replay;表外的 verdict 不参与分桶(不猜)
+    if not had_sql or verdict in _NO_SQL_VERDICTS:
+        return LadderVerdict(
+            "no_sql", reason=f"未产出可判 SQL(verdict={verdict or 'n/a'})")
+    if pred is None or not pred.ok:
+        return LadderVerdict("pred_unparseable", reason="pred SQL 解析不了")
+    if verdict == "EXECUTION_ERROR":
+        return LadderVerdict("exec_error", reason="SQL 有形状但执行报错")
+    if gold is None or not gold.ok:
+        return LadderVerdict("undecidable", reason="gold SQL 缺失或解析不了")
+    diffs = _diff_rungs(gold, pred, None)
+    obs = _observations(gold, pred)
+    if not diffs:
+        return LadderVerdict(
+            "structure_equal", observations=obs,
+            reason="六个结构维度全同——不是这几个结构维度的问题")
+    return LadderVerdict(
+        diffs[0], also_differ=tuple(diffs[1:]), observations=obs,
+        reason=f"首个结构分歧={diffs[0]}")
