@@ -219,7 +219,9 @@ def test_plan_text_sections_and_depth():
         (("client", "client_id"), ("disp", "client_id")),
     )  # 边内、边间都排序(升序)
     assert ("filter_diff" in pf.comparable) and ("projection_diff" in pf.comparable)
-    assert "order_limit_diff" not in pf.comparable  # 文本不渲染 ORDER BY
+    # 排序不是计划侧可比档(R22):渲染器确实会写 `Ordering:` 行(_render_plan),
+    # 本解析器把它当 parked 节整节收下(不入事实、不进可比集)
+    assert "order_limit_diff" not in pf.comparable
     assert pf.facts.aggs == (("count_distinct", (("client", "client_id"),)),)
     assert pf.facts.projections == ((None, (("", "account_id"),)),)
     assert any(p.values == ("(subquery)",) for p in pf.facts.conds)
@@ -414,3 +416,38 @@ def test_alias_vs_base_name_is_not_a_filter_divergence():
     pred = _f("SELECT client.gender FROM client JOIN disp"
               " ON client.client_id = disp.client_id WHERE client.gender = 'F'")
     assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+
+
+# ── R34 后续:`none.` 尾点归一(渲染态直通模型原文)─────────────────────────
+# `_render_plan`(query_sketch.py)把模型的 `aggregation` 值 `str(agg)` 直通,
+# 模型写 "none." 就渲染成 `Aggregation: none.` —— 它**不是历史遗留**,是活路径。
+
+
+def test_plan_text_none_with_trailing_period_is_not_an_aggregate():
+    pf = plan_facts_text(
+        "Tables: aa\nJoins: none\nConditions: none\n"
+        "Aggregation: none.\nAnswer columns: x")
+    assert pf.facts.aggs == ()          # `none.` 是「没有聚合」,不是叫 `none.` 的聚合
+    # 「说了没有」是**读出来了** → 该档仍可比(与「读不出」退可比集相反)
+    assert "agg_diff" in pf.comparable
+
+
+def test_plan_text_trailing_period_in_tables_joins_and_projection():
+    pf = plan_facts_text(
+        "Tables: none.\nJoins: none...\nConditions: none.\n"
+        "Aggregation: none.\nAnswer columns: none.")
+    assert pf.facts.tables == ()
+    assert pf.facts.join_edges == ()
+    assert pf.facts.conds == ()
+    assert pf.facts.aggs == ()
+    assert pf.facts.projections == ()   # 输出列节同一口径(唯一绕过共享函数的站点)
+    assert "projection_diff" in pf.comparable
+
+
+def test_plan_json_none_with_trailing_period_is_not_an_aggregate():
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none.", "conditions": [],
+        "aggregation": "none.", "answer_columns": ["x"],
+    })
+    assert pf.facts.aggs == () and pf.facts.join_edges == ()
+    assert "agg_diff" in pf.comparable

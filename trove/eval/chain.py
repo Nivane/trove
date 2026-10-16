@@ -563,12 +563,19 @@ def _cols_from_plan_sql_fragment(fragment: str) -> tuple[Col, ...]:
 
 
 def _is_plan_none(raw: str) -> bool:
-    """渲染态空值可以带注解(实测 6/48:`none (GROUP BY district …)`),入参须已小写。
+    """渲染态空值可以带注解或尾点(入参须已小写)。
 
     逐字相等不够 —— 带注解的 `none` 会被读成一个**叫 `none` 的聚合函数**
     (gold 无聚合 → 伪造 agg_diff)。注解只是解释,不改「这一节说了没有」这个事实。
+
+    尾点是**模型原文里的标点**:`_render_plan`(query_sketch.py)把模型的
+    `aggregation` 值 ``str(agg)`` 直通渲染,模型写 ``"none."`` 今天就渲染成
+    ``Aggregation: none.``(runlog 实测 8 处;48 条可解析计划块内 0 处 ——
+    是活路径,不是历史遗留)。归一 = 去首尾空白后剥尾点,规则仍只有下面三条,
+    不为尾点形态另开前缀规则。
     """
-    return raw == "none" or raw.startswith("none ") or raw.startswith("none(")
+    norm = raw.strip().rstrip(".")
+    return norm == "none" or norm.startswith("none ") or norm.startswith("none(")
 
 
 def _plan_note_cuts(body: str) -> tuple[str, ...]:
@@ -740,7 +747,7 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
     projections: tuple[tuple[str | None, tuple[Col, ...]], ...] = ()
     if "projection_diff" in sections:
         raw = " ".join(sections["projection_diff"]).strip()
-        if raw and raw.lower() != "none":
+        if raw and not _is_plan_none(raw.lower()):  # 唯一曾绕过共享函数的站点(尾点/注解同口径)
             projections = tuple(
                 (None, (_plan_col(c),))
                 for c in raw.split(",") if c.strip())
