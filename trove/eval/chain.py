@@ -248,19 +248,65 @@ class LadderVerdict:
 def _entries_match(
         g: tuple[tuple[str | None, tuple[Col, ...]], ...],
         p: tuple[tuple[str | None, tuple[Col, ...]], ...]) -> bool:
-    """项集匹配:顺序无关,逐元素 (聚合名相同 + 列宽容匹配)。
+    """项集匹配:顺序无关的多重集比对,**两轮**(先精确列集,通配垫底)。
 
     列宽容复用 PlanSignature._cols_match(空列集 = 通配,COUNT(*)≡COUNT(col);
-    裸列≡限定列)。**聚合档与投影档共用这一套容差**(设计 §2.1 `aggs` 行 /
-    §2.2 的 projection 档):两档的差别只在名字的取值集合(投影名可空),
-    不在匹配规则 —— 各写一份必然漂移。
+    裸列≡限定列);名字相等是前提,配对即移除。第 1 轮只接受**两侧列集都非空**
+    的配对,第 2 轮才允许空列集当通配 —— 两轮合起来的可接受配对与单轮
+    _cols_match 同集(不新增等价类,只是更好的指派),把通配留给精确配不上的
+    那些:否则贪心先配会把通配误消费掉,gold `COUNT(*), COUNT(a.x)` vs pred
+    `COUNT(a.x), COUNT(a.y)` 这种**有合法配对**的会被冤枉成分歧。
+    **聚合档与投影档共用这一套容差**(设计 §2.1 `aggs` 行 / §2.2 projection
+    档),分组档经 :func:`_groups_match` 也走它 —— 匹配规则一处实现。
     """
     if len(g) != len(p):
         return False
     remaining = list(g)
-    for pe in p:
+    pending = list(p)
+    for wildcard_ok in (False, True):
+        still: list[tuple[str | None, tuple[Col, ...]]] = []
+        for pe in pending:
+            if not wildcard_ok and not pe[1]:
+                still.append(pe)  # 空列集 = 通配,留到第 2 轮
+                continue
+            for i, ge in enumerate(remaining):
+                if pe[0] != ge[0] or (not wildcard_ok and not ge[1]):
+                    continue
+                if PlanSignature._cols_match(ge[1], pe[1]):
+                    remaining.pop(i)
+                    break
+            else:
+                still.append(pe)
+        pending = still
+    return not remaining and not pending
+
+
+def _groups_match(
+        groups_g: tuple[tuple[Col, ...], ...],
+        groups_o: tuple[tuple[Col, ...], ...]) -> bool:
+    """分组列集比对:逐组列集按 _cols_match 宽容(裸 ≡ 限定),组间顺序无关。
+
+    薄包装 :func:`_entries_match`(条目名一律 None)—— 一套匹配规则一处实现,
+    免得分组档自己长出一份逐字相等(设计 §2.1 `groups` 行「同上宽容」)。
+    """
+    return _entries_match(
+        tuple((None, gs) for gs in groups_g),
+        tuple((None, ps) for ps in groups_o))
+
+
+def _predicates_match(g: tuple[Predicate, ...], o: tuple[Predicate, ...]) -> bool:
+    """谓词多重集比对:列集按 _cols_match 宽容(裸 ≡ 限定),算子与字面量精确相等。
+
+    字面量刻意不宽容(设计 §2.3:「字面量大小写按分歧计」)—— 宽容的只有"列写
+    成什么样",不是"条件说的是什么";长度不同即不匹配。
+    """
+    if len(g) != len(o):
+        return False
+    remaining = list(g)
+    for pe in o:
         for i, ge in enumerate(remaining):
-            if pe[0] == ge[0] and PlanSignature._cols_match(ge[1], pe[1]):
+            if (pe.op == ge.op and pe.values == ge.values
+                    and PlanSignature._cols_match(ge.cols, pe.cols)):
                 remaining.pop(i)
                 break
         else:
@@ -275,13 +321,13 @@ def _differ(rung: str, g: SqlFacts, o: SqlFacts) -> bool:
         return (g.join_edges != o.join_edges
                 or g.unresolved_joins != o.unresolved_joins)
     if rung == "filter_diff":
-        return set(g.conds) != set(o.conds)
+        return not _predicates_match(g.conds, o.conds)
     if rung == "agg_diff":
         if not _entries_match(g.aggs, o.aggs):
             return True
         # plan 侧分组信息不可得(groups_known=False)时只比聚合,不冤枉计划
         if o.groups_known and g.groups_known:
-            return set(g.groups) != set(o.groups)
+            return not _groups_match(g.groups, o.groups)
         return False
     if rung == "order_limit_diff":
         return g.order != o.order or g.has_limit != o.has_limit

@@ -143,3 +143,30 @@ def test_projection_diff_tolerates_qualified_and_count_star():
     gold = _f("SELECT COUNT(*) FROM aa a")
     pred = _f("SELECT COUNT(a.i) FROM aa a")
     assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+
+
+def test_groups_tolerate_qualified_columns():
+    # 设计 §2.1 对 groups 行同样要求列宽容:GROUP BY s.region ≡ GROUP BY region
+    gold = _f("SELECT s.region FROM sales s GROUP BY s.region")
+    pred = _f("SELECT s.region FROM sales s GROUP BY region")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+
+
+def test_conds_tolerate_qualified_columns():
+    # 过滤档同样只认列身份、不认限定写法(与 agg/groups/projection 同一把尺)
+    gold = _f("SELECT COUNT(*) FROM loans WHERE loans.status = 'active'")
+    pred = _f("SELECT COUNT(*) FROM loans WHERE status = 'active'")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+    # 反向:列真的不同(别名指向不同表)仍然进 filter_diff
+    other = _f("SELECT COUNT(*) FROM loans l JOIN accounts ac ON l.aid = ac.id"
+               " WHERE ac.status = 'active'")
+    base = _f("SELECT COUNT(*) FROM loans l JOIN accounts ac ON l.aid = ac.id"
+              " WHERE l.status = 'active'")
+    assert ladder(base, other, verdict="MISMATCH").bucket == "filter_diff"
+
+
+def test_wildcard_partner_prefers_exact_column_match():
+    # gold 的 COUNT(*) 是通配;匹配时先让列集对得上的配成一对,通配留给剩下的
+    gold = _f("SELECT COUNT(*), COUNT(a.x) FROM aa a")
+    pred = _f("SELECT COUNT(a.x), COUNT(a.y) FROM aa a")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
