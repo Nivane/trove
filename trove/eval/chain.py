@@ -860,3 +860,94 @@ def plan_facts_from_json(d: dict) -> PlanFacts:
     if not agg_readable:
         comparable.discard("agg_diff")
     return PlanFacts(facts=facts, comparable=frozenset(comparable))
+
+
+# ══ 轨迹 + 责任跳 + loop 三态(设计 §3.1–§3.3)══════════════
+
+
+@dataclass(frozen=True)
+class Trajectory:
+    """一道题的一条执行轨迹(归一化字段子集;逐字段保真靠 available/state)。
+
+    ``matched_tables_state``/``plan_text_state`` 三态 present|empty|absent:
+    "观察到空"是事实(linker 什么都没给),"从未出现"才是判不了——两者混同
+    会把空缺洗成通过(设计 §3.1)。
+    """
+
+    question: str
+    source: str = ""
+    matched_tables: tuple[str, ...] = ()
+    matched_tables_state: str = "absent"
+    plan_facts: PlanFacts | None = None
+    plan_text_state: str = "absent"
+    plan_truncated: bool = False
+    validation_hits_raw: str = ""
+    error_analysis: str = ""
+    rollback_target: str = ""
+    retry_count: int | None = None
+    available: frozenset[str] = frozenset()
+
+
+def responsibility(*, gold: SqlFacts, pred: SqlFacts | None, l1: LadderVerdict,
+                   traj: Trajectory | None) -> tuple[str, str]:
+    """L2 责任跳(设计 §3.2):互斥,首个命中即桶。
+
+    原理:给 plan 也跑同一把 L1 尺子——plan 是生成器被要求执行的规格。
+    """
+    if traj is None:
+        return "undecidable", "无轨迹"
+    if traj.matched_tables_state == "absent" and traj.plan_facts is None:
+        return "undecidable", "matched_tables 与 plan 都不可得"
+    if traj.matched_tables_state != "absent":
+        missed = [t for t in gold.tables
+                  if t not in traj.matched_tables
+                  and (pred is None or t not in pred.tables)]
+        if missed:
+            return "linking_missed_table", (
+                f"gold 需要的表未进 matched_tables 且 pred 未读: {', '.join(missed)}")
+    pf = traj.plan_facts
+    if pf is None:
+        return "undecidable", "matched_tables 未含缺表,plan 不可得"
+    # R26:计划侧输出列**只比个数** —— plan 的 answer_columns 是名字/别名,gold 的
+    # 投影带函数标签(`sum`/`count`),逐名比会把「计划本来就对」判成分歧(实测
+    # 39/48 行聚合题全中,1 行因此翻桶);个数分歧才是信号:8 月语料 6/48 行
+    # plan 写了 2 列、gold 只要 1 列 —— 正是 CLAUDE.md 记的头号失败模式
+    # (query_sketch 的 answer_columns 定错输出列)。
+    plan_diffs = _diff_rungs(gold, pf.facts, pf.comparable - {"projection_diff"})
+    if "projection_diff" in pf.comparable and (
+            len(gold.projections) != len(pf.facts.projections)):
+        plan_diffs.append("projection_diff")   # 投影档恒在末位,追加保序
+    if plan_diffs:
+        return "planner_chose_differently", (
+            f"plan 相对 gold 首个分歧={plan_diffs[0]}(L1 首个分歧={l1.bucket})")
+    if l1.bucket in pf.comparable or l1.bucket in (
+            "no_sql", "pred_unparseable", "exec_error"):
+        return "gen_ignored_plan", (
+            f"plan 在可比深度内与 gold 无分歧,SQL 侧分歧={l1.bucket}")
+    if l1.bucket not in (*_RUNG_ORDER, "no_sql", "pred_unparseable", "exec_error"):
+        # R17:结构梯看不见的分歧不归给任何一跳,理由如实说——
+        # "可比深度不含 X" 这句只对「梯子看得见但 plan 没渲染」成立。
+        if l1.bucket == "structure_equal":
+            return "undecidable", (
+                "六个结构维度全同(SQL 与 gold 无结构分歧):"
+                "失败不在结构层,不归给生成链的任何一跳")
+        return "undecidable", (
+            f"L1 判不了({l1.reason or l1.bucket}),责任跳无从谈起")
+    return "undecidable", (
+        f"plan 可比深度 {sorted(pf.comparable)} 不含 L1 分歧档 {l1.bucket}")
+
+
+def loop_state(traj: Trajectory | None) -> str:
+    """「链路自知过吗」三态(设计 §3.3):与责任跳正交,单独计。"""
+    if traj is None:
+        return "undecidable"
+    signals = {"validation_hits", "error_analysis", "rollback_target", "retry_count"}
+    if not (signals & set(traj.available)):
+        return "undecidable"
+    detected = (
+        traj.validation_hits_raw.strip() not in ("", "[]")
+        or bool(traj.error_analysis.strip())
+        or bool(traj.rollback_target.strip())
+        or (traj.retry_count or 0) > 0
+    )
+    return "detected_but_unfixed" if detected else "never_detected"

@@ -500,3 +500,147 @@ def test_plan_exact_none_cond_bullet_stays_the_none_marker():
                              "Aggregation: none\nAnswer columns: x")
     assert inline.facts.conds == ()
     assert "filter_diff" in inline.comparable
+
+
+from trove.eval.chain import Trajectory, loop_state, responsibility
+
+
+def _l1(bucket="table_set"):
+    from trove.eval.chain import LadderVerdict
+    return LadderVerdict(bucket)
+
+
+def _traj(**kw):
+    base = dict(question="q")
+    base.update(kw)
+    return Trajectory(**base)
+
+
+def test_responsibility_no_traj_or_no_fields():
+    gold = _f("SELECT a.x FROM aa a")
+    assert responsibility(gold=gold, pred=None, l1=_l1(), traj=None)[0] == "undecidable"
+    assert responsibility(gold=gold, pred=None, l1=_l1(), traj=_traj())[0] == "undecidable"
+
+
+def test_linking_missed_table():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pred = _f("SELECT a.x FROM aa a")
+    t = _traj(matched_tables=("aa",), matched_tables_state="present",
+              available=frozenset({"matched_tables"}))
+    bucket, reason = responsibility(gold=gold, pred=pred, l1=_l1(), traj=t)
+    assert bucket == "linking_missed_table" and "bb" in reason
+
+
+def test_linking_empty_state_is_a_fact_not_undecidable():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pred = _f("SELECT a.x FROM aa a")
+    t = _traj(matched_tables=(), matched_tables_state="empty",
+              available=frozenset({"matched_tables"}))
+    assert responsibility(gold=gold, pred=pred, l1=_l1(), traj=t)[0] == "linking_missed_table"
+
+
+def test_planner_chose_differently():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pred = _f("SELECT a.x FROM aa a JOIN cc c ON c.i = a.i")
+    pf = plan_facts_text("Tables: aa, cc\nJoins: cc.i = aa.i\nConditions: none\n"
+                         "Aggregation: none\nAnswer columns: x")
+    t = _traj(matched_tables=("aa", "bb", "cc"), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    bucket, reason = responsibility(gold=gold, pred=pred, l1=_l1(), traj=t)
+    assert bucket == "planner_chose_differently" and "plan" in reason
+
+
+def test_gen_ignored_plan():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pred = _f("SELECT a.x FROM aa a")
+    pf = plan_facts_text("Tables: aa, bb\nJoins: aa.i = bb.i\nConditions: none\n"
+                         "Aggregation: none\nAnswer columns: x")
+    t = _traj(matched_tables=("aa", "bb"), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    assert responsibility(gold=gold, pred=pred, l1=_l1(), traj=t)[0] == "gen_ignored_plan"
+
+
+def test_depth_insufficient_is_undecidable():
+    gold = _f("SELECT a.x, a.y FROM aa a WHERE a.k = 1")
+    pred = _f("SELECT a.x FROM aa a WHERE a.k = 1")
+    # 计划文本必须"在可比深度内与 gold 无分歧"(R16):gold 带 WHERE a.k = 1,
+    # 若写成 Conditions: none,plan 自己先分歧 → 判成 planner_chose_differently。
+    pf = plan_facts_text("Tables: aa\nJoins: none\nConditions:\n  - aa.k = 1\n"
+                         "Aggregation: none")  # 无 Answer columns 节
+    t = _traj(matched_tables=("aa",), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "projection_diff"
+    bucket, reason = responsibility(gold=gold, pred=pred, l1=v, traj=t)
+    assert bucket == "undecidable" and "可比深度" in reason
+
+
+def test_plan_projection_names_are_not_compared_only_counts():
+    """plan 的输出列名是别名、gold 的投影带函数标签:名字不参与比对(R26)。"""
+    gold = _f("SELECT sum(a.x) FROM aa a")
+    pred = _f("SELECT sum(a.x) FROM aa a WHERE a.k = 1")
+    pf = plan_facts_text("Tables: aa\nJoins: none\nConditions: none\n"
+                         "Aggregation: sum(aa.x)\nAnswer columns: total")
+    t = _traj(matched_tables=("aa",), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "filter_diff"
+    assert responsibility(gold=gold, pred=pred, l1=v, traj=t)[0] == "gen_ignored_plan"
+
+
+def test_plan_answer_column_count_mismatch_blames_the_planner():
+    """个数分歧才是分歧:plan 写了 2 列、gold 只要 1 列(R26 的正向)。"""
+    gold = _f("SELECT a.x FROM aa a")
+    pred = _f("SELECT a.x, a.y FROM aa a")
+    pf = plan_facts_text("Tables: aa\nJoins: none\nConditions: none\n"
+                         "Aggregation: none\nAnswer columns: x, y")
+    t = _traj(matched_tables=("aa",), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "projection_diff"
+    bucket, reason = responsibility(gold=gold, pred=pred, l1=v, traj=t)
+    assert bucket == "planner_chose_differently" and "projection_diff" in reason
+
+
+def test_l1_outside_structural_rungs_is_undecidable_with_honest_reason():
+    """结构梯看不见的分歧(L1=structure_equal)不归给任何一跳,理由如实说(R17)。"""
+    gold = _f("SELECT a.x FROM aa a")
+    pred = _f("SELECT a.x FROM aa a")
+    pf = plan_facts_text("Tables: aa\nJoins: none\nConditions: none\n"
+                         "Aggregation: none\nAnswer columns: x")
+    t = _traj(matched_tables=("aa",), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    v = ladder(gold, pred, verdict="MISMATCH")
+    assert v.bucket == "structure_equal"
+    bucket, reason = responsibility(gold=gold, pred=pred, l1=v, traj=t)
+    assert bucket == "undecidable"
+    assert "结构" in reason and "可比深度" not in reason
+
+
+def test_gen_side_failures_fall_to_gen_when_plan_clean():
+    gold = _f("SELECT a.x FROM aa a JOIN bb b ON a.i = b.i")
+    pf = plan_facts_text("Tables: aa, bb\nJoins: aa.i = bb.i\nConditions: none\n"
+                         "Aggregation: none\nAnswer columns: x")
+    t = _traj(matched_tables=("aa", "bb"), matched_tables_state="present",
+              plan_facts=pf, plan_text_state="present",
+              available=frozenset({"matched_tables", "plan"}))
+    bucket, _ = responsibility(gold=gold, pred=None, l1=_l1("no_sql"), traj=t)
+    assert bucket == "gen_ignored_plan"
+
+
+def test_loop_states():
+    assert loop_state(None) == "undecidable"
+    assert loop_state(_traj()) == "undecidable"
+    assert loop_state(_traj(validation_hits_raw='[{"rule": "x"}]',
+                            available=frozenset({"validation_hits"}))) == "detected_but_unfixed"
+    assert loop_state(_traj(validation_hits_raw="[]", retry_count=0,
+                            available=frozenset({"validation_hits", "retry_count"}))) == "never_detected"
+    assert loop_state(_traj(retry_count=2, available=frozenset({"retry_count"}))) == "detected_but_unfixed"
+    assert loop_state(_traj(rollback_target="gen_sql",
+                            available=frozenset({"rollback_target"}))) == "detected_but_unfixed"
