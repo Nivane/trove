@@ -451,3 +451,52 @@ def test_plan_json_none_with_trailing_period_is_not_an_aggregate():
     })
     assert pf.facts.aggs == () and pf.facts.join_edges == ()
     assert "agg_diff" in pf.comparable
+
+
+# ── R37:条件子弹的 `none` 判定收窄(文本/JSON 两路径必须同判)───────────────
+# `_render_plan`(query_sketch.py)把 `c.get("field")` 未校验地插进
+# `  - {field} {op} {value}` —— 缺 field 的条件因此渲染成 `  - None = 1`,行首那个
+# `None` 是**缺失字段的占位符**,不是计划说「没有条件」。文本侧曾按 `_is_plan_none`
+# 的 `none ` 前缀规则把它当空值记号跳过(conds=()、unparsed=0、filter 档**留在**可比集);
+# JSON 孪生(缺 field → `unparsed`)对同一内容把 filter 档**移出**可比集 ——
+# 同一份计划、两条路径、相反裁决,而文本侧正是 R24 要消灭的「读不出 = 说没有」方向。
+# 裁定(R37):只有**恰为 none 记号**(大小写无关、可带尾点)的子弹才算空值记号;
+# 以 none 起头但记号之后还有算子/内容的(`None = 1` / `None in (…)` / 渲染器对
+# 非 dict 条件原样直通的 `none (…)` 散文)按**读不出的条件**处理 —— 原文留档并
+# `unparsed += 1` → filter 档退出可比集,与 JSON 侧同一裁决。
+# `_is_plan_none` 本体不动:节级语义(表/连接/聚合/输出列)保持逐字节不变。
+
+
+def test_plan_fieldless_cond_is_unreadable_on_both_paths():
+    for bullet, cond in (
+        ("None = 1", {"op": "=", "value": 1}),          # 缺 field 的对象条件
+        ("None in ['B', 'D']", {"op": "in", "value": ["B", "D"]}),
+        ("none (GROUP BY district)", "none (GROUP BY district)"),  # 非 dict → 原样直通
+    ):
+        text = plan_facts_text(f"Tables: aa\nConditions:\n  - {bullet}")
+        # 原文留档:绝不造出一条**列名叫 `none`** 的谓词(`_plan_condition("none = 1")`
+        # 正是 `Predicate(cols=(('', 'none'),), op='=', values=('1',))`)
+        assert text.facts.conds == (Predicate((), "raw", (bullet,)),)
+        assert "filter_diff" not in text.comparable   # 读不出 ≠ 计划说「没有条件」
+        twin = plan_facts_from_json({
+            "tables": ["aa"], "joins": "none", "conditions": [cond],
+            "aggregation": "none", "answer_columns": [],
+        })
+        assert "filter_diff" not in twin.comparable   # 两路径同一裁决
+
+
+def test_plan_exact_none_cond_bullet_stays_the_none_marker():
+    # 方向侧:`- none` 逐字(可带尾点,R35)与行内 `Conditions: none` 都是
+    # 「计划说了没有条件」—— 读出来了,故 filter 档**留在**可比集里(与退可比集相反)
+    bullet = plan_facts_text("Tables: aa\nJoins: none\nConditions:\n  - none\n"
+                             "Aggregation: none\nAnswer columns: x")
+    assert bullet.facts.conds == ()
+    assert "filter_diff" in bullet.comparable
+    dotted = plan_facts_text("Tables: aa\nJoins: none\nConditions:\n  - none.\n"
+                             "Aggregation: none\nAnswer columns: x")
+    assert dotted.facts.conds == ()                # 尾点同归一(R35)
+    assert "filter_diff" in dotted.comparable
+    inline = plan_facts_text("Tables: aa\nJoins: none\nConditions: none\n"
+                             "Aggregation: none\nAnswer columns: x")
+    assert inline.facts.conds == ()
+    assert "filter_diff" in inline.comparable

@@ -578,6 +578,19 @@ def _is_plan_none(raw: str) -> bool:
     return norm == "none" or norm.startswith("none ") or norm.startswith("none(")
 
 
+def _is_bare_plan_none(raw: str) -> bool:
+    """整条**恰为** none 记号(``none`` / ``none.``,入参须已小写)。
+
+    就是 :func:`_is_plan_none` 三条规则里的**第一条**(归一同款:去首尾空白 + 剥尾点);
+    后两条(``none `` / ``none(`` 前缀)**恰恰是「记号之后还有东西」**:在表/连接/聚合/
+    输出列四节里那是注解(``none (GROUP BY …)``),在**条件行**里却可能是别的内容
+    —— ``_render_plan``(query_sketch.py)把缺失的 ``field`` 原样插进
+    ``  - {field} {op} {value}``,于是 ``None = 1`` / ``None in ('B','D')`` 的行首
+    也 none-ish。那是**读不出的条件**,不是计划说「没有条件」(R37:读不出 ≠ 说没有)。
+    """
+    return raw.strip().rstrip(".") == "none"
+
+
 def _plan_note_cuts(body: str) -> tuple[str, ...]:
     """渲染格式 ``field op value (note)`` 的**切法候选**(由短到长,原文殿后)。
 
@@ -728,9 +741,15 @@ def plan_facts_text(text: str, *, truncated: bool = False) -> PlanFacts | None:
         body = ln.strip()
         if body.startswith("-"):
             body = body[1:].strip()
-        if not body or _is_plan_none(body.lower()):
-            continue
-        pred = _plan_condition(body)
+        low = body.lower()
+        if not body or _is_bare_plan_none(low):
+            continue    # 恰为 none 记号(可带尾点):这一节说了「没有条件」,档位仍可比
+        # 行首 none-ish 但记号之后还有算子/内容(`None = 1` / `None in ('B','D')` /
+        # `none (…)`):那是**读不出的条件**,不是计划说「没有条件」—— 缺失的 field 由
+        # `_render_plan` 原样渲染成 `None`(非 dict 条件则整条直通),`_plan_condition`
+        # 会把它解析成一条**列名叫 `none` 的谓词**。故连它都不进,照 R24 记原文并
+        # `unparsed += 1`(R37:JSON 侧对缺 field 的条件同判,两路径一个裁决)。
+        pred = None if _is_plan_none(low) else _plan_condition(body)
         if pred is not None:
             conds.append(pred)
             continue
@@ -833,8 +852,9 @@ def plan_facts_from_json(d: dict) -> PlanFacts:
         groups=(), groups_known=False, order=(), has_limit=False,
         projections=projections,
     )
-    comparable = {rung for key, rung in _PLAN_JSON_KEY_RUNGS
-                  if key in d and rung in _PLAN_JSON_RUNGS}
+    # R30:可比集 = **键在不在**(缺 `joins` 键 ≠ 计划说「没有连接」)。档位直接取自键表
+    # —— 它的值域就是这五个计划侧档,再与 `_PLAN_JSON_RUNGS` 求交是恒真的一层。
+    comparable = {rung for key, rung in _PLAN_JSON_KEY_RUNGS if key in d}
     if unparsed:
         comparable.discard("filter_diff")
     if not agg_readable:
