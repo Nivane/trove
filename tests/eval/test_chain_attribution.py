@@ -170,3 +170,13 @@ def test_wildcard_partner_prefers_exact_column_match():
     gold = _f("SELECT COUNT(*), COUNT(a.x) FROM aa a")
     pred = _f("SELECT COUNT(a.x), COUNT(a.y) FROM aa a")
     assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+
+
+def test_conds_empty_col_set_is_not_a_wildcard():
+    # 谓词的空列集 = 无列谓词(1=1),不是 COUNT(*) 那种通配:不得与真列谓词等价
+    gold = _f("SELECT COUNT(*) FROM loans WHERE 1 = 1")
+    pred = _f("SELECT COUNT(*) FROM loans WHERE loans.status = 1")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "filter_diff"
+    # 两侧都无列时照常相等(别把门收得比事实还紧)
+    same = _f("SELECT COUNT(*) FROM loans WHERE 1 = 1")
+    assert ladder(gold, same, verdict="MISMATCH").bucket == "structure_equal"

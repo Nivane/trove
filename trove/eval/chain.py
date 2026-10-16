@@ -299,6 +299,12 @@ def _predicates_match(g: tuple[Predicate, ...], o: tuple[Predicate, ...]) -> boo
 
     字面量刻意不宽容(设计 §2.3:「字面量大小写按分歧计」)—— 宽容的只有"列写
     成什么样",不是"条件说的是什么";长度不同即不匹配。
+    **空列集不是通配**:谓词的 cols=() 是「无列谓词」(如 `1 = 1`)这个事实,不是
+    聚合条目那种「任何列都行」(`COUNT(*)` ≡ `COUNT(col)` 是设计给聚合/投影的
+    等价)。故先过一道空/非空一致性门:两侧要么都空、要么都非空,否则不匹配 ——
+    否则 `WHERE 1 = 1` 与 `WHERE loans.status = 1` 会被**伪造成相等**,而 filter
+    档是整条梯里最承重的判定档。空-空照常走 _cols_match(两边都空 → True,
+    即「无列谓词 ≡ 无列谓词」)。
     """
     if len(g) != len(o):
         return False
@@ -306,6 +312,7 @@ def _predicates_match(g: tuple[Predicate, ...], o: tuple[Predicate, ...]) -> boo
     for pe in o:
         for i, ge in enumerate(remaining):
             if (pe.op == ge.op and pe.values == ge.values
+                    and (not pe.cols) == (not ge.cols)
                     and PlanSignature._cols_match(ge.cols, pe.cols)):
                 remaining.pop(i)
                 break
