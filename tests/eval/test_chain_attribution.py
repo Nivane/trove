@@ -180,3 +180,15 @@ def test_conds_empty_col_set_is_not_a_wildcard():
     # 两侧都无列时照常相等(别把门收得比事实还紧)
     same = _f("SELECT COUNT(*) FROM loans WHERE 1 = 1")
     assert ladder(gold, same, verdict="MISMATCH").bucket == "structure_equal"
+
+
+def test_conds_exact_duplicate_is_not_a_divergence():
+    # 合取谓词幂等:同一条件写两遍不改变结果集 —— 不算 filter 分歧(旧 `set()` 语义)
+    gold = _f("SELECT COUNT(*) FROM loans "
+              "WHERE loans.status = 'A' AND loans.status = 'A'")
+    pred = _f("SELECT COUNT(*) FROM loans WHERE loans.status = 'A'")
+    assert ladder(gold, pred, verdict="MISMATCH").bucket == "structure_equal"
+    # 投影相反:重复的输出列改变结果形状,照旧进投影档(谓词幂等 ≠ 条目幂等)
+    g2 = _f("SELECT a.x, a.x FROM aa a")
+    p2 = _f("SELECT a.x FROM aa a")
+    assert ladder(g2, p2, verdict="MISMATCH").bucket == "projection_diff"

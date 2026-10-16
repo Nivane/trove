@@ -305,11 +305,19 @@ def _predicates_match(g: tuple[Predicate, ...], o: tuple[Predicate, ...]) -> boo
     否则 `WHERE 1 = 1` 与 `WHERE loans.status = 1` 会被**伪造成相等**,而 filter
     档是整条梯里最承重的判定档。空-空照常走 _cols_match(两边都空 → True,
     即「无列谓词 ≡ 无列谓词」)。
+
+    **先精确去重**:合取谓词幂等 —— `WHERE t.a = 1 AND t.a = 1` 与 `WHERE t.a = 1`
+    结果集相同,不算分歧(旧 `set()` 语义)。去重只对 conds 生效:投影/聚合条目
+    **相反**,重复的输出列改变结果形状(`SELECT a.x, a.x` 不是 `SELECT a.x`),
+    长度不同照旧进 projection_diff —— 这个不对称是刻意的(见 :func:`_entries_match`,
+    那里刻意不去重)。
     """
-    if len(g) != len(o):
+    gd = tuple(dict.fromkeys(g))
+    od = tuple(dict.fromkeys(o))
+    if len(gd) != len(od):
         return False
-    remaining = list(g)
-    for pe in o:
+    remaining = list(gd)
+    for pe in od:
         for i, ge in enumerate(remaining):
             if (pe.op == ge.op and pe.values == ge.values
                     and (not pe.cols) == (not ge.cols)
