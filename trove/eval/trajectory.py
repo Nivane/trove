@@ -15,7 +15,7 @@ from trove.eval.chain import (
 )
 
 _KEY_RE = re.compile(r"^([a-z_][a-z0-9_]*) = (.*)$")
-_NODE_RE = re.compile(r"^\[(\d+)\] ([a-z_]+)")
+_NODE_RE = re.compile(r"^\[(\d+)\] ([a-z0-9_]+)")
 _TRUNC_RE = re.compile(r"…\(\d+ (?:chars|items)\)\s*$")
 _MARKERS = ("│", "├", "└", "═")
 #: 消费的键 → Trajectory 字段名(适配器只认这些;其余原样留在 values 里供诊断)。
@@ -117,8 +117,10 @@ def trajectory_from_log(facts: RunLogFacts, *, source: str = "logs") -> Trajecto
             pj = json.loads(raw_pj)
         except (json.JSONDecodeError, ValueError):
             pj = None
-        if isinstance(pj, dict) and pj:
-            plan_facts = plan_facts_from_json(pj)
+        if isinstance(pj, dict):
+            # 合法空字典 {} 是「计划为空」,不是截断;截断只会让 json.loads 失败。
+            if pj:
+                plan_facts = plan_facts_from_json(pj)
         elif raw_pj.startswith("{"):
             pj_truncated = True  # 600 字符静默截断:前缀不是合法 JSON
     plan_truncated = pj_truncated or _is_truncated(plan_text)
@@ -153,7 +155,7 @@ def load_run_logs(runs_dir: str | Path) -> dict[str, Trajectory]:
     """目录级加载:同题多日志按 mtime 后者胜(重跑即替换,与 runlog 同语义)。"""
     out: dict[str, Trajectory] = {}
     paths = sorted(Path(runs_dir).glob("*.log"),
-                   key=lambda p: p.stat().st_mtime)
+                   key=lambda p: (p.stat().st_mtime, p.name))
     for p in paths:
         try:
             text = p.read_text(encoding="utf-8", errors="replace")

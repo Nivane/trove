@@ -73,3 +73,64 @@ def test_load_run_logs_last_wins(tmp_path):
     os.utime(tmp_path / "b.log", (2, 2))
     got = load_run_logs(tmp_path)
     assert got["q one?"].matched_tables[0] == "zz"
+
+
+def _log(*, plan: str = "", plan_json: str = "None",
+         matched: str = '["aa", "bb"]') -> str:
+    return f"""════ Run r9 · 2026-08-19 11:00:00
+question: q nine?
+├─ [2] planner2
+│ ├─ in:
+│   plan = {plan}
+│   plan_json = {plan_json}
+│   matched_tables = {matched}
+└─ finish: verdict=OK · retries=0 · rows=1 · error=
+"""
+
+
+def test_valid_plan_json_is_the_plan_source():
+    """合法 plan_json 是实语料 plan_facts 的主来源(32/50),此前无测试覆盖。"""
+    log = _log(
+        plan="表: aa, bb",
+        plan_json='{"tables": ["aa", "bb"], "joins": "aa.i = bb.i", '
+                  '"conditions": [], "aggregation": "none", "answer_columns": ["x"]}',
+        matched='["AA", "BB"]')
+    facts = parse_run_log(log)
+    assert "planner2" in facts.nodes          # 节点名里的数字不被截断
+    t = trajectory_from_log(facts)
+    assert t.plan_facts is not None
+    assert t.plan_facts.facts.tables == ("aa", "bb")
+    assert "table_set" in t.plan_facts.comparable
+    assert t.plan_truncated is False
+    assert t.matched_tables == ("aa", "bb")   # _parse_table_list 大小写归一
+
+
+def test_empty_plan_json_object_is_not_truncation():
+    t = trajectory_from_log(parse_run_log(_log(plan="", plan_json="{}")))
+    assert t.plan_facts is None
+    assert t.plan_truncated is False
+
+
+def test_matched_tables_preview_cut_is_absent_not_partial():
+    t = trajectory_from_log(parse_run_log(_log(matched='["aa", "bb"] …(12 items)')))
+    assert t.matched_tables_state == "absent"
+    assert t.matched_tables == ()
+
+
+def test_load_run_logs_equal_mtime_ties_break_by_name(tmp_path, monkeypatch):
+    import os
+    import pathlib
+    a, b = tmp_path / "a.log", tmp_path / "b.log"
+    a.write_text(_log(matched='["aa"]'), encoding="utf-8")
+    b.write_text(_log(matched='["zz"]'), encoding="utf-8")
+    os.utime(a, (5, 5))
+    os.utime(b, (5, 5))
+    real_glob = pathlib.Path.glob
+
+    def fake_glob(self, pattern):
+        if self == tmp_path:
+            return iter([b, a])               # 目录序不代表名字序
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(pathlib.Path, "glob", fake_glob)
+    assert load_run_logs(tmp_path)["q nine?"].matched_tables == ("zz",)
