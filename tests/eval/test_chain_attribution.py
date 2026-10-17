@@ -1,6 +1,8 @@
 """生成链归因纯核心的测试:L1 档位 / 事实抽取 / plan 解析 / 责任跳 / 报告。"""
 from __future__ import annotations
 
+import json
+
 from trove.eval.chain import Predicate, sql_facts
 
 
@@ -644,3 +646,133 @@ def test_loop_states():
     assert loop_state(_traj(retry_count=2, available=frozenset({"retry_count"}))) == "detected_but_unfixed"
     assert loop_state(_traj(rollback_target="gen_sql",
                             available=frozenset({"rollback_target"}))) == "detected_but_unfixed"
+
+
+# ── 逐行归因 + 报告组装/渲染(设计 §4 报告键 / §5 文本分节)─────────────
+# **行与题双计数**:97 行只有 24 题,行数偏袒重试题 —— 同一题的两行必须同时进
+# 行计数(行=样本量),而题计数是独立事件数。只报一个都读错。
+
+from trove.eval.attribution import FailureRow
+from trove.eval.chain import attribute_row, build_report, render_report
+
+
+def _row(q="q1", gold="SELECT a.x FROM aa a", pred="SELECT a.y FROM aa a", verdict="MISMATCH"):
+    return FailureRow(question=q, gold_sql=gold, pred_sql=pred, verdict=verdict)
+
+
+def test_attribute_row_without_traj():
+    f = attribute_row(_row(), None)
+    assert f.l1.bucket == "projection_diff"
+    assert f.l2 == "undecidable" and f.loop == "undecidable"
+
+
+def test_report_double_counting_and_shape():
+    rows = [_row(q="q1"), _row(q="q1"), _row(q="q2", pred="")]
+    rep = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    assert rep["counts"]["rows"] == 3
+    assert rep["counts"]["questions"] == 2
+    # 题 q1 有两行(同一题重试),行计数=2、题计数=1 —— 双计数的全部意义(R18)
+    assert rep["counts"]["l1"]["projection_diff"] == 2
+    assert rep["counts"]["l1"]["no_sql"] == 1
+    assert rep["counts"]["l1_by_question"]["projection_diff"] == 1
+    assert set(rep) >= {"meta", "counts", "coverage", "observations", "samples"}
+
+
+def test_report_deterministic():
+    rows = [_row(), _row(q="q2")]
+    a = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    b = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_render_sections():
+    rep = build_report([_row()], {}, dialect="mysql", meta={"failures": "x"})
+    text = render_report(rep)
+    for token in ("L1", "L2", "loop", "覆盖", "观察"):
+        assert token in text
+
+
+def test_empty_rows_report_zeros():
+    rep = build_report([], {}, dialect="mysql", meta={})
+    assert rep["counts"]["rows"] == 0
+    assert render_report(rep)
+
+
+def test_report_counts_truncated_plans():
+    """plan 被截断的行数进 coverage,并在文本里露出来(R20)。"""
+    t = Trajectory(question="q1", plan_truncated=True)
+    rep = build_report([_row()], {"q1": t}, dialect="mysql", meta={})
+    assert rep["coverage"]["plan_truncated_rows"] == 1
+    assert "plan 被截断行=1" in render_report(rep)
+
+
+def test_trajectory_lookup_strips_question_whitespace():
+    """失败行的问题串带空白时仍要对得上轨迹 —— 对不上时 plan_truncated 恒 0(R20 的死法)。"""
+    t = Trajectory(question="q1", plan_truncated=True)
+    rep = build_report([_row(q="  q1  ")], {"q1": t}, dialect="mysql", meta={})
+    assert rep["coverage"]["plan_truncated_rows"] == 1
+
+
+def test_report_bytes_stable_across_hash_seeds():
+    """同输入跨进程逐字节一致(PYTHONHASHSEED 三连子进程钉死,与 decompose 同款)。
+
+    报告要被当基线比对,前提就是它**不随集合/字典迭代序漂移**:``observations`` /
+    ``samples`` / ``loop_by_l2`` 都是聚合字典,``json.dumps`` 不带 ``sort_keys`` 时
+    插入序就是输出序 —— 这里同时钉住 JSON 与渲染文本(渲染自成一套排序,两处都要稳)。
+    fixture 覆盖四个观察码与全部计数块,空桶则完全不出现(逐字节比较才对得上)。
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    code = """
+import json
+from trove.eval.attribution import FailureRow
+from trove.eval.chain import (
+    Trajectory, build_report, plan_facts_from_json, render_report,
+)
+
+rows = [
+    FailureRow(question="q1", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q1", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q2", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i"
+                        " JOIN cc c ON c.i = a.i", verdict="MISMATCH"),
+    FailureRow(question="q3", gold_sql="SELECT a.x FROM aa a WHERE a.gender = 'F'",
+               pred_sql="SELECT a.x FROM aa a WHERE a.gender = 'f'",
+               verdict="MISMATCH"),
+    FailureRow(question="q4", gold_sql="SELECT a.x FROM aa a ORDER BY a.x DESC LIMIT 1",
+               pred_sql="SELECT MAX(a.x) FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q5", gold_sql="SELECT a.x FROM aa a", pred_sql="",
+               verdict="REFUSED"),
+]
+trajs = {
+    "q1": Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i", "conditions": [],
+            "aggregation": "none", "answer_columns": ["x"],
+        }),
+        plan_text_state="present", plan_truncated=True,
+        validation_hits_raw='[{"rule": "f1_shape"}]',
+        available=frozenset({"matched_tables", "plan", "validation_hits"}),
+    ),
+}
+rep = build_report(rows, trajs, dialect="mysql",
+                   meta={"failures": "failures.jsonl", "dialect": "mysql"})
+print(json.dumps(rep, ensure_ascii=False))
+print(render_report(rep))
+"""
+    outs = set()
+    for seed in ("0", "1", "999"):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, env=env, cwd=str(root), timeout=120)
+        assert r.returncode == 0, r.stderr
+        outs.add(r.stdout)
+    assert len(outs) == 1, f"跨进程不一致: {outs}"

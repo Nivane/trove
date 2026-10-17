@@ -14,12 +14,13 @@ from __future__ import annotations
 # 是已解码的 dict,CLI 自己 import json),目前仍无消费者 → F401 noqa 留着。
 import json  # noqa: F401
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
 
-from trove.eval.attribution import parse_path
+from trove.eval.attribution import FailureRow, parse_path
 from trove.eval.replay import JUDGED_VERDICTS
 from trove.services.semantic_layer.contract import Col, PlanSignature
 
@@ -951,3 +952,190 @@ def loop_state(traj: Trajectory | None) -> str:
         or (traj.retry_count or 0) > 0
     )
     return "detected_but_unfixed" if detected else "never_detected"
+
+
+# ══ 逐行归因 + 报告(设计 §4 报告键 / §5 文本分节)═════════════
+#
+# 报告为「改进决策」而写:同一份语料要能回答两件事 —— (a) 失败集中在链路的哪一
+# 跳,(b) 这个数字有多少折扣。故计数成对出现(**行 / 题**)、保真度与观察码并列
+# 在覆盖节、样本让读者能回到具体题目。
+#
+# **行与题双计数是承重的**:97 行只对应 24 题,行数偏袒被反复重试的题 —— 只看行
+# 计数会把「一题重试四次」读成「四题都错在这里」。两个数都报,读的人自己选口径。
+
+
+@dataclass(frozen=True)
+class ChainFinding:
+    """一题一行(一个 failure 行)的归因结论:L1 档位 + L2 责任跳 + loop 三态。"""
+
+    question: str
+    l1: LadderVerdict
+    l2: str = "undecidable"
+    l2_reason: str = ""
+    loop: str = "undecidable"
+    source: str = ""
+    flags: tuple[str, ...] = ()
+
+
+def attribute_row(row: FailureRow, traj: Trajectory | None, *,
+                  dialect: str = "mysql") -> ChainFinding:
+    """一题一行 → L1 档位 + L2 责任跳 + loop 三态(设计 §2/§3)。
+
+    L2 只在 **gold 可判** 时才谈得上:gold 解析不了就无从说「计划本该做什么」,
+    故先答「gold 不可判」,再谈有无轨迹 —— 两种判不了的原因不同,不能混成一句。
+    ``flags`` 原样承接 ``l1.observations``(跨档观察码,不换桶)。今天它只产出四个
+    码(``needed_table_never_read`` / ``extra_table_read`` / ``extreme_style_mismatch``
+    / ``case_only_value_diff``);设计 §5 观察块另列的两项**不铺**(R33):``paths``
+    是未来 records 的字段(今天没有生产者,铺上去只能是空字典),``compile_miss``
+    今天在 failures 语料里没有生产者(编译期被拒的题走 ``query.refused`` 审计与
+    results.jsonl)—— 硬写只能从错误文本正则猜,那是把「读到 0」洗成「没有编译期
+    失败」。判据与 R20 同源:**没有生产者的字段不许铺**。
+    """
+    gold = sql_facts(row.gold_sql, dialect)
+    pred = sql_facts(row.pred_sql, dialect)
+    l1 = ladder(gold, pred, verdict=row.verdict,
+                had_sql=bool(row.pred_sql.strip()))
+    l2, reason = "undecidable", "gold 不可判" if (gold is None or not gold.ok) else "无轨迹"
+    if gold is not None and gold.ok:
+        l2, reason = responsibility(gold=gold, pred=pred, l1=l1, traj=traj)
+    return ChainFinding(
+        question=row.question, l1=l1, l2=l2, l2_reason=reason,
+        loop=loop_state(traj), source=(traj.source if traj else ""),
+        flags=l1.observations,
+    )
+
+
+def _bucket_counts(
+        findings: list[ChainFinding], buckets: tuple[str, ...],
+        key: Callable[[ChainFinding], str]) -> tuple[dict[str, int], dict[str, int]]:
+    """按桶聚合(行数 / 题数)。空桶不发键 —— 报告里「没有」就是键不在。"""
+    rows = {b: 0 for b in buckets}
+    qs = {b: set() for b in buckets}
+    for f in findings:
+        b = key(f)
+        if b in rows:
+            rows[b] += 1
+            qs[b].add(f.question)
+    return ({b: n for b, n in rows.items() if n},
+            {b: len(v) for b, v in qs.items() if v})
+
+
+def build_report(rows: list[FailureRow], trajs: dict[str, Trajectory], *,
+                 dialect: str = "mysql", meta: dict | None = None,
+                 samples: int = 3) -> dict:
+    """组装报告(纯函数:同输入 → 同输出,零 IO 零 LLM)。
+
+    逐键确定性:桶按常量表序(空桶不发键)、观察块与样本渲染按名字排序、样本按
+    **输入序**取每桶前 ``samples`` 条(输入序是语料自己的序,不是集合迭代序)。
+    轨迹按 ``row.question.strip()`` 对齐(失败行的问句带空白是常态;对不上就是没
+    轨迹,不是"没有 plan")。
+    """
+    findings: list[ChainFinding] = []
+    for r in rows:
+        traj = trajs.get(r.question.strip())
+        findings.append(attribute_row(r, traj, dialect=dialect))
+    l1_rows, l1_q = _bucket_counts(findings, L1_BUCKETS, lambda f: f.l1.bucket)
+    l2_rows, l2_q = _bucket_counts(findings, L2_BUCKETS, lambda f: f.l2)
+    loop_rows, _ = _bucket_counts(findings, LOOP_STATES, lambda f: f.loop)
+    obs: dict[str, int] = {}
+    for f in findings:
+        for code in f.flags:
+            obs[code] = obs.get(code, 0) + 1
+    fidelity = {
+        "matched_tables": {"present": 0, "empty": 0, "absent": 0},
+        "plan": {"present": 0, "empty": 0, "absent": 0},
+    }
+    for f in findings:
+        t = trajs.get(f.question.strip())
+        if t is None:
+            fidelity["matched_tables"]["absent"] += 1
+            fidelity["plan"]["absent"] += 1
+            continue
+        fidelity["matched_tables"][t.matched_tables_state] = (
+            fidelity["matched_tables"].get(t.matched_tables_state, 0) + 1)
+        fidelity["plan"][t.plan_text_state] = (
+            fidelity["plan"].get(t.plan_text_state, 0) + 1)
+    loop_by_l2: dict[str, dict[str, int]] = {}
+    for f in findings:
+        loop_by_l2.setdefault(f.l2, {})
+        loop_by_l2[f.l2][f.loop] = loop_by_l2[f.l2].get(f.loop, 0) + 1
+    sample_bag: dict[str, dict[str, list]] = {"l1": {}, "l2": {}}
+    if samples:
+        for f in findings:
+            for bucket_key, bucket in (("l1", f.l1.bucket), ("l2", f.l2)):
+                bag = sample_bag[bucket_key].setdefault(bucket, [])
+                if len(bag) < samples:
+                    bag.append({"question": f.question, "reason": f.l1.reason,
+                                "l2_reason": f.l2_reason})
+    return {
+        "meta": dict(meta or {}),
+        "counts": {
+            "rows": len(findings),
+            "questions": len({f.question for f in findings}),
+            "l1": l1_rows, "l1_by_question": l1_q,
+            "l2": l2_rows, "l2_by_question": l2_q,
+            "loop": loop_rows, "loop_by_l2": loop_by_l2,
+        },
+        "coverage": {
+            "l1_judged_rows": sum(
+                n for b, n in l1_rows.items() if b != "undecidable"),
+            "l2_judged_rows": sum(
+                n for b, n in l2_rows.items() if b != "undecidable"),
+            # R20:plan 被静默/带标记截断的行数——保真度的一部分,
+            # 不报出来 plan 深度就有一个看不见的天花板
+            "plan_truncated_rows": sum(
+                1 for f in findings
+                if (trajs.get(f.question.strip()) is not None
+                    and trajs[f.question.strip()].plan_truncated)),
+            "fidelity": fidelity,
+        },
+        "observations": dict(sorted(obs.items())),
+        "samples": sample_bag,
+    }
+
+
+def render_report(report: dict) -> str:
+    """确定性的文本渲染(同输入 → 同输出;无时间戳)。
+
+    分节:语料 → L1 表 → L2 表 → loop 交叉 → 覆盖 → 观察 → 样本。每个集合都显式
+    排序(或按常量表序);空桶不出行。行计数与题计数同行给出(``行 / 题``)。
+    """
+    counts = report["counts"]
+    lines: list[str] = []
+    meta = report.get("meta") or {}
+    if meta:
+        lines.append("== 语料 ==")
+        for k in sorted(meta):
+            lines.append(f"  {k}: {meta[k]}")
+    lines.append("== L1 结构档位(行数 / 题数)==")
+    for b in L1_BUCKETS:
+        n = counts["l1"].get(b, 0)
+        if n:
+            lines.append(f"  {b:20s} {n:4d} / {counts['l1_by_question'].get(b, 0)}")
+    lines.append("== L2 责任跳(行数 / 题数)==")
+    for b in L2_BUCKETS:
+        n = counts["l2"].get(b, 0)
+        if n:
+            lines.append(f"  {b:28s} {n:4d} / {counts['l2_by_question'].get(b, 0)}")
+    lines.append("== loop 三态 × L2 ==")
+    for b, m in sorted(counts.get("loop_by_l2", {}).items()):
+        detail = " ".join(f"{k}={v}" for k, v in sorted(m.items()))
+        lines.append(f"  {b:28s} {detail}")
+    lines.append("== 覆盖 ==")
+    cov = report["coverage"]
+    lines.append(f"  L1 可判行={cov['l1_judged_rows']} · L2 有轨迹行={cov['l2_judged_rows']}"
+                 f" · plan 被截断行={cov['plan_truncated_rows']}")
+    for field, m in cov["fidelity"].items():
+        lines.append(f"  fidelity[{field}] " +
+                     " ".join(f"{k}={v}" for k, v in sorted(m.items())))
+    lines.append("== 观察(跨档,给读者的折扣尺)==")
+    for code, n in sorted((report.get("observations") or {}).items()):
+        lines.append(f"  {code}: {n}")
+    lines.append("== 样本 ==")
+    for kind in ("l1", "l2"):
+        for bucket, bag in sorted((report.get("samples") or {}).get(kind, {}).items()):
+            if bag:
+                lines.append(f"  [{kind}:{bucket}]")
+                for s in bag:
+                    lines.append(f"    - {s['question'][:80]} · {s['reason']}")
+    return "\n".join(lines) + "\n"
