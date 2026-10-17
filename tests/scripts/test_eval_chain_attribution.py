@@ -69,3 +69,81 @@ def test_cli_trajectory_coverage_counts_questions_not_rows(tmp_path, capsys):
     assert code == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["meta"]["trajectory_covered_questions"] == 1
+
+
+def test_cli_out_file_byte_identical_to_stdout(tmp_path, capsys):
+    """--out 文件与 stdout 逐字节同(两个输出模式);JSON 也以换行收尾。"""
+    failures = _write(tmp_path, "failures.jsonl", [
+        {"question": "q1", "gold_sql": "SELECT a.x FROM aa a",
+         "pred_sql": "SELECT a.y FROM aa a", "verdict": "MISMATCH"}])
+    for extra, name in ((["--json"], "r.json"), ([], "r.txt")):
+        out = tmp_path / name
+        code = cli.main(["--failures", str(failures), "--traces", "",
+                         "--runs-dir", str(tmp_path / "runs"),
+                         "--out", str(out), *extra])
+        assert code == 0
+        stdout = capsys.readouterr().out
+        body = out.read_text(encoding="utf-8")
+        assert body == stdout
+        assert body.endswith("\n")
+        if extra:
+            json.loads(body)
+
+
+def test_cli_out_expanduser(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    failures = _write(tmp_path, "failures.jsonl", [])
+    code = cli.main(["--failures", str(failures), "--traces", "",
+                     "--runs-dir", str(tmp_path), "--json", "--out", "~/r.json"])
+    assert code == 0
+    capsys.readouterr()
+    assert (tmp_path / "r.json").exists()
+
+
+def test_cli_failures_is_a_directory_exits_2(tmp_path, capsys):
+    code = cli.main(["--failures", str(tmp_path), "--traces", "",
+                     "--runs-dir", str(tmp_path)])
+    assert code == 2
+    assert "读失败记录出错" in capsys.readouterr().err
+
+
+def test_cli_out_unwritable_exits_2(tmp_path, capsys):
+    failures = _write(tmp_path, "failures.jsonl", [])
+    code = cli.main(["--failures", str(failures), "--traces", "",
+                     "--runs-dir", str(tmp_path),
+                     "--out", str(tmp_path / "no-such-dir" / "x.json")])
+    assert code == 2
+    assert "写报告失败" in capsys.readouterr().err
+
+
+def test_cli_explicit_missing_traces_warns_and_continues(tmp_path, capsys):
+    """显式给的 traces 路径不存在:stderr 说一句,报告照出(按空源)。"""
+    failures = _write(tmp_path, "failures.jsonl", [])
+    missing = tmp_path / "nope.jsonl"
+    code = cli.main(["--failures", str(failures), "--traces", str(missing),
+                     "--runs-dir", str(tmp_path), "--json"])
+    assert code == 0
+    cap = capsys.readouterr()
+    assert "--traces" in cap.err and str(missing) in cap.err
+    assert json.loads(cap.out)["meta"]["traces"] == str(missing)
+
+
+def test_cli_explicit_missing_runs_dir_warns_and_continues(tmp_path, capsys):
+    failures = _write(tmp_path, "failures.jsonl", [])
+    code = cli.main(["--failures", str(failures), "--traces", "",
+                     "--runs-dir", str(tmp_path / "nope"), "--json"])
+    assert code == 0
+    cap = capsys.readouterr()
+    assert "--runs-dir" in cap.err
+    json.loads(cap.out)
+
+
+def test_cli_missing_structured_warns_and_continues(tmp_path, capsys):
+    failures = _write(tmp_path, "failures.jsonl", [])
+    missing = tmp_path / "nope_records.jsonl"
+    code = cli.main(["--failures", str(failures), "--structured", str(missing),
+                     "--traces", "", "--runs-dir", str(tmp_path), "--json"])
+    assert code == 0
+    cap = capsys.readouterr()
+    assert "--structured" in cap.err
+    json.loads(cap.out)
