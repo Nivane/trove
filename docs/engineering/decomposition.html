@@ -316,9 +316,9 @@ agent:
       结果落到 <code>state.analysis</code>（结构化 payload，<code>version=1</code>，
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1517">engine.py:1517 <span class="ref-line">analysis_payload</span></a>），
       与旧的 <code>state.attribution</code> <strong>双写</strong>兼容
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L460">attribution.py:460 <span class="ref-line">双写</span></a>）——
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L488">attribution.py:488 <span class="ref-line">双写</span></a>）——
       归因节点本体已瘦身为适配器（<code>make_attribution</code> 签名不变，
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L192">attribution.py:192 <span class="ref-line">make_attribution</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L194">attribution.py:194 <span class="ref-line">make_attribution</span></a>），
       数学升格成服务后有了三个调用方：图内节点、前端分析卡、决策桥。
     </p>
 
@@ -412,7 +412,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -193,7 +193,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/guards.py#L71">guards.py:71 <span class="ref-line">GUARD_TARGETS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L62">execute_sql.py:62 <span class="ref-line">ORG_GUARD_TAG</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L67">execute_sql.py:67 <span class="ref-line">ORG_GUARD_TAG</span></a>
     </p>
 
     <h2 id="validate">干跑校验：一条能进 CI 的退出码契约</h2>
@@ -295,7 +295,7 @@ flowchart LR
 
     <p>
       扩展面治理有一个总开关 <code>agent.extensions.org_extensions_enabled</code>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L361">config.py:361 <span class="ref-line">ExtensionsConfig</span></a>，
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L426">config.py:426 <span class="ref-line">ExtensionsConfig</span></a>，
       默认全开）。它停用的是<strong>组织扩展这一层</strong>的消费面：组织技能的注入与
       <code>load_skill</code> 广告、validator 断言（结果域）与 guard 断言（SQL 域）、
       决策规则的<strong>执行</strong>。
@@ -446,7 +446,7 @@ flowchart TB
       字段名一次定死、缺失一律降级为空值——<strong>观测物绝不允许因为自身形状问题
       打断或影响一次查询</strong>。工具这一侧还有配套的治理维度：
       <code>ToolSpec</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L199">agent_loop.py:199 <span class="ref-line">ToolSpec</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L226">agent_loop.py:226 <span class="ref-line">ToolSpec</span></a>
       上 <code>roles</code> 是<strong>可见性门</strong>（谁能看到这个工具），
       <code>level</code> 是纯<strong>分类</strong>（core / catalog，它从不决定可见性，
       只被运行记录消费）——门与分类分开，工具面才有可审计的授权模型。
@@ -587,7 +587,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: cdf460d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

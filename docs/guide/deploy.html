@@ -204,9 +204,9 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
 
     <p>
       <code>serve</code> 的参数可以改绑定地址，默认是本机回环：
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L752">main.py:752 <span class="ref-line">--host</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L753">main.py:753 <span class="ref-line">--port</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L768">main.py:768 <span class="ref-line">async_main_serve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L794">main.py:794 <span class="ref-line">--host</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L795">main.py:795 <span class="ref-line">--port</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L810">main.py:810 <span class="ref-line">async_main_serve</span></a>
     </p>
 
     <div class="callout warn">
@@ -241,8 +241,8 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <pre><code>uv sync --extra mysql --extra doris</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L47">pyproject.toml:47 <span class="ref-line">postgres</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L55">pyproject.toml:55 <span class="ref-line">doris</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L52">pyproject.toml:52 <span class="ref-line">postgres</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L60">pyproject.toml:60 <span class="ref-line">doris</span></a>
     </p>
 
     <h2 id="storage">存储后端怎么选</h2>
@@ -278,7 +278,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/config_store.py#L26">config_store.py:26 <span class="ref-line">DEFAULT_PATH</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L171">main.py:171 <span class="ref-line">boot_register</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L210">main.py:210 <span class="ref-line">boot_register</span></a>
     </p>
 
     <h2 id="env">环境变量速查</h2>
@@ -306,7 +306,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L580">config.py:580 <span class="ref-line">resolve_env_vars</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L649">config.py:649 <span class="ref-line">resolve_env_vars</span></a>
     </p>
 
     <p>
@@ -334,7 +334,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
