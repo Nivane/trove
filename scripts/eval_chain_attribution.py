@@ -58,7 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     maps.append(load_run_logs(Path(args.runs_dir).expanduser()))
     trajs = merge_trajectories(*maps)
 
-    covered = sum(1 for r in rows if r.question.strip() in trajs)
+    # 按**题**计,不按行:同一题的多条失败行只算一次(报告另给行/题双计数,
+    # 覆盖数若按行会随重试次数虚高)。
+    covered = len({r.question.strip() for r in rows
+                   if r.question.strip() in trajs})
     meta = {
         "failures": str(failures),
         "structured": args.structured or "(off)",

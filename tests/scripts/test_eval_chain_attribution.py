@@ -46,3 +46,26 @@ def test_cli_bad_line_exits_2(tmp_path, capsys):
     code = cli.main(["--failures", str(p), "--traces", "",
                      "--runs-dir", str(tmp_path)])
     assert code == 2
+
+
+def test_cli_trajectory_coverage_counts_questions_not_rows(tmp_path, capsys):
+    """覆盖数是**题**数:q1 两条失败行只算一题,不能被重试行数虚高。"""
+    failures = _write(tmp_path, "failures.jsonl", [
+        {"question": "q1", "gold_sql": "SELECT 1", "pred_sql": "SELECT 1",
+         "verdict": "MISMATCH"},
+        {"question": "q1", "gold_sql": "SELECT 1", "pred_sql": "SELECT 1",
+         "verdict": "MISMATCH"},
+        {"question": "q2", "gold_sql": "SELECT 1", "pred_sql": "SELECT 1",
+         "verdict": "MISMATCH"}])
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "a.log").write_text(
+        "════ Run r1 · 2026-08-19 10:00:00\n"
+        "question: q1\n"
+        '│   matched_tables = ["aa"]\n',
+        encoding="utf-8")
+    code = cli.main(["--failures", str(failures), "--traces", "",
+                     "--runs-dir", str(runs), "--json"])
+    assert code == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["meta"]["trajectory_covered_questions"] == 1
