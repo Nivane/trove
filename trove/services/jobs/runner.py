@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.decision.bridge import primary_driver_line
 from trove.services.decision.significance import band_line
@@ -78,7 +79,15 @@ class SchedulerRunner:
             "row_count": 0, "alert": "", "alert_sent": False,
         }
         try:
-            session = await self.session_manager.start_session()
+            # 定时任务按**所有者身份**运行(设计 §2.4):行/列 grant 与数据源
+            # scope 由 ``SessionManager._principal_wire`` 按 user_id 现读,
+            # admin owner 走豁免。老部署(未启用 AuthService)没有所有者列、
+            # 也不存在多用户身份 —— 沿用本机可信身份,这条路径逐字节不变。
+            owner_problem = await self._owner_problem(job)
+            if owner_problem:
+                raise RuntimeError(owner_problem)
+            session = await self.session_manager.start_session(
+                user_id=job.owner_id or "local")
             try:
                 final = await self.session_manager.ask(
                     session, job.question, job.workflow,
@@ -171,6 +180,76 @@ class SchedulerRunner:
         except Exception:
             logger.exception("job %s failed to advance", job.id)
 
+    def _auth_service(self):
+        """``AuthService`` when the deployment is multi-user, else ``None``.
+
+        Duck-typed against SessionManager like everything else here: the auth
+        service is what makes a principal mean something, so its presence is
+        the multi-user switch (``_principal_wire`` uses the same test).
+        """
+        return getattr(self.session_manager, "_auth", None)
+
+    async def _owner_problem(
+        self, job: Job, *, require_admin: bool = False,
+    ) -> str:
+        """Why this job cannot run as its owner (``""`` = it can).
+
+        A scheduled run executes **as the job's owner**: a non-admin owner's
+        row/column grants and datasource scopes apply exactly as they would
+        in that user's own chat. The owner must therefore exist and be
+        enabled. Legacy jobs created before the owner column read back as
+        ``""``; in a multi-user deployment that is a loud error — silently
+        falling back to the local admin identity is precisely the hole this
+        closes. Embedded deployments (no AuthService) keep the local trusted
+        identity: that path is byte-for-byte unchanged.
+
+        ``require_admin`` is for the system paths (decision / scan), which
+        are not user conversation pipelines and take no personal scope; they
+        run as *an admin* or not at all.
+        """
+        if self._auth_service() is None:
+            return ""
+        owner = (job.owner_id or "").strip()
+        if not owner:
+            return L(
+                self.lang,
+                "任务缺少所有者；请由管理员编辑并重新保存该任务",
+                "This job has no owner — an administrator must edit and "
+                "re-save it",
+            )
+        try:
+            user_id = int(owner)
+        except (TypeError, ValueError):
+            return L(
+                self.lang,
+                f"任务所有者 {owner!r} 不是有效用户 id",
+                f"Job owner {owner!r} is not a valid user id",
+            )
+        store = getattr(self._auth_service(), "store", None)
+        row = await store.get_user_by_id(user_id) if store is not None else None
+        if row is None:
+            return L(
+                self.lang,
+                f"任务所有者(用户 {owner})不存在；请由管理员编辑并重新指定",
+                f"Job owner (user {owner}) does not exist — an administrator "
+                "must edit and reassign it",
+            )
+        if row.get("disabled"):
+            return L(
+                self.lang,
+                f"任务所有者(用户 {owner})已被禁用",
+                f"Job owner (user {owner}) is disabled",
+            )
+        if require_admin and str(row.get("role") or "") != "admin":
+            return L(
+                self.lang,
+                f"任务所有者(用户 {owner})不是管理员；决策/扫描任务只接受"
+                "管理员所有者",
+                f"Job owner (user {owner}) is not an admin; decision/scan "
+                "jobs run only under an admin owner",
+            )
+        return ""
+
     async def _run_decision(self, job: Job, now: datetime | None) -> dict[str, Any]:
         """Run one decision job: fetch by rule, judge deterministically, store
         the evidence.
@@ -187,6 +266,12 @@ class SchedulerRunner:
         run = Run(job_id=job.id)
         run_id = await self.jobs.record_run(job, run)
         try:
+            # 系统任务(设计 §2.4):判定不是用户对话管线 —— 它不接个人行/列
+            # scope,所以只接受 admin 所有者。非 admin 所有者响亮失败,绝不
+            # 借系统身份把该用户看不到的行判一遍。
+            owner_problem = await self._owner_problem(job, require_admin=True)
+            if owner_problem:
+                raise RuntimeError(owner_problem)
             rule, rule_digest = await self._load_rule(job)
             outcome = await self.decision.evaluate(
                 rule, job.datasource, now, rule_digest=rule_digest)
@@ -276,6 +361,10 @@ class SchedulerRunner:
         run = Run(job_id=job.id)
         run_id = await self.jobs.record_run(job, run)
         try:
+            # 同 _run_decision:扫描是系统任务,只接受 admin 所有者。
+            owner_problem = await self._owner_problem(job, require_admin=True)
+            if owner_problem:
+                raise RuntimeError(owner_problem)
             if self.scans is None:
                 raise RuntimeError(
                     "scan job but no scan service is wired — refusing to fall "

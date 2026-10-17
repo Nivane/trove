@@ -41,6 +41,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     "fastmcp>=3.4.7",
     "prometheus-client>=0.20.0",
+    # OIDC SSO:discovery/JWKS/token 走 httpx(测试用 MockTransport,零真实网络);
+    # ID token 校验走 PyJWT,算法固定为非对称([crypto] 拉入 cryptography,
+    # 本仓已是直接依赖)。
+    "httpx>=0.27.0",
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [project.optional-dependencies]

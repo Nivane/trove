@@ -226,6 +226,10 @@ export function canAccess(role: string | undefined, required: Role[] | null): bo
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  // SSO 回调把 token 放在 fragment 里(默认落在 `/`)。必须在「有没有会话」
+  // 的判定之前收下 —— 否则首次导航先把人送去登录页,fragment 随之丢失。
+  // 无 fragment 时是一次纯字符串检查,零成本。
+  auth.consumeSsoFragment()
   // On first load with a stored token, restore the session before guarding.
   // bootstrap() is cached (bootPromise), so this is safe when App.vue's
   // setup already started the restore — awaiting an in-flight restore is
@@ -241,7 +245,18 @@ router.beforeEach(async (to) => {
     }
   }
   if (to.name === 'login' && auth.isAuthed) {
-    return { name: 'chat' }
+    // 密码登录的 next 在 LoginView 里消费;这里兜住「已登录直接打开登录页」,
+    // 以及 SSO 回调直接落在登录页的情形。
+    const next = auth.takeSsoNext()
+    return next ? { path: next } : { name: 'chat' }
+  }
+  // SSO 的 next 只在「token 刚到的首次导航」上生效:落点通常是
+  // post_login_redirect(默认 `/`),而用户原本要去的是 next。App.vue 的
+  // setup 可能先于守卫跑过 bootstrap(fragment 那时已收下),所以这里**不能**
+  // 只看本次守卫有没有见到 fragment —— ssoNext 本身就是一次性信号。
+  if (auth.isAuthed && auth.ssoNext) {
+    const next = auth.takeSsoNext()
+    if (next && next !== to.fullPath) return { path: next }
   }
   const required = requiredRoles(to)
   if (!canAccess(auth.user?.role, required)) {

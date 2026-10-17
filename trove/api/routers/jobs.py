@@ -36,6 +36,14 @@ def _scheduler(request: Request):
     return getattr(request.app.state, "scheduler", None)
 
 
+def _admin_id(admin: dict) -> str:
+    """当前管理员的 owner id;``local``(未启用 auth 的伪管理员)不是真实用户
+    → ``""``。这样嵌入部署创建的任务在启用多用户后是「缺所有者」的响亮
+    失败,一次管理员编辑即可补上,而不是带着一个永远解析不了的身份运行。"""
+    uid = str(admin.get("id") or "")
+    return "" if uid in ("", "local") else uid
+
+
 def _serialize(job) -> dict[str, Any]:
     recent = getattr(job, "_recent", None)
     return {
@@ -59,6 +67,9 @@ def _serialize(job) -> dict[str, Any]:
         # 存 JSON 字符串(列是 TEXT),读侧解析回去 —— 前端拿到的是形状,
         # 不是一个需要二次解析的字符串。
         "scan_spec": _scan_spec_out(job.scan_spec),
+        # 任务所有者(auth 用户 id 字符串;"" = 存量/无 auth 部署)。定时运行
+        # 按所有者身份执行,非 admin 所有者的行/列 grant 照常生效。
+        "owner_id": job.owner_id,
         "next_run_at": job.next_run_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -245,6 +256,7 @@ async def create_job(
         decision_rule=body.decision_rule,
         topic=body.topic,
         scan_spec=_scan_spec_in(body.scan_spec),
+        owner_id=_admin_id(admin),
     )
     if job is None:
         raise HTTPException(status_code=400, detail="invalid job definition")
@@ -316,6 +328,14 @@ async def update_job(
     )
     if job is None:
         raise HTTPException(status_code=400, detail="invalid job update")
+    if not (existing.owner_id or "").strip():
+        # 存量任务(所有者列引入前创建):任何一次编辑都补上操作者的 id。
+        # 「编辑不改 owner」指的是不改**已有**所有者 —— 否则调度器那句
+        # 「请由管理员编辑并重新保存」就没有兑现路径。
+        owner = _admin_id(admin)
+        if owner:
+            job.owner_id = owner
+            await _jobs(request).store.save_job(job)
     await _audit(request, "jobs.update", admin, 200, {"id": job_id})
     return {"job": _serialize(job)}
 

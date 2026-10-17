@@ -40,10 +40,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
+from trove.core.logging import get_logger
 from trove.services.authz.policy import Principal
 
-__all__ = ["AuthzDecision", "Authorizer", "referenced_tables"]
+__all__ = ["AuthzDecision", "Authorizer", "build_authorizer", "referenced_tables"]
+
+logger = get_logger(__name__)
 
 #: 数据源名 → 该数据源在语义层里声明过的表名集合。
 #: 返回 ``None`` 或空集 = **没有基准**(未接语义层),A3 跳过。
@@ -56,6 +60,7 @@ _ERROR_TAGS = {
     "no_principal": "AUTHZ_NO_PRINCIPAL",
     "datasource": "AUTHZ_DATASOURCE",
     "table": "AUTHZ_TABLE",
+    "column": "AUTHZ_COLUMN",
     "unresolved": "AUTHZ_UNRESOLVED",
 }
 
@@ -168,6 +173,57 @@ class Authorizer:
             return AuthzDecision(False, "table", blocked)
         # 放行时也把被挡的表带出来 —— warn 期的可观测性全靠这个字段
         return AuthzDecision(True, "", blocked)
+
+
+def build_authorizer(
+    config: Any, semantic_provider: Any = None,
+) -> Authorizer | None:
+    """按部署配置构建执行层强制点;``None`` = 未装配,不判。
+
+    **图(``graphs._build_authorizer``)与直执行路由(``/v1/semantic/query``)
+    共用这一份** —— 两处各建一个,A3 的基准读取、降级口径与 ``warn/enforce``
+    兜底迟早漂移。鉴权侧已经因为「同一策略两份副本」吃过一次亏(设计 §2.2 G1)。
+
+    A3 的基准取自语义模型声明过的表名(``rls.declared_tables``) —— 仓库的
+    grants 只到数据源级,没有数据集级授权源,所以 A3 挡的是**声明之外的表**,
+    即绕开语义层直摸物理表。编译路径与快径产出的 SQL 只引用声明过的表,不会
+    被误伤。
+
+    取模型失败(提供方不可用/类型错误)一律降级为「无基准」→ A3 跳过,**并打
+    warning**:P2 实施时踩过「宽 except 把编程错误吞成静默 miss」的坑(设计
+    §14 P2 记录),A3 的基准缺失必须是看得见的。A1/A2 不受影响,仍然生效。
+
+    ``require_principal=False``(嵌入场景显式关掉整层)→ ``None``。
+    """
+
+    authz_config = getattr(config, "authz", None)
+    if authz_config is not None and not getattr(authz_config, "require_principal", True):
+        return None
+
+    def _declared(datasource: str | None) -> set[str] | None:
+        if semantic_provider is None:
+            return None  # 未接语义层 → 无基准,A3 跳过
+        from trove.services.semantic_layer import rls
+
+        try:
+            return rls.declared_tables(semantic_provider.model())
+        except Exception as e:
+            logger.warning(
+                "authz A3 basis unavailable (semantic model unreadable) for "
+                "datasource %r: %s — table-level check skipped, datasource-level "
+                "authorization still enforced",
+                datasource, e,
+            )
+            return None
+
+    # 兜底档与 ``AuthzConfig.table_enforcement`` 的 dataclass 默认**逐字一致**
+    # (三处默认值同源:dataclass / ConfigLoader / 这里)。兜底的用途是
+    # authz_config 为 None(未提供 config)时仍装到安全档 —— 若兜成 warn,
+    # 「忘了传 config」这条路径会静默把表级判定变成观察档。
+    return Authorizer(
+        declared_tables=_declared,
+        mode=getattr(authz_config, "table_enforcement", "enforce"),
+    )
 
 
 def referenced_tables(sql: str, dialect: str = "") -> set[str] | None:

@@ -298,6 +298,12 @@ class _FakeAuth:
         raw = self._topic_grants.get(user_id)
         return None if raw is None else {k: list(v) for k, v in raw.items()}
 
+    async def get_row_grants(self, user_id):
+        return None
+
+    async def get_column_denials(self, user_id):
+        return None
+
     async def get_user_by_id(self, uid):
         return self._users.get(uid)
 

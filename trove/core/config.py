@@ -158,6 +158,42 @@ class EgressConfig:
 
 
 @dataclass
+class OidcConfig:
+    """OIDC 授权码登录(SSO)的部署配置。
+
+    **默认整体关闭** —— 未配置时无新路由、无登录按钮、无任何网络调用,
+    本地密码登录逐字节不变。只有显式写 ``enabled: true`` 且配齐 issuer /
+    client_id 的部署才会启用。
+
+    ``client_secret_ref``: 只接受 ``env:NAME``(与 ``MaskingConfig.hash_salt_ref``
+    同一条引用纪律)。**这是引用不是值** —— 客户端密钥走环境变量 / secrets,
+    不进 YAML、不进 git、不进管理端可回显的配置面(因此本组**不**进
+    ``SETTINGS_SCHEMA``)。
+
+    ``redirect_uri``: 留空时按请求 base URL 推导 ``/v1/auth/oidc/callback``;
+    显式配置时必须是 https(localhost / 127.0.0.1 例外)。
+
+    ``role_map``: IdP group → 本地角色(``admin|analyst|user``)。多个命中取
+    **最高权限**;无命中 → ``default_role``。映射只在登录时重算,不碰 grants。
+
+    ``auto_provision``: 首次登录时自动建号(零 grants);关闭时未绑定身份一律
+    拒绝(``not_provisioned``)。
+    """
+
+    enabled: bool = False
+    issuer: str = ""
+    client_id: str = ""
+    client_secret_ref: str = ""
+    redirect_uri: str = ""
+    post_login_redirect: str = "/"
+    scopes: str = "openid email profile"
+    groups_claim: str = "groups"
+    role_map: dict[str, str] = field(default_factory=dict)
+    default_role: str = "user"
+    auto_provision: bool = True
+
+
+@dataclass
 class BudgetConfig:
     """执行画像的成本轨(设计 §6.3 / §5.2)。
 
@@ -542,6 +578,8 @@ class AgentConfig:
     masking: MaskingConfig = field(default_factory=MaskingConfig)
     # LLM 数据出境治理:工具回喂脱敏 + provider 白名单。见 EgressConfig。
     egress: EgressConfig = field(default_factory=EgressConfig)
+    # OIDC SSO(默认关闭;部署级安全配置,不进管理端可热改的 SETTINGS_SCHEMA)。
+    oidc: OidcConfig = field(default_factory=OidcConfig)
     # 执行画像的成本轨:阈值 + 估算不可得时的方向。见 BudgetConfig。
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     # 可信查询资产的**统计**侧(台账库的位置与保留期)。见 AssetsConfig。
@@ -947,6 +985,35 @@ class ConfigLoader:
             ],
             audit=bool(egress_raw.get("audit", True)),
         )
+        # OIDC SSO。顶层与 ``agent:`` 内嵌两种写法都认。默认关闭时读到的
+        # 是全默认值 —— 与「没有 oidc 段」逐字段一致(兼容安全带)。issuer
+        # 末尾斜杠归一化:discovery 拼路径与 iss 声明比对必须是同一个串。
+        oidc_raw = resolved.get("oidc", {}) or agent_section.get("oidc", {}) or {}
+        _role_map_raw = oidc_raw.get("role_map", {}) or {}
+        oidc_conf = OidcConfig(
+            enabled=bool(oidc_raw.get("enabled", False)),
+            issuer=str(oidc_raw.get("issuer", "") or "").strip().rstrip("/"),
+            client_id=str(oidc_raw.get("client_id", "") or "").strip(),
+            client_secret_ref=str(
+                oidc_raw.get("client_secret_ref", "") or "").strip(),
+            redirect_uri=str(oidc_raw.get("redirect_uri", "") or "").strip(),
+            post_login_redirect=str(
+                oidc_raw.get("post_login_redirect", "/") or "/").strip() or "/",
+            scopes=str(oidc_raw.get(
+                "scopes", "openid email profile") or "openid email profile").strip(),
+            groups_claim=str(
+                oidc_raw.get("groups_claim", "groups") or "groups").strip(),
+            role_map={
+                str(k).strip(): str(v).strip().lower()
+                for k, v in (
+                    _role_map_raw.items()
+                    if isinstance(_role_map_raw, dict) else [])
+                if str(k).strip() and str(v).strip()
+            },
+            default_role=str(
+                oidc_raw.get("default_role", "user") or "user").strip().lower(),
+            auto_provision=bool(oidc_raw.get("auto_provision", True)),
+        )
         # 可信查询资产的台账(设计 §9.2)。同样**顶层与 ``agent:`` 内嵌两种写法
         # 都认**。这一段的写法是照着上面 authz 的教训来的:加了字段与默认值却
         # 不在加载器里读 YAML,配置就永远不生效(恒取默认),而那是排障最贵的
@@ -1015,6 +1082,7 @@ class ConfigLoader:
             authz=authz_conf,
             masking=masking_conf,
             egress=egress_conf,
+            oidc=oidc_conf,
             assets=assets_conf,
             providers=providers,
             tracing=tracing,

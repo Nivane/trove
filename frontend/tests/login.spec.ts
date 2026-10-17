@@ -77,6 +77,13 @@ function bodyText(): string {
   return document.body.textContent ?? ''
 }
 
+/** 登录页挂载时还会问一次 /v1/auth/oidc/status —— 计数只算登录/其它调用。 */
+function nonStatusCalls(fetchMock: ReturnType<typeof vi.fn>): number {
+  return fetchMock.mock.calls.filter(
+    ([input]) => !String(input).includes('/v1/auth/oidc/status'),
+  ).length
+}
+
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
@@ -198,7 +205,7 @@ describe('提交中：按钮 aria-busy + 两输入 readonly + 防重复提交', 
     await submitWith()
     await wrapper!.find('.login-btn').trigger('click') // 第二次点击：应被吞掉
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(nonStatusCalls(fetchMock)).toBe(1)
     const button = document.querySelector<HTMLButtonElement>('.login-btn')!
     expect(button.getAttribute('aria-busy')).toBe('true')
     expect(button.classList.contains('is-loading')).toBe(true)
@@ -213,7 +220,7 @@ describe('提交中：按钮 aria-busy + 两输入 readonly + 防重复提交', 
     )
     await flushPromises()
     expect(localStorage.getItem('trove_auth_token')).toBe('tok')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(nonStatusCalls(fetchMock)).toBe(1)
   })
 })
 
@@ -258,7 +265,7 @@ describe('错误按原因分流：401 / 429 / 503 / 网络 reject', () => {
     expect(button.textContent).toContain('42')
     await wrapper!.find('.login-btn').trigger('click')
     await flushPromises()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(nonStatusCalls(fetchMock)).toBe(1)
   })
 
   it('429 缺 Retry-After 头 → 不编造秒数（不显示倒计时，消息仍说明原因）', async () => {
@@ -299,12 +306,17 @@ describe('错误按原因分流：401 / 429 / 503 / 网络 reject', () => {
   })
 
   it('503 → StatePanel error 态（role="alert"）+ 重试按钮，重试再发一次请求', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(503, { detail: 'storage unavailable' }))
-      .mockResolvedValueOnce(
-        jsonResponse(200, { token: 'tok', user: { id: 1, username: 'admin', role: 'admin' } }),
-      )
+    let attempt = 0
+    const fetchMock = vi.fn(async (input: string) => {
+      if (String(input).includes('/v1/auth/oidc/status')) return jsonResponse(404, {})
+      attempt += 1
+      return attempt === 1
+        ? jsonResponse(503, { detail: 'storage unavailable' })
+        : jsonResponse(200, {
+            token: 'tok',
+            user: { id: 1, username: 'admin', role: 'admin' },
+          })
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await mountView()
@@ -319,17 +331,21 @@ describe('错误按原因分流：401 / 429 / 503 / 网络 reject', () => {
 
     await wrapper!.find('.state-panel .sp-btn').trigger('click')
     await flushPromises()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(nonStatusCalls(fetchMock)).toBe(2)
     expect(document.querySelector('.state-panel')).toBeNull()
   })
 
   it('fetch reject →「无法连接到服务器，请检查网络」+ 重试', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(
-        jsonResponse(200, { token: 'tok', user: { id: 1, username: 'admin', role: 'admin' } }),
-      )
+    let attempt = 0
+    const fetchMock = vi.fn(async (input: string) => {
+      if (String(input).includes('/v1/auth/oidc/status')) return jsonResponse(404, {})
+      attempt += 1
+      if (attempt === 1) throw new TypeError('Failed to fetch')
+      return jsonResponse(200, {
+        token: 'tok',
+        user: { id: 1, username: 'admin', role: 'admin' },
+      })
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await mountView()
@@ -340,7 +356,7 @@ describe('错误按原因分流：401 / 429 / 503 / 网络 reject', () => {
 
     await wrapper!.find('.state-panel .sp-btn').trigger('click')
     await flushPromises()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(nonStatusCalls(fetchMock)).toBe(2)
   })
 })
 
@@ -411,5 +427,110 @@ describe('登录成功与被踢出的归位', () => {
     auth.user = { id: 1, username: 'admin', role: 'admin' }
     await appRouter.push('/login')
     expect(appRouter.currentRoute.value.name).toBe('chat')
+  })
+})
+
+// ───────────────────────── SSO（OIDC）─────────────────────────
+
+describe('SSO（OIDC）：入口只在后端报告 enabled 时出现', () => {
+  function statusFetch(body: unknown, status = 200) {
+    return vi.fn(async (input: string) =>
+      String(input).includes('/v1/auth/oidc/status')
+        ? jsonResponse(status, body)
+        : jsonResponse(404, { detail: 'unexpected' }),
+    )
+  }
+
+  it('enabled=true → 显示 SSO 按钮与「或使用本地账号」分隔线', async () => {
+    vi.stubGlobal('fetch', statusFetch({ enabled: true }))
+    await mountView()
+    const btn = document.querySelector<HTMLButtonElement>('.login-sso-btn')
+    expect(btn).not.toBeNull()
+    expect(btn!.textContent).toContain(messages.zh.loginSsoBtn)
+    expect(document.querySelector('.login-or')?.textContent).toContain(
+      messages.zh.loginSsoOr,
+    )
+  })
+
+  it('enabled=false → 不出现按钮（密码登录原样可用）', async () => {
+    vi.stubGlobal('fetch', statusFetch({ enabled: false }))
+    await mountView()
+    expect(document.querySelector('.login-sso-btn')).toBeNull()
+    expect(document.querySelector('.login-or')).toBeNull()
+    expect(field('username')).not.toBeNull()
+  })
+
+  it('状态读不到（老后端 404 / 网络失败）→ 不挂一个点了必然失败的按钮', async () => {
+    vi.stubGlobal('fetch', statusFetch({ detail: 'not enabled' }, 404))
+    await mountView()
+    expect(document.querySelector('.login-sso-btn')).toBeNull()
+
+    wrapper?.unmount()
+    pinia = createPinia()
+    setActivePinia(pinia)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await mountView()
+    expect(document.querySelector('.login-sso-btn')).toBeNull()
+    expect(field('username')).not.toBeNull()
+  })
+
+  it('点 SSO → 整页跳 /v1/auth/oidc/login，并带上站内 next', async () => {
+    vi.stubGlobal('fetch', statusFetch({ enabled: true }))
+    const assign = vi.fn()
+    // jsdom 的 Location 成员是 unforgeable（实例上不可 spy）——整只换掉
+    // window.location；测试结束在 finally 里换回真实对象。
+    const original = window.location
+    Object.defineProperty(window, 'location', {
+      value: { ...original, assign },
+      writable: true,
+      configurable: true,
+    })
+    try {
+      await mountView('/login?next=/admin/kb')
+      await wrapper!.find('.login-sso-btn').trigger('click')
+
+      expect(assign).toHaveBeenCalledWith('/v1/auth/oidc/login?next=%2Fadmin%2Fkb')
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: original,
+        writable: true,
+        configurable: true,
+      })
+    }
+  })
+})
+
+describe('SSO 回调失败：封闭错误码 → 本地化说明，只展示一次', () => {
+  const CODE_KEYS = [
+    ['state_invalid', 'loginSsoErrStateInvalid'],
+    ['exchange_failed', 'loginSsoErrExchangeFailed'],
+    ['conflict', 'loginSsoErrConflict'],
+    ['disabled', 'loginSsoErrDisabled'],
+    ['not_provisioned', 'loginSsoErrNotProvisioned'],
+  ] as const
+
+  it.each(CODE_KEYS)('%s → %s', async (code, key) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(404, {})))
+    const auth = useAuthStore()
+    auth.ssoError = code
+
+    await mountView()
+
+    const alert = document.querySelector('.login-error')
+    expect(alert).not.toBeNull()
+    expect(alert!.getAttribute('role')).toBe('alert')
+    expect(alert!.textContent).toContain(messages.zh[key])
+    // 一次性：消费后从 store 清空，重渲染/刷新不再看到
+    expect(auth.ssoError).toBe('')
+  })
+
+  it('未知错误码 → 通用文案，不把原始码甩给用户', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(404, {})))
+    useAuthStore().ssoError = 'some_future_code'
+    await mountView()
+
+    const alert = document.querySelector('.login-error')
+    expect(alert!.textContent).toContain(messages.zh.loginSsoErrGeneric)
+    expect(alert!.textContent).not.toContain('some_future_code')
   })
 })

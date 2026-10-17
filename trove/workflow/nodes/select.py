@@ -34,6 +34,8 @@ from trove.core.config import AgentConfig
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.authz.masking import MaskingError, build_masker
+from trove.services.authz.policy import principal_from_wire
+from trove.services.authz.scope import ScopeError, apply_scope
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -105,10 +107,42 @@ def make_select_consensus(
         if connectors is None:
             return {}
 
+        # 候选执行是**用户可见取数路径**:不在这里过行/列 scope,一条被禁
+        # 列的候选就能靠「投票」把值读出来(它不进最终 SQL,但结果集参与
+        # 分组比较,值已经出库)。主体只解析一次。
+        principal = principal_from_wire(state.principal)
+        scope_model = None
+        if semantic_layer is not None:
+            try:
+                scope_model = semantic_layer.model()
+            except Exception:  # noqa: BLE001 —— 声明读不出时仍套主体 grant
+                scope_model = None
+        scope_datasource = (
+            state.datasource or getattr(connectors, "default_name", "") or "")
+
+        def exec_sql_for(cand: str) -> str:
+            """候选 → 实际执行语句(scope 后);拒绝抛 :class:`ScopeError`。
+
+            **单次 apply 契约**:scope 后的 SQL 只活在这一跳的执行里;
+            ``state.candidates`` 与胜出回写的 ``sql`` 仍是**原串**,最终由
+            ``execute_sql`` 做唯一一次改写(见 ``scope`` 模块 docstring)。
+            """
+            if principal is None:
+                return cand
+            return apply_scope(
+                cand, model=scope_model, principal=principal,
+                datasource=scope_datasource,
+                dialect=state.dialect or "", include_declared_rls=True,
+            ).sql
+
         async def run(cand: str):
             try:
+                exec_sql = exec_sql_for(cand)
+            except ScopeError as exc:
+                return exc          # 拒绝 vs 执行失败:两种不同的出局原因
+            try:
                 return await asyncio.wait_for(
-                    connectors.execute(cand, state.datasource or None),
+                    connectors.execute(exec_sql, state.datasource or None),
                     timeout=timeout_ms / 1000.0,
                 )
             except asyncio.CancelledError:
@@ -122,6 +156,15 @@ def make_select_consensus(
         groups: dict[tuple[tuple[str, ...], ...], list[tuple[str, Any]]] = {}
         filtered: list[dict[str, str]] = []
         for cand, qr in zip(state.candidates, qrs):
+            if isinstance(qr, ScopeError):
+                # 拒绝不是「执行失败」:候选没跑,原因是授权面(可换列重试
+                # 的是生成期,而这里是投票期 —— 只能出局)。
+                filtered.append({
+                    "sql": _compact_sql(cand, 60),
+                    "reason": ("blocked-column" if qr.reason == "column"
+                               else "authz-unresolved"),
+                })
+                continue
             if qr is None:
                 filtered.append({"sql": _compact_sql(cand, 60), "reason": "execution-failed"})
                 continue

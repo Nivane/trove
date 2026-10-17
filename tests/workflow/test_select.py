@@ -557,3 +557,89 @@ class TestPreviewMasking:
         ))
         assert RAW_PHONE not in fb and RAW_PHONE_ALT not in fb
         assert "WHERE 0" in fb          # 结构还在,重试有据可依
+
+
+# ── 行/列 scope(设计 §2.3)─────────────────────────────────────
+
+
+def _wire(*, row=None, deny=None) -> dict:
+    from trove.services.authz.policy import Principal, principal_to_wire
+
+    return principal_to_wire(Principal(
+        subject="7", role="user", grants=frozenset({"test_db"}),
+        row_grants=None if row is None else {"test_db": row},
+        column_denials=(
+            None if deny is None
+            else {"test_db": {t: frozenset(c) for t, c in deny.items()}}
+        ),
+    ))
+
+
+class TestRowColumnScope:
+    async def test_row_grant_applies_to_candidate_execution(self):
+        """候选先 scope 再执行 —— 只有可见范围的行参与投票。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t", rows=[[1]], row_count=1,
+            candidates=["SELECT v FROM t"],
+            principal=_wire(row={"t": "x = 1"}),
+            dialect="sqlite", datasource="test_db",
+        )
+        await node(state)
+        assert connectors.executed == [
+            "SELECT v FROM (SELECT * FROM t WHERE (t.x = 1)) AS t"]
+
+    async def test_blocked_column_filters_candidate_out(self):
+        """引用被禁列的候选**不执行**,以 blocked-column 出局。"""
+        connectors = FakeConnectors([])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t", rows=[[1]], row_count=1,
+            candidates=["SELECT secret FROM t"],
+            principal=_wire(deny={"t": ["secret"]}),
+            dialect="sqlite", datasource="test_db",
+        )
+        update = await node(state)
+        assert connectors.executed == []
+        assert update["selection"]["filtered"] == [
+            {"sql": "SELECT secret FROM t", "reason": "blocked-column"},
+        ]
+
+    async def test_winner_keeps_original_sql(self):
+        """scope 只活在执行里:胜出回写的是原串,最终改写只由 execute_sql 做。
+
+        第二次 apply 会把自动补出的 ``SELECT *`` 当成越权投影 —— 单次
+        apply 契约靠这条断言钉住(见 ``scope`` 模块 docstring)。
+        """
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t WHERE 0", rows=[[9]], row_count=1,
+            candidates=["SELECT v FROM t", "SELECT v FROM t WHERE v = 1"],
+            principal=_wire(row={"t": "x = 1"}),
+            dialect="sqlite", datasource="test_db",
+        )
+        update = await node(state)
+        assert update["selection"]["winner"] == "candidate"
+        assert update["sql"] == "SELECT v FROM t"     # 原串,不是派生表
+        assert all("(SELECT * FROM t WHERE (t.x = 1))" in s
+                   for s in connectors.executed)
+
+    async def test_no_principal_is_byte_identical(self):
+        """无主体 = 未装配鉴权面:执行串与接线前逐字节一致。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t", rows=[[1]], row_count=1,
+            candidates=["SELECT v FROM t"], dialect="sqlite",
+        )
+        await node(state)
+        assert connectors.executed == ["SELECT v FROM t"]

@@ -711,6 +711,69 @@ class TestEgressConfig:
         assert cfg.egress.audit is True
 
 
+class TestOidcConfig:
+    """``oidc:`` 必须真的进 ``AgentConfig``(与 egress/masking 同一条教训)。
+
+    加载器读不到 = 配置永远不生效:管理员写了 IdP 配置,路由却永远 404。
+    """
+
+    def test_top_level_block_is_parsed(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "oidc:\n"
+            "  enabled: true\n"
+            "  issuer: 'https://idp.example.com/'\n"
+            "  client_id: trove\n"
+            "  client_secret_ref: env:TROVE_OIDC_SECRET\n"
+            "  redirect_uri: https://trove.example.com/v1/auth/oidc/callback\n"
+            "  post_login_redirect: /console\n"
+            "  scopes: openid profile\n"
+            "  groups_claim: roles\n"
+            "  role_map: {trove-admins: ADMIN, ops: Analyst, '': user}\n"
+            "  default_role: USER\n"
+            "  auto_provision: false\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        oidc = cfg.oidc
+        assert oidc.enabled is True
+        # 末尾斜杠归一化:discovery 拼接与 iss 比对必须是同一个串
+        assert oidc.issuer == "https://idp.example.com"
+        assert oidc.client_id == "trove"
+        assert oidc.client_secret_ref == "env:TROVE_OIDC_SECRET"
+        assert oidc.post_login_redirect == "/console"
+        assert oidc.groups_claim == "roles"
+        # 角色值小写归一;空 group 键被丢弃
+        assert oidc.role_map == {"trove-admins": "admin", "ops": "analyst"}
+        assert oidc.default_role == "user"
+        assert oidc.auto_provision is False
+
+    def test_block_reads_nested_under_agent(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  oidc:\n    enabled: true\n    issuer: https://idp.example.com\n"
+            "    client_id: trove\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.oidc.enabled is True
+        assert cfg.oidc.client_id == "trove"
+
+    def test_absent_block_keeps_defaults(self, tmp_path):
+        """缺席 = 整体关闭;逐字段与 dataclass 默认一致(老部署行为不变)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.oidc.enabled is False
+        assert cfg.oidc.issuer == ""
+        assert cfg.oidc.client_secret_ref == ""
+        assert cfg.oidc.role_map == {}
+        assert cfg.oidc.default_role == "user"
+        assert cfg.oidc.auto_provision is True
+
+
 class TestConfidenceScoreFlag:
     def test_defaults_on(self, tmp_path):
         """默认开:零成本(纯函数),与 answer_source 一致 —— 那个没有开关。"""

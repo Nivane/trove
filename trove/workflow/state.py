@@ -92,6 +92,13 @@ class WorkflowState(BaseModel):
     # 复用等于把判定变成一次性的。
     authz_decision: dict[str, Any] | None = None
 
+    # 行/列 scope 的证据(执行成功时由 execute_sql 写):
+    # ``{"row_filters": [被包裹的表名], "rewritten": bool, "column_policy": bool}``。
+    # 「已经按行级授权过滤过」是**结果的一部分** —— 收窄后的答案如果不带这个
+    # 注记,读者会把它读成全量统计。``None`` = 没走过 scope(没有主体),不是
+    # 「查了、没有过滤」。
+    data_scope: dict[str, Any] | None = None
+
     # 执行画像的成本轨快照(design §6.2 ``ExecutionEvidence`` 的 dict 形态):
     # 估算依据 / 阈值 / 是否降级 / 实际加上的 LIMIT。供输出渲染降级提示与
     # 事后校准估算器(I7)。

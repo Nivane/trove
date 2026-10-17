@@ -214,3 +214,77 @@ async def test_semantic_query_times_out_as_504(query_api, client, monkeypatch):
     })
     assert resp.status_code == 504, resp.text
     assert "timed out" in resp.json()["detail"]
+
+
+# ── 行/列 scope(设计 §2.3)─────────────────────────────────────
+
+
+def _restricted(*, row=None, deny=None):
+    from trove.services.authz.policy import Principal
+
+    return Principal(
+        subject="7", role="user", grants=frozenset({"test_db"}),
+        row_grants=None if row is None else {"test_db": row},
+        column_denials=(
+            None if deny is None
+            else {"test_db": {t: frozenset(c) for t, c in deny.items()}}
+        ),
+    )
+
+
+def _principal_override(monkeypatch, principal):
+    """把路由拿到的 principal 换成受限主体(NullAuth 的本地 admin 是豁免的)。"""
+    import trove.api.routers.semantic_query as sq
+
+    async def _fake(_request, _user):
+        return principal
+
+    monkeypatch.setattr(sq, "get_principal", _fake)
+
+
+@pytest.mark.asyncio
+async def test_semantic_query_applies_row_grant(query_api, client, monkeypatch):
+    """直执行入口与图管线同一条行过滤:返回的 SQL 就是执行的那条。"""
+    _principal_override(monkeypatch, _restricted(row={"students": "county = 'Alameda'"}))
+    resp = await client.post("/v1/semantic/query", json={
+        "datasource": "test_db",
+        "metrics": ["平均成绩"],
+        "dimensions": ["students.county"],
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "SELECT * FROM students WHERE (students.county = 'Alameda')" in body["sql"]
+    assert {r[0] for r in body["rows"]} == {"Alameda"}
+    assert body["data_scope"] == {
+        "row_filters": ["students"], "rewritten": True, "column_policy": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_semantic_query_blocked_column_is_403_without_rows(
+    query_api, client, monkeypatch,
+):
+    """列拒绝 = 403 且响应体没有行 —— 没有 answer 通道可以承载「拒绝了但跑了」。"""
+    _principal_override(monkeypatch, _restricted(deny={"students": ["county"]}))
+    resp = await client.post("/v1/semantic/query", json={
+        "datasource": "test_db",
+        "metrics": ["平均成绩"],
+        "dimensions": ["students.county"],
+    })
+    assert resp.status_code == 403, resp.text
+    detail = resp.json()["detail"]
+    assert "[ERR:AUTHZ_COLUMN]" in detail
+    assert "county" in detail
+    assert "rows" not in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_semantic_query_no_grants_is_unchanged(query_api, client):
+    """未声明 = 返回编译原串(逐字节)—— 存量调用方看到的 SQL 不变。"""
+    resp = await client.post("/v1/semantic/query", json={
+        "datasource": "test_db",
+        "metrics": ["平均成绩"],
+        "dimensions": ["students.county"],
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data_scope"]["rewritten"] is False

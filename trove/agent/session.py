@@ -2837,7 +2837,8 @@ class SessionManager:
             return ""
         snapshot = {
             k: principal.get(k)
-            for k in ("role", "scopes", "grants", "topic_grants")
+            for k in ("role", "scopes", "grants", "topic_grants",
+                      "row_grants", "column_denials")
         }
         try:
             return json.dumps(

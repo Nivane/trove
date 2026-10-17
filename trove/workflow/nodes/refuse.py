@@ -33,6 +33,8 @@ from sqlglot import ErrorLevel, exp, parse_one
 from trove.core.config import AgentConfig
 from trove.core.i18n import L
 from trove.llm.gateway import LLMGateway
+from trove.services.authz.policy import principal_from_wire
+from trove.services.authz.scope import ScopeError, apply_scope
 from trove.services.kb.semantic_draft import draft_refusal_extension
 from trove.services.semantic_layer.object_graph import build_object_graph
 from trove.workflow.state import WorkflowState
@@ -728,6 +730,7 @@ _AUTO_EXEC_TIMEOUT_S = 5
 
 async def _mechanical_metric_ok(
     connectors: Any, datasource: str, model, draft: dict[str, Any],
+    *, principal: Any = None,
 ) -> str:
     """B 档:机械聚合指标(COUNT/SUM/AVG 值无关)的确定性验证门。
 
@@ -743,6 +746,12 @@ async def _mechanical_metric_ok(
          shape 链(单行单列标量)。
 
     任一不过 → 退回 pending 走人工(保守,不靠 LLM 自评)。
+
+    ``principal`` 是提问者的授权主体(设计 §2.3):第 4 步是**真实执行**,
+    必须与 ``execute_sql`` 同一道行/列门。``result.sql`` 出自语义编译器
+    (声明层 RLS 已注入),所以 ``include_declared_rls=False``;``ScopeError``
+    视为**试跑失败**——自动确认跳过,退回人工,绝不执行越权 SQL 换取一个
+    自动确认。
     """
     if connectors is None or model is None or not datasource:
         return ""
@@ -830,10 +839,21 @@ async def _mechanical_metric_ok(
 
     # 4) 真实执行 + shape 规则(单行单列标量):执行编译器产出的权威 SQL
     #    (与生产 execute_sql 同一 SQL,忠实验证「这条指标能跑出标量」)。
+    #    执行前过行/列 scope —— 试跑也是**用户触发的真实执行**。
+    exec_sql = result.sql
+    if principal is not None:
+        try:
+            exec_sql = apply_scope(
+                result.sql, model=probe, principal=principal,
+                datasource=datasource, dialect=dialect,
+                include_declared_rls=False,
+            ).sql
+        except ScopeError:
+            return ""  # 试跑越权 = 试跑失败 → 退回 pending 人工
     from trove.workflow.rules import verify
     try:
         res = await asyncio.wait_for(
-            connectors.execute(result.sql, datasource), timeout=_AUTO_EXEC_TIMEOUT_S)
+            connectors.execute(exec_sql, datasource), timeout=_AUTO_EXEC_TIMEOUT_S)
     except Exception:
         return ""
     if not res.columns or not res.rows:
@@ -1233,7 +1253,9 @@ def make_refuse(
                         or (
                             kind == "metric"
                             and await _mechanical_metric_ok(
-                                connectors, datasource, model, draft)
+                                connectors, datasource, model, draft,
+                                principal=principal_from_wire(state.principal),
+                            )
                         )
                     )
                 ):

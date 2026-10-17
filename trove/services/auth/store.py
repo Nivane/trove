@@ -67,6 +67,49 @@ CREATE TABLE IF NOT EXISTS user_datasources (
 )
 """
 
+USER_ROW_GRANTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_row_grants (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    datasource TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, datasource, table_name)
+)
+"""
+
+USER_COLUMN_DENIALS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_column_denials (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    datasource TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    column_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, datasource, table_name, column_name)
+)
+"""
+
+OIDC_STATES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS oidc_states (
+    state TEXT PRIMARY KEY,
+    nonce TEXT NOT NULL,
+    code_verifier TEXT NOT NULL,
+    next_path TEXT NOT NULL DEFAULT '/',
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+
+USER_IDENTITIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_identities (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    UNIQUE (issuer, subject)
+)
+"""
+
 AUDIT_LOG_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +139,7 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_tokens_expires ON tokens(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)",
     "CREATE INDEX IF NOT EXISTS idx_login_attempts_ts ON login_attempts(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_identities_user ON user_identities(user_id)",
 ]
 
 # Column sets for row→dict mapping
@@ -220,6 +264,8 @@ class AppDbStore:
 
         script = script_statements(
             [USERS_TABLE_SQL, TOKENS_TABLE_SQL, USER_DATASOURCES_TABLE_SQL,
+             USER_ROW_GRANTS_TABLE_SQL, USER_COLUMN_DENIALS_TABLE_SQL,
+             OIDC_STATES_TABLE_SQL, USER_IDENTITIES_TABLE_SQL,
              AUDIT_LOG_TABLE_SQL, LOGIN_ATTEMPTS_TABLE_SQL, *INDEX_SQL]
         )
         await self._backend.executescript(script)
@@ -679,6 +725,228 @@ class AppDbStore:
             out: dict[int, list[str]] = {}
             async for row in cursor:
                 out.setdefault(int(row[0]), []).append(row[1])
+            return out
+        finally:
+            await conn.close()
+
+    # ── 行/列授权(收窄;按数据源整体替换)─────────────────
+
+    async def set_data_grants(
+        self, user_id: int, datasource: str,
+        row_filters: dict[str, str], blocked_columns: dict[str, list[str]],
+    ) -> None:
+        """**一个数据源**的行过滤 + 被禁列整体替换(单事务)。
+
+        两表在同一个 ``commit`` 里改:只写一半会让某次保存后的授权处于
+        「行过滤已生效、列还开着」(或反之)的中间态 —— 这类半成品没有
+        任何一层能发现,只能靠事务不给它出现的窗口。
+
+        空 ``row_filters`` / ``blocked_columns`` = 该数据源不再有对应的
+        收窄(删掉旧行即可;「未声明」与「声明为空」在收窄语义上等价)。
+        """
+        ts = now_iso()
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                "DELETE FROM user_row_grants WHERE user_id = ? AND datasource = ?",
+                (user_id, datasource),
+            )
+            await conn.execute(
+                "DELETE FROM user_column_denials WHERE user_id = ? AND datasource = ?",
+                (user_id, datasource),
+            )
+            for table, predicate in sorted(dict(row_filters).items()):
+                await conn.execute(
+                    "INSERT INTO user_row_grants "
+                    "(user_id, datasource, table_name, predicate, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (user_id, datasource, table, predicate, ts),
+                )
+            for table, columns in sorted(dict(blocked_columns).items()):
+                # set 去重 + 排序:同一份授权在库里行序确定(读回可比)
+                for column in sorted({str(c) for c in columns if str(c)}):
+                    await conn.execute(
+                        "INSERT INTO user_column_denials "
+                        "(user_id, datasource, table_name, column_name, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (user_id, datasource, table, column, ts),
+                    )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def get_row_grants(
+        self, user_id: int,
+    ) -> dict[str, dict[str, str]] | None:
+        """``{ds: {table: predicate}}``;该用户**一行都没有** → ``None``。
+
+        ``None`` 是「未声明收窄」(存量行为:不受限),不是「声明为空」——
+        与 topic grants 的方向一致,但这里没有「收窄到零」的合法取值
+        (零过滤就是不放宽也不收窄),所以不存在需要 ``{}`` 表达的状态。
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT datasource, table_name, predicate FROM user_row_grants "
+                "WHERE user_id = ? ORDER BY datasource, table_name",
+                (user_id,),
+            )
+            out: dict[str, dict[str, str]] = {}
+            async for ds, table, predicate in cursor:
+                out.setdefault(str(ds), {})[str(table)] = str(predicate)
+            return out or None
+        finally:
+            await conn.close()
+
+    async def get_column_denials(
+        self, user_id: int,
+    ) -> dict[str, dict[str, list[str]]] | None:
+        """``{ds: {table: [column, ...]}}``(已排序);一行都没有 → ``None``。"""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT datasource, table_name, column_name "
+                "FROM user_column_denials WHERE user_id = ? "
+                "ORDER BY datasource, table_name, column_name",
+                (user_id,),
+            )
+            out: dict[str, dict[str, list[str]]] = {}
+            async for ds, table, column in cursor:
+                out.setdefault(str(ds), {}).setdefault(str(table), []).append(
+                    str(column))
+            return out or None
+        finally:
+            await conn.close()
+
+    # ── OIDC 登录状态与外部身份 ────────────────────────────
+
+    async def insert_oidc_state(
+        self, state: str, nonce: str, code_verifier: str,
+        next_path: str, expires_at: str,
+    ) -> None:
+        """存一次登录的 state/nonce/PKCE verifier(一次性,消费即删)。"""
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                "INSERT INTO oidc_states "
+                "(state, nonce, code_verifier, next_path, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (state, nonce, code_verifier, next_path, expires_at, now_iso()),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def consume_oidc_state(self, state: str) -> dict[str, Any] | None:
+        """**原子**取出并删除一条 state。重放/过期都拿不到第二行。
+
+        ``DELETE … RETURNING`` 让「查」与「删」是一次语句:先 SELECT 再
+        DELETE 的写法在两个并发 callback 之间留了双花的窗口,而 state 的
+        全部意义就是只能用一次。
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM oidc_states WHERE state = ? "
+                "RETURNING nonce, code_verifier, next_path, expires_at",
+                (state,),
+            )
+            row = await cursor.fetchone()
+            await conn.commit()
+            if row is None:
+                return None
+            return {
+                "nonce": row[0], "code_verifier": row[1],
+                "next_path": row[2] or "/", "expires_at": row[3],
+            }
+        finally:
+            await conn.close()
+
+    async def purge_oidc_states(self, cutoff_iso: str) -> int:
+        """删掉 ``expires_at < cutoff`` 的状态行;返回删除行数。"""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM oidc_states WHERE expires_at < ?", (cutoff_iso,))
+            deleted = int(cursor.rowcount or 0)
+            await conn.commit()
+            return deleted
+        finally:
+            await conn.close()
+
+    async def get_identity(self, issuer: str, subject: str) -> int | None:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?",
+                (issuer, subject),
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else None
+        finally:
+            await conn.close()
+
+    async def insert_identity(
+        self, issuer: str, subject: str, user_id: int,
+    ) -> None:
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                "INSERT INTO user_identities (issuer, subject, user_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (issuer, subject, user_id, now_iso()),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def delete_identity(self, issuer: str, subject: str) -> bool:
+        """删掉一条绑定(账号已被删、identity 成孤儿时用)。"""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM user_identities WHERE issuer = ? AND subject = ?",
+                (issuer, subject),
+            )
+            deleted = int(cursor.rowcount or 0)
+            await conn.commit()
+            return deleted > 0
+        finally:
+            await conn.close()
+
+    async def identities_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT issuer, subject, created_at FROM user_identities "
+                "WHERE user_id = ? ORDER BY issuer, subject",
+                (user_id,),
+            )
+            return [
+                {"issuer": row[0], "subject": row[1], "created_at": row[2]}
+                async for row in cursor
+            ]
+        finally:
+            await conn.close()
+
+    async def identities_for_users(
+        self, user_ids: list[int],
+    ) -> dict[int, list[dict[str, Any]]]:
+        """整页用户的身份绑定(一次查询;消灭管理台列表的 N+1)。"""
+        if not user_ids:
+            return {}
+        marks = ", ".join("?" * len(user_ids))
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT user_id, issuer, subject FROM user_identities "
+                f"WHERE user_id IN ({marks}) ORDER BY user_id, issuer, subject",
+                list(user_ids),
+            )
+            out: dict[int, list[dict[str, Any]]] = {}
+            async for row in cursor:
+                out.setdefault(int(row[0]), []).append(
+                    {"issuer": row[1], "subject": row[2]})
             return out
         finally:
             await conn.close()
