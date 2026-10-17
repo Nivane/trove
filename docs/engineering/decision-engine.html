@@ -379,7 +379,7 @@ rules:
 
     <p>
       定时触发走任务系统：Job 指向规则 id，runner 里的决策腿
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L174">runner.py:174 <span class="ref-line">_run_decision</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L253">runner.py:253 <span class="ref-line">_run_decision</span></a>
       <strong>从不进入 NL 管线</strong>——判定的产出不依赖任何一次模型调用，这正是它能被质问的底气。
       语义模型按任务的 <code>datasource</code> 现取现用：启动时绑定默认源的做法，会让一个任务静默地用错模型编译 SQL。
     </p>
@@ -468,7 +468,7 @@ rules:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

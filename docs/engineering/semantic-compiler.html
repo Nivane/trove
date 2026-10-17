@@ -147,9 +147,9 @@ flowchart TB
 
     <p>
       骨架权威化的关键问题是<strong>下游是否真的照骨架走</strong>。execute_sql 对两条通道用两把不同的尺
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L192">execute_sql.py:192 <span class="ref-line">skeleton_preserved</span></a>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L202">execute_sql.py:202 <span class="ref-line">skeleton_preserved</span></a>
       /
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L194">execute_sql.py:194 <span class="ref-line">compiled_sql_matches</span></a>）：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L204">execute_sql.py:204 <span class="ref-line">compiled_sql_matches</span></a>）：
     </p>
 
     <div class="table-wrap">
@@ -185,12 +185,12 @@ flowchart TB
     <p>
       两把尺共用一个工程判断：<strong>校验读契约，不反推 SQL</strong>。
       编译器在编译期就把结果形状抽成纯 JSON 契约（join 边/过滤/分组宽度 +
-      缺口列表）随 state 走（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L188">state.py:188 <span class="ref-line">contract</span></a>），
+      缺口列表）随 state 走（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L204">state.py:204 <span class="ref-line">contract</span></a>），
       校验节点直接读字段——不再拿 <code>compiled_sql</code> 用 AST 反推回结构。
       骨架的覆盖情况也在 state 上留下痕迹：<code>compile_partial</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L180">state.py:180 <span class="ref-line">compile_partial</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L196">state.py:196 <span class="ref-line">compile_partial</span></a>
       与 <code>compile_misses</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L181">state.py:181 <span class="ref-line">compile_misses</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L197">state.py:197 <span class="ref-line">compile_misses</span></a>
       （未覆盖组件 <code>[{reason, component}]</code>）——它们既是执行侧的判据，也是学习侧的输入（见下）。
     </p>
 
@@ -198,7 +198,7 @@ flowchart TB
 
     <p>
       硬 MISS 出口在 refuse 节点
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L69">refuse.py:69 <span class="ref-line">_no_model_message</span></a>）：
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L71">refuse.py:71 <span class="ref-line">_no_model_message</span></a>）：
       每条拒绝都随一份<strong>一键下一步</strong>（<code>next_actions</code>，形状统一为
       <code>[{id, kind, label, href, admin_only, payload?}]</code>，后端给全双语 label、
       前端只渲染不分类）。数据源整体没模型时，这一出口直接给 <code>/kb init</code> 引导，
@@ -248,17 +248,17 @@ flowchart LR
         <tbody>
           <tr>
             <td><strong>确定性冲突检测</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L595">refuse.py:595 <span class="ref-line">_detect_conflict</span></a>，code 闭集：同名/表达式不可解析/数据集未声明/…</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L597">refuse.py:597 <span class="ref-line">_detect_conflict</span></a>，code 闭集：同名/表达式不可解析/数据集未声明/…</td>
             <td>草稿与现有模型冲突分两类：<em>可人工修正</em>的（重名、表达式错）照落 pending 待审；<strong>agg_duplicate</strong>（已有同聚合签名指标）既不落库也不给建档动作——落一条必然重复的指标是诱导管理员确认错误，补救是换问法加过滤条件</td>
           </tr>
           <tr>
             <td><strong>A 档：物理列字段</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L678">refuse.py:678 <span class="ref-line">_physical_column_field</span></a></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L680">refuse.py:680 <span class="ref-line">_physical_column_field</span></a></td>
             <td>字段名在<strong>物理表</strong>里确认存在（读连接器 catalog，零 LLM）——「这个列真的存在」是结构事实，不需要人再背书一次</td>
           </tr>
           <tr>
             <td><strong>B 档：机械聚合指标</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L729">refuse.py:729 <span class="ref-line">_mechanical_metric_ok</span></a></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L731">refuse.py:731 <span class="ref-line">_mechanical_metric_ok</span></a></td>
             <td>四步全过才免人工：①表达式是<strong>单个值无关机械聚合</strong>（<code>count/sum/avg</code>，白名单 <code>_MECHANICAL_AGGS</code>，带 CASE/WHERE/FILTER/子查询 = 值被写死，不算）；②单数据集、表可达、引用列存在（超大表跳过真实执行退回人工）；③草稿指标并入<strong>模型副本</strong>走权威编译器——<strong>完整编译</strong>（软 MISS 骨架不算）+ guardrail；④真实执行权威 SQL、过 rules 的 shape 链（单行单列标量）。任一不过 → pending 走人工</td>
           </tr>
         </tbody>
@@ -268,9 +268,9 @@ flowchart LR
     <p>
       免确认入库后，<code>auto_confirmed</code> 标记让图<strong>同轮路由回重答</strong>——
       用户感知是「系统补充了声明，正在重新回答」而不是一次拒绝
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L1220">refuse.py:1220 <span class="ref-line">A/B 判定</span></a>）。
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L1240">refuse.py:1240 <span class="ref-line">A/B 判定</span></a>）。
       防打转的护栏是 <code>AUTO_CONFIRM_MAX_ROUNDS = 2</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L719">refuse.py:719 <span class="ref-line">单问上限</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L721">refuse.py:721 <span class="ref-line">单问上限</span></a>：
       同一问题连续补两个字段还编译不过，就停止自动、回退人工——自动确认是省人工的便道，
       不是绕过评审的暗门。
     </p>
@@ -286,7 +286,7 @@ flowchart LR
 
     <ul>
       <li><strong>零 LLM</strong>——捕获跑在每次查询的收尾路径上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L2030">session.py:2030 <span class="ref-line">_capture_candidates</span></a>），
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L2076">session.py:2076 <span class="ref-line">_capture_candidates</span></a>），
       所有翻译只是对 <code>compile_misses</code> 的确定性改写。</li>
       <li><strong>只落 pending</strong>——只写 <code>semantic_drafts.yml</code>，不碰
       <code>semantics.yml</code>：自动内容绝不绕过管理员确认（与记忆子系统的
@@ -340,7 +340,7 @@ flowchart LR
     <p>
       编译决策的观测字段（<code>compiled</code> / <code>compile_partial</code> /
       <code>compile_misses</code> / <code>contract</code>）恒写在 state 上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L173">state.py:173 <span class="ref-line">compiled_sql</span></a>）——
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L189">state.py:189 <span class="ref-line">compiled_sql</span></a>）——
       eval 归因按 <code>path: compiled|llm</code> 分账，学习回路（
       <a href="closed-loop.html">闭环与契约</a>）也读同一份缺口记录。
     </p>
@@ -426,7 +426,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
