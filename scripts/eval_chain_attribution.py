@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from trove.eval.attribution import load_rows
@@ -101,16 +102,29 @@ def main(argv: list[str] | None = None) -> int:
     # 覆盖数若按行会随重试次数虚高)。
     covered = len({r.question.strip() for r in rows
                    if r.question.strip() in trajs})
+    # 纪元声明必须跟着**实际来源**走:traces.jsonl 是本机运行期旁路记录,可以
+    # 与历史语料不属同一纪元;开着它却无条件声称「八月两段式」是假陈述。
+    if traces_path is not None:
+        pipeline_note = (
+            "轨迹含本机 traces.jsonl:运行期旁路记录,时间跨度可能与失败语料"
+            "不同(管线边界不同)。主跑建议 --traces \"\" 只读历史 run 日志。"
+            "责任跳按轨迹当时的节点边界算;L1 档位与节点边界无关。")
+    else:
+        pipeline_note = (
+            "轨迹只来自 run 日志(--traces \"\");2026-08 语料对应两段式管线"
+            "(planner + 单体 gen_sql),三段式 gen 链是 2026-09-18 之后。"
+            "责任跳按轨迹当时的节点边界算;L1 档位与节点边界无关。")
     meta = {
         "failures": str(failures),
+        "failures_mtime": datetime.fromtimestamp(
+            failures.stat().st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
         "structured": args.structured or "(off)",
         "traces": str(traces_path) if traces_path else "(off)",
+        "traces_enabled": traces_path is not None,
         "runs_dir": str(runs_dir),
         "dialect": args.dialect,
         "trajectory_covered_questions": covered,
-        "pipeline_note": (
-            "轨迹来自 2026-08 两段式管线(planner + 单体 gen_sql);三段式 gen 链"
-            "是 2026-09-18 之后。责任跳按当时的节点边界算;L1 档位与节点边界无关。"),
+        "pipeline_note": pipeline_note,
     }
     report = build_report(rows, trajs, dialect=args.dialect, meta=meta,
                           samples=args.samples)

@@ -106,11 +106,9 @@ def trajectory_from_log(facts: RunLogFacts, *, source: str = "logs") -> Trajecto
             mt_state = "empty"
 
     plan_text = facts.values.get("plan", "")
-    plan_state = ("absent" if "plan" not in facts.seen
-                  else ("present" if plan_text.strip() else "empty"))
-
     plan_facts: PlanFacts | None = None
     pj_truncated = False
+    pj_parsed: dict | None = None
     raw_pj = facts.values.get("plan_json", "").strip()
     if raw_pj and raw_pj != "None":
         try:
@@ -118,6 +116,7 @@ def trajectory_from_log(facts: RunLogFacts, *, source: str = "logs") -> Trajecto
         except (json.JSONDecodeError, ValueError):
             pj = None
         if isinstance(pj, dict):
+            pj_parsed = pj
             # 合法空字典 {} 是「计划为空」,不是截断;截断只会让 json.loads 失败。
             if pj:
                 plan_facts = plan_facts_from_json(pj)
@@ -126,6 +125,15 @@ def trajectory_from_log(facts: RunLogFacts, *, source: str = "logs") -> Trajecto
     plan_truncated = pj_truncated or _is_truncated(plan_text)
     if plan_facts is None and plan_text.strip():
         plan_facts = plan_facts_text(plan_text, truncated=_is_truncated(plan_text))
+    # 状态由「键是否在场 + 是否读出内容」派生(M-4),不再只看 plan 键:
+    # 只有合法 plan_json 的日志曾被打成 absent(fidelity 少计);被截断的
+    # plan_json 是**观察到了内容**(前缀),不是「观察为空」。empty 仅当计划键
+    # 在场且确实读不出任何内容。canonical 语料(plan 文本非空)不受影响。
+    observed = "plan" in facts.seen or "plan_json" in facts.seen
+    has_content = (plan_facts is not None or bool(plan_text.strip())
+                   or pj_truncated or bool(pj_parsed))
+    plan_state = ("present" if has_content
+                  else ("empty" if observed else "absent"))
 
     retry: int | None = None
     raw_retry = facts.values.get("retry_count", "").strip()
@@ -187,14 +195,20 @@ def _trajectory_from_traces_run(run: dict) -> Trajectory:
 
     planner = steps.get("planner") or {}
     plan_text = str(planner.get("plan") or "")
-    plan_state = "absent" if not planner else (
-        "present" if plan_text.strip() else "empty")
     plan_facts: PlanFacts | None = None
     pj = planner.get("plan_json")
     if isinstance(pj, dict) and pj:
         plan_facts = plan_facts_from_json(pj)
     elif plan_text.strip():
         plan_facts = plan_facts_text(plan_text, truncated=_is_truncated(plan_text))
+    # M-4:planner 步存在但**没有计划键**时曾被打成 empty(声称「观察到计划为空」),
+    # 还会在合并时遮蔽低优先级源的真实计划。状态只看计划键在不在 + 读出内容:
+    # 键在但值为空 {} 才是 empty;键不在 = 这个源对 plan 没有观察(absent)。
+    observed = "plan" in planner or "plan_json" in planner
+    has_content = (plan_facts is not None or bool(plan_text.strip())
+                   or pj not in (None, {}, ""))
+    plan_state = ("present" if has_content
+                  else ("empty" if observed else "absent"))
 
     aerr = steps.get("analyze_error") or {}
     gen = steps.get("gen_sql") or {}
@@ -306,7 +320,12 @@ def load_structured(path: str | Path) -> dict[str, Trajectory]:
         if not isinstance(d, dict):
             raise ValueError(f"{path}:{lineno} 不是 JSON 对象")
         q = str(d.get("question") or "").strip()
-        if not q or ("plan" not in d and "matched_tables" not in d):
+        # M-5:任一被消费字段在场就收 —— 只带 loop 证据(retries / validation_hits /
+        # rollback_target)的记录曾整条被跳过,结构化源(最高优先级)的自知证据
+        # 会因此丢失,把「检测过」判成 undecidable/never。
+        if not q or not any(k in d for k in (
+                "plan", "matched_tables", "retries", "validation_hits",
+                "rollback_target")):
             continue
         mt_state, mt = "absent", ()
         if "matched_tables" in d:
@@ -337,13 +356,19 @@ def load_structured(path: str | Path) -> dict[str, Trajectory]:
         pj = d.get("plan")
         if isinstance(pj, dict) and pj:
             plan_facts = plan_facts_from_json(pj)
+        if plan_facts is not None:
+            plan_state = "present"
+        elif "plan" in d and pj == {}:
+            plan_state = "empty"    # 空 dict = 观察到计划为空(M-4)
+        else:
+            plan_state = "absent"   # null / 缺键 = 没有观察,不猜
         retry = d.get("retries")
         retry = int(retry) if isinstance(retry, int) else None
         vh = d.get("validation_hits")
         available = set()
         if mt_state != "absent":
             available.add("matched_tables")
-        if plan_facts is not None:
+        if plan_state != "absent":
             available.add("plan")
         if vh is not None:
             available.add("validation_hits")
@@ -354,8 +379,7 @@ def load_structured(path: str | Path) -> dict[str, Trajectory]:
         out[q] = Trajectory(
             question=q, source="structured",
             matched_tables=mt, matched_tables_state=mt_state,
-            plan_facts=plan_facts,
-            plan_text_state="present" if plan_facts else "absent",
+            plan_facts=plan_facts, plan_text_state=plan_state,
             # 已是字符串的 hits 原样保留:``"[]"`` 再 json.dumps 一次会变成非空
             # 字面量,loop_state 会把它读成「命中过」(m4)。
             validation_hits_raw=(

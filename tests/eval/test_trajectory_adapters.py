@@ -89,7 +89,11 @@ question: q nine?
 
 
 def test_valid_plan_json_is_the_plan_source():
-    """合法 plan_json 是实语料 plan_facts 的主来源(32/50),此前无测试覆盖。"""
+    """合法 plan_json 的读取路径(此用例只钉 JSON 路径本身)。
+
+    实语料 provenance:0/50 条日志有合法 plan_json(48 个 None/空、2 个 600 字符
+    截断前缀)—— 32/50 的 plan_facts 来自 plan 文本,plan_json 不是实语料主来源。
+    """
     log = _log(
         plan="表: aa, bb",
         plan_json='{"tables": ["aa", "bb"], "joins": "aa.i = bb.i", '
@@ -232,9 +236,11 @@ def test_merge_preserves_plan_truncated_state():
            "│   plan = \n"
            "│   plan_json = {\"tables\": [\"aa\", \"bb\"], \"joins\": \"aa.i = bb.i\", \"cond\n")
     t = trajectory_from_log(parse_run_log(log))
-    assert t.plan_text_state == "empty" and t.plan_truncated is True
+    # M-4:plan_json 有内容(截断的前缀)即「观察到了计划」—— 不再是「观察为空」;
+    # 截断本身由 plan_truncated 单独记,不混进三态。
+    assert t.plan_text_state == "present" and t.plan_truncated is True
     m = merge_trajectories({"q trunc?": t})["q trunc?"]
-    assert m.plan_text_state == "empty"
+    assert m.plan_text_state == "present"
     assert m.plan_truncated is True
     assert m.plan_facts is None
 
@@ -369,3 +375,68 @@ def test_traces_bad_detail_does_not_erase_good_one(tmp_path):
     ]
     t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q fourteen?"]
     assert t.matched_tables == ("aa",)
+
+
+# ── 末轮复审 M-4 / M-5:plan 三态由键在场 + 读出内容派生 ─────────────────
+
+
+def test_log_plan_json_only_is_present_not_absent():
+    """M-4:只有合法 plan_json、没有 plan 键的日志,plan 是「观察到」不是 absent。"""
+    log = ("question: q pj?\n"
+           "│   matched_tables = [\"aa\"]\n"
+           "│   plan_json = {\"tables\": [\"aa\"], \"joins\": \"none\", "
+           "\"conditions\": [], \"aggregation\": \"none\", \"answer_columns\": [\"x\"]}\n")
+    t = trajectory_from_log(parse_run_log(log))
+    assert t.plan_facts is not None
+    assert t.plan_text_state == "present"
+
+
+def test_traces_planner_without_plan_keys_is_absent_and_does_not_shadow(tmp_path):
+    """M-4:planner 步在但**没有计划键** → absent(不是「观察到计划为空」),
+    合并时不许遮蔽低优先级源的真实计划。"""
+    from trove.eval.chain import plan_facts_from_json
+    from trove.eval.trajectory import Trajectory
+    lines = [
+        {"run_id": "r20", "kind": "run", "question": "q twenty?", "ts": 1.0},
+        {"run_id": "r20", "kind": "step", "node": "planner",
+         "detail": {"tables": ["aa"]}},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q twenty?"]
+    assert t.plan_text_state == "absent"
+    lo = Trajectory(
+        question="q twenty?", source="logs", plan_text_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa"], "joins": "none", "conditions": [],
+            "aggregation": "none", "answer_columns": ["x"]}))
+    m = merge_trajectories({"q twenty?": t}, {"q twenty?": lo})["q twenty?"]
+    assert m.plan_text_state == "present"
+    assert m.plan_facts is not None
+
+
+def test_traces_planner_empty_plan_key_is_empty(tmp_path):
+    """M-4:计划键在场但值为空 {} 才是 empty(观察为空是事实)。"""
+    lines = [
+        {"run_id": "r21", "kind": "run", "question": "q empty?", "ts": 1.0},
+        {"run_id": "r21", "kind": "step", "node": "planner",
+         "detail": {"plan_json": {}}},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q empty?"]
+    assert t.plan_text_state == "empty"
+    assert "plan" in t.available
+
+
+def test_structured_empty_plan_is_empty_not_absent(tmp_path):
+    """M-4:结构化记录的 ``plan: {}`` 是观察为空,曾被折叠成 absent。"""
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q empty?", "plan": {}}]))["q empty?"]
+    assert t.plan_text_state == "empty"
+    assert "plan" in t.available
+
+
+def test_structured_loop_only_record_is_kept(tmp_path):
+    """M-5:只带 loop 证据(retries / hits / rollback)的记录也是轨迹,不许整条丢。"""
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q loop?", "retries": 2, "validation_hits": ["x"],
+         "rollback_target": "gen_sql"}]))["q loop?"]
+    assert loop_state(t) == "detected_but_unfixed"
+    assert {"retry_count", "validation_hits", "rollback_target"} <= set(t.available)

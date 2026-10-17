@@ -147,3 +147,30 @@ def test_cli_missing_structured_warns_and_continues(tmp_path, capsys):
     cap = capsys.readouterr()
     assert "--structured" in cap.err
     json.loads(cap.out)
+
+
+def test_cli_meta_declares_actual_sources(tmp_path, capsys):
+    """I-1:纪元声明跟实际来源走;meta 带 traces_enabled 与 failures mtime。"""
+    failures = _write(tmp_path, "failures.jsonl", [])
+    code = cli.main(["--failures", str(failures), "--traces", "",
+                     "--runs-dir", str(tmp_path), "--json"])
+    assert code == 0
+    meta = json.loads(capsys.readouterr().out)["meta"]
+    assert meta["traces_enabled"] is False
+    assert "run 日志" in meta["pipeline_note"]
+    assert "2026-08" in meta["pipeline_note"]
+    assert meta["failures_mtime"].endswith("+00:00")
+
+
+def test_cli_traces_enabled_note_does_not_claim_august(tmp_path, capsys):
+    """I-1:traces 开启时不得声称「轨迹来自八月两段式管线」。"""
+    failures = _write(tmp_path, "failures.jsonl", [])
+    traces = tmp_path / "traces.jsonl"
+    traces.write_text("", encoding="utf-8")
+    code = cli.main(["--failures", str(failures), "--traces", str(traces),
+                     "--runs-dir", str(tmp_path), "--json"])
+    assert code == 0
+    meta = json.loads(capsys.readouterr().out)["meta"]
+    assert meta["traces_enabled"] is True
+    assert "2026-08" not in meta["pipeline_note"]
+    assert "traces.jsonl" in meta["pipeline_note"]

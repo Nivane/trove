@@ -872,3 +872,100 @@ def test_refused_row_does_not_use_residual_pred_for_link_attribution():
     f = attribute_row(row, traj)
     assert f.l1.bucket == "no_sql"
     assert f.l2 == "linking_missed_table", f.l2_reason
+
+
+# ── 末轮复审 I-2 / M-1..M-3:plan 侧归一化与报告口径 ─────────────────
+
+
+def test_plan_json_quoted_scalar_is_unquoted_before_comparison():
+    """I-2:plan prompt 的示例值写成 ``"'b'"``,引号是拼写 —— 与 SQL 侧去引号后比。"""
+    from trove.eval.chain import _diff_rungs, plan_facts_from_json
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"field": "aa.k", "op": "=", "value": "'b'"}],
+        "aggregation": "none", "answer_columns": ["x"]})
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "=", ("b",)),)
+    gold = _f("SELECT x FROM aa WHERE aa.k = 'b'")
+    assert _diff_rungs(gold, pf.facts, frozenset({"filter_diff"})) == []
+
+
+def test_plan_text_quoted_scalar_is_unquoted():
+    from trove.eval.chain import plan_facts_text
+    pf = plan_facts_text("Tables: aa\nJoins: none\n"
+                         "Conditions:\n  - aa.k = 'b'\n"
+                         "Aggregation: none\nAnswer columns: x")
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "=", ("b",)),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_json_in_value_with_outer_parens():
+    """I-2:JSON 的 in 值可能是带括号的字符串 ``"('B','D')"``,与列表形态同口径。"""
+    from trove.eval.chain import plan_facts_from_json
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"field": "aa.k", "op": "in", "value": "('B','D')"}],
+        "aggregation": "none", "answer_columns": ["x"]})
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "in", ("B", "D")),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_neq_spellings_are_the_same_operator():
+    """I-2:``<>`` 与 ``!=`` 是同一个 NEQ(SQL 侧 sqlglot 两者都归 NEQ→``!=``)。"""
+    from trove.eval.chain import plan_facts_from_json, plan_facts_text
+    for op in ("<>", "!="):
+        pf = plan_facts_from_json({
+            "tables": ["aa"], "joins": "none",
+            "conditions": [{"field": "aa.k", "op": op, "value": "1"}],
+            "aggregation": "none", "answer_columns": ["x"]})
+        assert pf.facts.conds == (Predicate((("aa", "k"),), "!=", ("1",)),), op
+    text = plan_facts_text("Tables: aa\nJoins: none\n"
+                           "Conditions:\n  - aa.k <> 1\n"
+                           "Aggregation: none\nAnswer columns: x")
+    assert text.facts.conds == (Predicate((("aa", "k"),), "!=", ("1",)),)
+
+
+def test_plan_unsafe_ops_drop_filter_depth():
+    """I-2:is / not in / between / ilike 在 SQL 侧是 raw,计划侧也绝不当确定谓词。"""
+    from trove.eval.chain import plan_facts_from_json
+    for op, value in (("is", "null"), ("not in", "('a')"),
+                      ("between", "1 AND 2"), ("ilike", "'a%'")):
+        pf = plan_facts_from_json({
+            "tables": ["aa"], "joins": "none",
+            "conditions": [{"field": "aa.k", "op": op, "value": value}],
+            "aggregation": "none", "answer_columns": ["x"]})
+        assert "filter_diff" not in pf.comparable, op
+        assert any(p.op == "raw" for p in pf.facts.conds), op
+
+
+def test_report_samples_include_pred_sql_and_dedupe_by_stripped_question():
+    """M-1/M-2:样本带 pred_sql、同题只占一席;题数/样本用 strip 后的问句。"""
+    gold, pred = "SELECT a.x FROM aa a", "SELECT a.y FROM aa a"
+    rows = [FailureRow(question=" q1 ", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH"),
+            FailureRow(question="q1", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH"),
+            FailureRow(question="q2", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH")]
+    rep = build_report(rows, {}, dialect="mysql")
+    bag = rep["samples"]["l1"]["projection_diff"]
+    assert [s["question"] for s in bag] == ["q1", "q2"]
+    assert all(s["pred_sql"] == pred for s in bag)
+    assert rep["counts"]["questions"] == 2
+    assert rep["counts"]["l1_by_question"]["projection_diff"] == 2
+
+
+def test_render_l2_samples_use_l2_reason_and_show_pred():
+    """M-1:L2 样本此前打印的是 L1 原因;现在给责任跳理由并露出 pred SQL。"""
+    rows, trajs = _aggregate_rows_and_trajs()
+    text = render_report(build_report(rows, trajs, dialect="mysql", meta={}))
+    assert "[l2:linking_missed_table]" in text
+    assert "gold 需要的表未进 matched_tables" in text
+    assert "pred: SELECT" in text
+
+
+def test_attribute_row_none_pred_sql_is_no_sql_not_crash():
+    """M-3:不经 load_rows 的直接构造可以给 None —— 按无 SQL 处理,不许崩。"""
+    row = FailureRow(question="q", gold_sql="SELECT a.x FROM aa a",
+                     pred_sql=None, verdict="MISMATCH")
+    f = attribute_row(row, None)
+    assert f.l1.bucket == "no_sql"

@@ -687,29 +687,34 @@ uv run python scripts/eval_attribution.py ... --json --out r.json</code></pre>
       <code>gen_ignored_plan</code>（计划对、生成的 SQL 偏离了计划）、
       <code>undecidable</code>（没有轨迹，或 plan 可比深度不足以判）。
       报告对每个桶都按<strong>行数和题数双计数</strong>（97 行常只有 24 题，行数偏袒重试题），
-      并逐字段报轨迹保真度（<code>present</code> / <code>truncated</code> / <code>absent</code>）。
+      并逐字段报轨迹保真度（<code>present</code> / <code>empty</code> / <code>absent</code>：
+      观察到 / 观察到但为空 / 未观察到）；plan 的截断不混进这三态，单列在
+      <code>coverage.plan_truncated_rows</code>。
     </p>
 
-    <pre><code>uv run python scripts/eval_chain_attribution.py --json
+    <pre><code>uv run python scripts/eval_chain_attribution.py \
+  --failures .trove/eval/failures.jsonl --traces "" --runs-dir .trove/eval/runs --json
 uv run python scripts/eval_chain_attribution.py \
-  --failures .trove/eval/failures.jsonl \
-  --traces "" --runs-dir .trove/eval/runs \
+  --failures .trove/eval/failures.jsonl --traces "" --runs-dir .trove/eval/runs \
   --out .trove/eval/chain_report.txt</code></pre>
 
     <p>
-      退出码 0 正常 · 2 用法或输入错误。没有 <code>--strict</code>：
-      「责任跳桶超阈值即失败」目前是拍脑袋的门，留到有基线再说。
-      <code>--traces ""</code> 关闭 traces 源——拿今天的轨迹解释八月的失败会把「现在怎么跑」
-      当成「当时怎么跑」，只在做<strong>显式标注纪元错配</strong>的敏感性对照时打开。
+      上面两条是本文数字的来源；<code>failures.jsonl</code> 与 <code>runs/</code> 是本地评测产物，
+      不在仓内，新 clone 需先跑自己的评测。退出码 0 正常 · 2 用法或输入错误。没有
+      <code>--strict</code>：「责任跳桶超阈值即失败」目前是拍脑袋的门，留到有基线再说。
+      <code>--traces ""</code> 关闭 traces 源。不带参数时默认读
+      <code>~/.trove/traces.jsonl</code>（本机运行期旁路记录，可能与语料不同纪元）与
+      <code>~/.trove/runs</code>——那只用于快速看形状，不要拿默认输出解释历史失败；
+      报告里的 <code>meta.traces_enabled</code> 与 <code>meta.pipeline_note</code> 跟着实际来源走。
     </p>
 
     <div class="callout note">
       <span class="callout-tag">四条诚实边界</span>
       <div>
-        <p><strong>管线纪元</strong>：8 月轨迹来自两段式管线（planner + 单体 gen_sql），三段式 gen 链是 2026-09-18 之后。L2 的责任跳按<strong>当时的节点边界</strong>算；L1 与节点边界无关，类别结论可迁移。报告的 <code>meta.pipeline_note</code> 原文写出这句。</p>
-        <p><strong>plan 保真度上限</strong>：8 月日志的 dict 值静默截断在 600 字符（<code>plan_json</code> 只剩前缀），<code>answer_columns</code> 拿不回来——输出列分歧只能从 L1 的 SQL 投影判；报告逐字段报 fidelity，截断与缺失都进 <code>undecidable</code>，不猜。</p>
+        <p><strong>管线纪元</strong>：8 月轨迹来自两段式管线（planner + 单体 gen_sql），三段式 gen 链是 2026-09-18 之后。L2 的责任跳按<strong>当时的节点边界</strong>算；L1 与节点边界无关，类别结论可迁移。报告的 <code>meta.pipeline_note</code> 按<strong>实际来源</strong>生成：<code>--traces ""</code> 时写历史 run 日志的纪元；traces 开启时如实说明它是本机运行期旁路记录、可能跨纪元。</p>
+        <p><strong>plan 保真度上限</strong>：8 月日志的 dict 值静默截断在 600 字符（<code>plan_json</code> 只剩前缀），<code>answer_columns</code> 拿不回来——输出列分歧只能从 L1 的 SQL 投影判。报告逐字段报 fidelity（<code>present</code> / <code>empty</code> / <code>absent</code>），截断行数单列在 <code>coverage.plan_truncated_rows</code>；截断会让某个结构档退出可比集，但<strong>不必然</strong>让整行判不了——判不了才进 <code>undecidable</code>，不猜。实测 33 条带截断标记的行里 28 条落 <code>undecidable</code>，5 条仍判出了 <code>planner_chose_differently</code>。</p>
         <p><strong>描述不因果</strong>：档位是「首个结构分歧」，责任跳是「谁做了这个选择」。全篇不主张「所以失败」；虚高方向（等价改写 LIMIT ⟷ 聚合极值、字面量大小写）由观察块给出折扣尺。</p>
-        <p><strong>判不了 ≠ 通过</strong>：字段缺失、被截断、plan 可比深度不足，一律进 <code>undecidable</code> 或如实标注，绝不写成「没问题」。</p>
+        <p><strong>判不了 ≠ 通过</strong>：字段缺失、plan 可比深度不足，一律进 <code>undecidable</code> 或如实标注，绝不写成「没问题」。</p>
       </div>
     </div>
 
@@ -718,11 +723,14 @@ uv run python scripts/eval_chain_attribution.py \
       <div>
         <p>97 条历史失败、24 道不同问题（轨迹覆盖 18 题）：L1 首个分歧最多的是 <code>table_set</code>
         （37 行 / 15 题）与 <code>filter_diff</code>（27 行 / 11 题）；L2 判得出的 47 行里
-        <code>planner_chose_differently</code> 29 行、<code>gen_ignored_plan</code> 18 行；
-        <code>plan</code> 因 600 字符截断判不了的行有 33 条。观察块里
-        22 行 gold 要的表 pred 根本没读、21 行多读了表——投入方向的两端大致对半。</p>
+        <code>planner_chose_differently</code> 29 行、<code>gen_ignored_plan</code> 18 行。
+        <code>plan</code> 带 600 字符截断标记的行有 33 条，其中 28 条最终判不了、5 条仍判出了计划分歧；
+        50 条 <code>undecidable</code> 的构成是 28 条截断 + 17 条无轨迹 + 2 条 order_limit 档深度不足
+        + 1 条 agg 档深度不足 + 1 条 <code>structure_equal</code> + 1 条 plan 不可得（未截断）。
+        观察块里 22 行 gold 要的表 pred 根本没读、21 行多读了表——投入方向的两端大致对半。</p>
         <p>它和回顾归因一起构成结论：<strong>不是声明层，也不是「模型不会写 SQL」一句话</strong>——
-        可判的责任跳里计划与生成是 29 : 18，另有 33 行的 plan 因截断判不到计划侧。</p>
+        可判的责任跳里计划与生成是 29 : 18；50 条判不了里 28 条的直接原因是 plan 截断，
+        其余是轨迹覆盖与可比深度。</p>
       </div>
     </div>
 
