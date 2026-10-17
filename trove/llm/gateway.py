@@ -12,16 +12,41 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
-from trove.core.config import ProviderConfig
+from trove.core.config import EgressConfig, ProviderConfig
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
-from trove.core.metrics import MetricsTimer, record_llm_call
+from trove.core.metrics import (
+    MetricsTimer,
+    record_llm_call,
+    record_llm_egress_denied,
+)
 from trove.services.errors import classify_error
 from trove.llm.observability import get_client
 
 logger = get_logger(__name__)
+
+
+class LLMEgressDenied(RuntimeError):
+    """Raised when the egress allowlist denies a provider/model.
+
+    Separate from ``LLMError`` on purpose: a denial is a **policy** decision
+    (no retry will help, no provider was contacted), while ``LLMError`` is a
+    transport/generation failure that the retry ladder owns. Callers that
+    catch ``LLMError`` for degradation should let this one surface.
+
+    The message carries only the provider/model identifiers — never the
+    prompt or messages.
+    """
+
+    def __init__(self, provider: str, model: str):
+        self.provider = provider
+        self.model = model
+        super().__init__(
+            f"LLM egress denied: provider={provider or '<unresolved>'} "
+            f"model={model}"
+        )
 
 
 def _extract_retry_after(exc: Exception | None) -> float | None:
@@ -75,6 +100,8 @@ class LLMGateway:
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
         providers: list[ProviderConfig] | None = None,
+        egress_policy: Callable[[], EgressConfig] | EgressConfig | None = None,
+        on_egress_denied: Callable[[str, str], None] | None = None,
     ):
         """Initialize the LLM gateway.
 
@@ -88,6 +115,12 @@ class LLMGateway:
             providers: Provider configs from agent.yml; litellm_params are
                 merged into every litellm call whose model matches the
                 provider name prefix (explicit api_key/api_base args win).
+            egress_policy: EgressConfig or a zero-arg callable returning the
+                **live** config (hot reload: admin settings mutate the same
+                object in place). Empty allowlist = unrestricted.
+            on_egress_denied: Optional sync callback ``(provider, model)``
+                invoked before raising; best-effort (its failure never masks
+                the denial).
         """
         self._mock_response = mock_response
         self._mock_stream_chunks = mock_stream_chunks
@@ -95,10 +128,69 @@ class LLMGateway:
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self._providers = providers or []
+        self._egress_policy = egress_policy
+        self._on_egress_denied = on_egress_denied
 
     def set_providers(self, providers: list[ProviderConfig] | None) -> None:
         """Hot-swap provider params (admin settings update — no restart)."""
         self._providers = providers or []
+
+    # ── Egress allowlist ─────────────────────────────────
+
+    def _egress_config(self) -> EgressConfig | None:
+        policy = self._egress_policy
+        if policy is None:
+            return None
+        if callable(policy):
+            try:
+                return policy()
+            except Exception:
+                # A policy read failure must not open the pipe: treat it as
+                # deny-all by returning a config whose allowlist cannot match.
+                return EgressConfig(allow_providers=["\x00unresolved-policy"])
+        return policy
+
+    def _check_egress(self, model: str) -> None:
+        """Enforce the provider/model allowlist before any provider call.
+
+        Matching (case-insensitive, whitespace-stripped):
+        - empty list or ``*`` → everything allowed (no behavior change);
+        - entry containing ``/`` → exact model match;
+        - entry without ``/`` → provider prefix (``openai`` matches
+          ``openai/...``).
+
+        A model without a provider prefix cannot match a prefixed entry and
+        is denied when the allowlist is non-empty (fail-closed).
+
+        Scope note: this constrains litellm **model/provider identifiers**.
+        A custom ``providers[].litellm_params.api_base`` remains an admin
+        trust decision and is not inspected here.
+        """
+        cfg = self._egress_config()
+        if cfg is None or not cfg.enabled:
+            return
+        allow = [str(p).strip().lower() for p in cfg.allow_providers if str(p).strip()]
+        if not allow or "*" in allow:
+            return
+        name = str(model or "").strip().lower()
+        provider = name.split("/", 1)[0] if "/" in name else ""
+        for entry in allow:
+            if "/" in entry:
+                if name == entry:
+                    return
+            elif provider and provider == entry:
+                return
+        record_llm_egress_denied(provider)
+        logger.warning(
+            "LLM egress denied: provider=%r model=%r (allowlist=%s)",
+            provider or None, model, allow,
+        )
+        if self._on_egress_denied is not None:
+            try:
+                self._on_egress_denied(provider, model)
+            except Exception as e:  # audit must never mask the denial
+                logger.debug("egress-denied callback failed: %s", e)
+        raise LLMEgressDenied(provider, model)
 
     # ── Public API ───────────────────────────────────────
 
@@ -135,6 +227,8 @@ class LLMGateway:
         if self._mock_response is not None:
             logger.debug("Returning mock response (%d chars)", len(self._mock_response))
             return self._mock_response
+
+        self._check_egress(model)
 
         last_error: Exception | None = None
 
@@ -207,6 +301,8 @@ class LLMGateway:
         """
         if self._mock_response is not None:
             return {"content": self._mock_response, "tool_calls": []}
+
+        self._check_egress(model)
 
         import litellm
         start = time.monotonic()
@@ -309,6 +405,8 @@ class LLMGateway:
             yield self._mock_response
             return
 
+        self._check_egress(model)
+
         try:
             async for chunk in self._call_litellm_stream(
                 model=model,
@@ -351,6 +449,8 @@ class LLMGateway:
                 [float(x) for x in self._mock_embedding[i % n]]
                 for i in range(len(inputs))
             ]
+
+        self._check_egress(model)
 
         import litellm
 

@@ -658,6 +658,59 @@ class TestMaskingAndAuthzConfig:
         assert cfg.authz.table_enforcement == "warn"
 
 
+class TestEgressConfig:
+    """``egress:`` 必须真的进 ``AgentConfig``(与 masking/authz 同一条教训)。
+
+    加载器读不到 = 配置永远不生效:管理员在 YAML 里写了白名单,网关却拿到
+    空列表(全允许)——这类洞只有把 YAML 喂进加载器才照得出来。
+    """
+
+    def test_block_is_parsed(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "egress:\n  enabled: false\n  redact_tool_results: false\n"
+            "  allow_providers: [OpenAI, ' anthropic/claude-3 ']\n"
+            "  audit: false\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.egress.enabled is False
+        assert cfg.egress.redact_tool_results is False
+        assert cfg.egress.allow_providers == ["openai", "anthropic/claude-3"]
+        assert cfg.egress.audit is False
+
+    def test_block_reads_nested_under_agent(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  egress:\n    allow_providers: openai, deepseek\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.egress.allow_providers == ["openai", "deepseek"]
+
+    def test_allow_providers_accepts_comma_string(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "egress:\n  allow_providers: ' OpenAI , ,anthropic '\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.egress.allow_providers == ["openai", "anthropic"]
+
+    def test_absent_block_keeps_defaults(self, tmp_path):
+        """缺席 = 保护开着、白名单为空(全部允许)——老部署行为不变。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.egress.enabled is True
+        assert cfg.egress.redact_tool_results is True
+        assert cfg.egress.allow_providers == []
+        assert cfg.egress.audit is True
+
+
 class TestConfidenceScoreFlag:
     def test_defaults_on(self, tmp_path):
         """默认开:零成本(纯函数),与 answer_source 一致 —— 那个没有开关。"""

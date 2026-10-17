@@ -129,6 +129,35 @@ class MaskingConfig:
 
 
 @dataclass
+class EgressConfig:
+    """LLM 数据出境治理(工具回喂 / 供应商白名单)。
+
+    与 ``MaskingConfig`` 的分工:masking 管**交付给用户**的结果,egress 管
+    **发给模型**的观测。两个接收方各有自己的开关 —— 关掉 masking 不等于
+    允许把已声明 ``mask`` 的字段原文发给模型,因此 egress 脱敏**不读**
+    ``masking.enabled``(只复用同一份 ``mask`` 声明与同一套掩码实现)。
+
+    ``enabled``: 整层开关。默认 true,但**只作用于语义模型已声明 ``mask``
+    的字段** —— 没有任何 ``mask`` 声明的部署在工具回喂口逐字节不变。
+
+    ``redact_tool_results``: 是否在工具结果回喂模型前脱敏。默认 true。
+
+    ``allow_providers``: 模型/provider 白名单。空 = 全部允许。匹配规则:
+    含 ``/`` 的条目 = 精确模型名;不含 ``/`` 的条目 = provider 前缀;``*``
+    全允许。约束的是 litellm **模型/provider 名**;``providers[].api_base``
+    自定义端点仍是管理端的信任决定,不在此列。
+
+    ``audit``: 每轮汇总写一条 ``llm.egress`` 审计(details 只含计数与
+    字段名,不含值)。
+    """
+
+    enabled: bool = True
+    redact_tool_results: bool = True
+    allow_providers: list[str] = field(default_factory=list)
+    audit: bool = True
+
+
+@dataclass
 class BudgetConfig:
     """执行画像的成本轨(设计 §6.3 / §5.2)。
 
@@ -511,6 +540,8 @@ class AgentConfig:
     authz: AuthzConfig = field(default_factory=AuthzConfig)
     # 字段级脱敏:开关 + 部署级 salt 引用。见 MaskingConfig(默认开)。
     masking: MaskingConfig = field(default_factory=MaskingConfig)
+    # LLM 数据出境治理:工具回喂脱敏 + provider 白名单。见 EgressConfig。
+    egress: EgressConfig = field(default_factory=EgressConfig)
     # 执行画像的成本轨:阈值 + 估算不可得时的方向。见 BudgetConfig。
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     # 可信查询资产的**统计**侧(台账库的位置与保留期)。见 AssetsConfig。
@@ -899,6 +930,23 @@ class ConfigLoader:
             enabled=bool(masking_raw.get("enabled", True)),
             hash_salt_ref=str(masking_raw.get("hash_salt_ref", "") or "").strip(),
         )
+        # LLM 数据出境治理。与 authz/masking 同款:顶层与 ``agent:`` 内嵌两种
+        # 写法都认。三处默认值同源(dataclass / 这里 / AdminSettings 兜底)。
+        # ``allow_providers`` 接受 list 或逗号分隔字符串(手写 YAML 两种都常见);
+        # 条目小写去空白,空条目丢弃。
+        egress_raw = resolved.get("egress", {}) or agent_section.get("egress", {}) or {}
+        _allow_raw = egress_raw.get("allow_providers", [])
+        if isinstance(_allow_raw, str):
+            _allow_raw = _allow_raw.split(",")
+        egress_conf = EgressConfig(
+            enabled=bool(egress_raw.get("enabled", True)),
+            redact_tool_results=bool(egress_raw.get("redact_tool_results", True)),
+            allow_providers=[
+                str(p).strip().lower() for p in (_allow_raw or [])
+                if str(p).strip()
+            ],
+            audit=bool(egress_raw.get("audit", True)),
+        )
         # 可信查询资产的台账(设计 §9.2)。同样**顶层与 ``agent:`` 内嵌两种写法
         # 都认**。这一段的写法是照着上面 authz 的教训来的:加了字段与默认值却
         # 不在加载器里读 YAML,配置就永远不生效(恒取默认),而那是排障最贵的
@@ -966,6 +1014,7 @@ class ConfigLoader:
             budget=budget_conf,
             authz=authz_conf,
             masking=masking_conf,
+            egress=egress_conf,
             assets=assets_conf,
             providers=providers,
             tracing=tracing,

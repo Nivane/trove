@@ -30,6 +30,11 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     # (空 = 关闭,全调用回落 model_for_node 行为)
     "llm.draft_model": ("model_draft", "path", None),
     "llm.providers": ("providers", "providers", None),
+    # LLM 数据出境治理:开关 + 工具回喂脱敏 + 模型/provider 白名单
+    # (空列表 = 不限制;条目含 ``/`` = 精确模型名,否则 = provider 前缀)
+    "egress.enabled": ("egress.enabled", "bool", None),
+    "egress.redact_tool_results": ("egress.redact_tool_results", "bool", None),
+    "egress.allow_providers": ("egress.allow_providers", "strlist", None),
     # General
     "app.language": ("language", "enum", ALLOWED_LANGUAGES),
     "app.semantic_layer_path": ("semantic_layer_path", "path", None),
@@ -96,6 +101,22 @@ def coerce_value(key: str, raw: Any, current_providers: list[dict[str, Any]] | N
             if value not in constraint:
                 return raw, f"{key} must be one of: {', '.join(constraint)}"
             return value, None
+        if kind == "strlist":
+            # JSON 数组或逗号分隔字符串(手写/前端两种来源都常见)。
+            if isinstance(raw, str):
+                items = raw.split(",")
+            elif isinstance(raw, (list, tuple)):
+                items = list(raw)
+            else:
+                raise TypeError("strlist must be a list or comma-separated string")
+            out = []
+            for item in items:
+                text = str(item).strip().lower()
+                if not text:
+                    continue
+                out.append(text)
+            # 去重保序(白名单的语义是集合,输出稳定便于比对与回显)
+            return list(dict.fromkeys(out)), None
         if kind == "providers":
             return _validate_providers(raw, current_providers), None
     except (TypeError, ValueError):

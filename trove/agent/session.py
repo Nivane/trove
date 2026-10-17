@@ -1699,6 +1699,8 @@ class SessionManager:
         # 授权与脱敏审计:被拦了 / 改了哪些字段 / 谁看了原文(设计 §6.3)。
         # 与上一行同一个汇合点 —— 四条运行路径都走 _record_exchange。
         await self._audit_authz(session, final)
+        # LLM 出境审计:这一问有没有把声明字段发给模型(只记字段名/计数)。
+        await self._audit_egress(session, final)
         # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
         self._maybe_cache_exchange(session, final)
 
@@ -1982,6 +1984,50 @@ class SessionManager:
                 )
         except Exception as e:  # 审计失败绝不影响查询链路
             logger.debug("authz audit skipped (%s): %s", type(e).__name__, e)
+
+    async def _audit_egress(self, session: Session, final: WorkflowState) -> None:
+        """数据出境治理审计 —— ``llm.egress`` 写入 audit_log。
+
+        回答「这一问里有没有 ``mask`` 声明字段的值被发给过模型」。details 只含
+        字段名与计数(行数/值数/扣留次数),**不含任何值** —— 与
+        ``masking.applied`` 同一条纪律:审计表长期留存,写值等于把要防的数据
+        再抄一份明文。
+
+        ``egress.audit`` 关闭 → 不写;``egress_report`` 为空/None → 这一问没有
+        发生出境脱敏(未声明 ``mask`` 或没有工具回喂),不写空行。
+        best-effort:写失败绝不阻断回答;无 auth 服务(CLI/嵌入)跳过。
+        """
+        if self._auth is None:
+            return
+        report = final.egress_report
+        if not report:
+            return
+        egress_cfg = getattr(self.config, "egress", None)
+        if egress_cfg is not None and not getattr(egress_cfg, "audit", True):
+            return
+        try:
+            details: dict[str, Any] = {
+                "session_id": final.session_id,
+                "run_id": final.run_id,
+                "datasource": final.datasource or "",
+                # 排序输出:同一份报告两次审计逐字节一致(聚合与 diff 都省事)。
+                "egress": {
+                    tool: {
+                        **dict(entry or {}),
+                        "fields": dict(
+                            sorted((entry or {}).get("fields", {}).items())
+                        ),
+                    }
+                    for tool, entry in sorted(report.items())
+                },
+            }
+            await self._auth.record_audit(
+                "llm.egress",
+                user=await self._audit_user(session, final),
+                details=details,
+            )
+        except Exception as e:  # 审计失败绝不影响查询链路
+            logger.debug("egress audit skipped (%s): %s", type(e).__name__, e)
 
     async def _observe_memory(self, final: WorkflowState) -> None:
         """观测回流:情景记忆记录 + 成功→示例草稿 + 修正/失败→pending 教训。
