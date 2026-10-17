@@ -134,3 +134,139 @@ def test_load_run_logs_equal_mtime_ties_break_by_name(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pathlib.Path, "glob", fake_glob)
     assert load_run_logs(tmp_path)["q nine?"].matched_tables == ("zz",)
+
+
+import json
+
+from trove.eval.chain import loop_state
+from trove.eval.trajectory import (load_structured, load_traces,
+                                   merge_trajectories)
+
+TRACES_LINES = [
+    {"run_id": "r1", "kind": "run", "question": "q one?", "ts": 1.0},
+    {"run_id": "r1", "kind": "step", "node": "schema_linking",
+     "detail": {"matched_tables": "['aa', 'bb']"}},
+    {"run_id": "r1", "kind": "step", "node": "planner",
+     "detail": {"plan": "Tables: aa, bb\nJoins: aa.i = bb.i\nConditions: none"}},
+    {"run_id": "r1", "kind": "step", "node": "analyze_error",
+     "detail": {"error": "rows differ", "analysis": "need join fix",
+                "rollback": "gen_sql"}},
+    {"run_id": "r1", "kind": "finish", "summary": {"verdict": "MISMATCH"}},
+    {"run_id": "r2", "kind": "run", "question": "q one?", "ts": 2.0},
+    {"run_id": "r2", "kind": "step", "node": "schema_linking",
+     "detail": {"matched_tables": "['aa']"}},
+]
+
+
+def _write_lines(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines),
+                 encoding="utf-8")
+    return p
+
+
+def test_load_traces_repr_string_and_last_run_wins(tmp_path):
+    got = load_traces(_write_lines(tmp_path, "traces.jsonl", TRACES_LINES))
+    t = got["q one?"]
+    # 同题多 run:文件序最后一条 run 整条胜出(r2 只有 schema_linking)
+    assert t.matched_tables == ("aa",)
+    assert t.plan_facts is None
+    assert t.error_analysis == ""
+    assert t.source == "traces"
+
+
+def test_load_traces_validate_step_is_the_awareness_evidence(tmp_path):
+    """R31:traces 源的 validation_hits 记在 `validate.detail`(设计 §3.1)。
+
+    只有 validate 一步自知的 run 也必须判得出来 —— 否则 loop 三态对它
+    只能给 undecidable(守卫与证据意见相反,R19 的同款缺陷换一个源)。
+    """
+    lines = [
+        {"run_id": "r9", "kind": "run", "question": "q nine?", "ts": 1.0},
+        {"run_id": "r9", "kind": "step", "node": "schema_linking",
+         "detail": {"matched_tables": "['aa']"}},
+        {"run_id": "r9", "kind": "step", "node": "validate",
+         "detail": {"reason": "SUM over non-numeric column", "retry": 0}},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q nine?"]
+    assert t.validation_hits_raw == "SUM over non-numeric column"
+    assert "validation_hits" in t.available
+    assert loop_state(t) == "detected_but_unfixed"
+
+
+def test_load_structured_fidelity_and_skip(tmp_path):
+    lines = [
+        {"question": "q one?", "plan": {"tables": ["aa"], "joins": "none",
+                                        "conditions": [], "aggregation": "none",
+                                        "answer_columns": ["x"]},
+         "matched_tables": ["aa"], "validation_hits": [], "retries": 1,
+         "rollback_target": "gen_sql"},
+        {"question": "q two?", "gold_sql": "SELECT 1"},   # 无轨迹字段 → 跳过
+    ]
+    got = load_structured(_write_lines(tmp_path, "results.jsonl", lines))
+    assert set(got) == {"q one?"}
+    t = got["q one?"]
+    assert t.matched_tables_state == "present"
+    assert t.plan_facts is not None
+    assert t.retry_count == 1
+    assert t.rollback_target == "gen_sql"
+
+
+def test_merge_field_level_priority(tmp_path):
+    traces = load_traces(_write_lines(tmp_path, "traces.jsonl", TRACES_LINES[:5]))
+    structured = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q one?", "matched_tables": ["zz"],
+         "plan": {"tables": ["zz"], "joins": "none", "conditions": [],
+                  "aggregation": "none", "answer_columns": ["x"]}}]))
+    merged = merge_trajectories(structured, traces)
+    assert merged["q one?"].matched_tables == ("zz",)     # structured 优先
+    assert merged["q one?"].error_analysis == "need join fix"  # traces 补位
+
+
+def test_merge_preserves_plan_truncated_state():
+    """R38:单源合并必须原样保留 plan 的截断/空态(R20 的 plan_truncated 不能因合并丢失)。"""
+    from trove.eval.trajectory import parse_run_log, trajectory_from_log
+
+    log = ("question: q trunc?\n"
+           "│   matched_tables = [\"aa\"]\n"
+           "│   plan = \n"
+           "│   plan_json = {\"tables\": [\"aa\", \"bb\"], \"joins\": \"aa.i = bb.i\", \"cond\n")
+    t = trajectory_from_log(parse_run_log(log))
+    assert t.plan_text_state == "empty" and t.plan_truncated is True
+    m = merge_trajectories({"q trunc?": t})["q trunc?"]
+    assert m.plan_text_state == "empty"
+    assert m.plan_truncated is True
+    assert m.plan_facts is None
+
+
+def test_load_traces_analyze_error_without_analysis(tmp_path):
+    """R39:analyze_error 只带 error 时,链路依然自知过 —— 不能判成 never_detected。"""
+    lines = [
+        {"run_id": "r10", "kind": "run", "question": "q ten?", "ts": 1.0},
+        {"run_id": "r10", "kind": "step", "node": "schema_linking",
+         "detail": {"matched_tables": "['aa']"}},
+        {"run_id": "r10", "kind": "step", "node": "analyze_error",
+         "detail": {"error": "boom"}},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q ten?"]
+    assert t.error_analysis == "boom"
+    assert loop_state(t) == "detected_but_unfixed"
+
+
+def test_load_structured_matched_tables_repr_string(tmp_path):
+    """R40:结构化记录的 matched_tables 若被序列化成字符串,按列表解析,绝不逐字符展开。"""
+    lines = [{"question": "q repr?", "matched_tables": "['aa', 'bb']"}]
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", lines))["q repr?"]
+    assert t.matched_tables == ("aa", "bb")
+    assert t.matched_tables_state == "present"
+
+
+def test_load_traces_non_dict_detail_is_ignored(tmp_path):
+    """R41:detail 不是对象时按坏值跳过,不让旁路记录把整份 traces 读取打断。"""
+    lines = [
+        {"run_id": "r11", "kind": "run", "question": "q eleven?", "ts": 1.0},
+        {"run_id": "r11", "kind": "step", "node": "schema_linking",
+         "detail": "matched_tables"},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q eleven?"]
+    assert t.matched_tables_state == "absent"

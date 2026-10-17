@@ -166,3 +166,233 @@ def load_run_logs(runs_dir: str | Path) -> dict[str, Trajectory]:
             continue
         out[facts.question] = trajectory_from_log(facts)
     return out
+
+
+def _trajectory_from_traces_run(run: dict) -> Trajectory:
+    steps: dict[str, dict] = run.get("steps") or {}
+    sl = steps.get("schema_linking") or {}
+    mt_state, mt = "absent", ()
+    if "matched_tables" in sl:
+        parsed = _parse_table_list(str(sl.get("matched_tables") or ""))
+        if parsed is None:
+            mt_state = "absent"
+        elif parsed:
+            mt_state, mt = "present", parsed
+        else:
+            mt_state = "empty"
+
+    planner = steps.get("planner") or {}
+    plan_text = str(planner.get("plan") or "")
+    plan_state = "absent" if not planner else (
+        "present" if plan_text.strip() else "empty")
+    plan_facts: PlanFacts | None = None
+    pj = planner.get("plan_json")
+    if isinstance(pj, dict) and pj:
+        plan_facts = plan_facts_from_json(pj)
+    elif plan_text.strip():
+        plan_facts = plan_facts_text(plan_text, truncated=_is_truncated(plan_text))
+
+    aerr = steps.get("analyze_error") or {}
+    gen = steps.get("gen_sql") or {}
+    val = steps.get("validate") or {}
+    hits = str(val.get("reason") or "")     # R31:设计 §3.1 保真表把 traces 的
+    # `validation_hits` 记在 `validate.detail` 上;读了它,`available` 才是这套源
+    # 对「链路自知过」这件事的诚实回答(否则只有 validate 一步自知的 run 会被判
+    # undecidable —— 守卫与它自己的证据意见相反)。
+    retry: int | None = None
+    if isinstance(gen.get("retry"), int):
+        retry = gen["retry"]
+    elif isinstance(gen.get("attempts"), int) and gen["attempts"] > 0:
+        retry = max(0, gen["attempts"] - 1)
+    available = set()
+    if mt_state != "absent" or "matched_tables" in sl:
+        available.add("matched_tables")
+    if plan_state != "absent":
+        available.add("plan")
+    if aerr:
+        available.update({"error_analysis", "rollback_target"})
+    if val:
+        available.add("validation_hits")
+    if retry is not None:
+        available.add("retry_count")
+    return Trajectory(
+        question=str(run.get("question") or "").strip(), source="traces",
+        matched_tables=mt, matched_tables_state=mt_state,
+        plan_facts=plan_facts, plan_text_state=plan_state,
+        plan_truncated=_is_truncated(plan_text),
+        validation_hits_raw=hits,
+        # R39:analysis 缺席时 error 本身就是「链路跑过 analyze_error」的证据;
+        # 只认 analysis 会把只带 error 的 run 判成 never_detected(与 R31 同款)。
+        error_analysis=str(aerr.get("analysis") or aerr.get("error") or ""),
+        rollback_target=str(aerr.get("rollback") or ""),
+        retry_count=retry, available=frozenset(available),
+    )
+
+
+def load_traces(path: str | Path) -> dict[str, Trajectory]:
+    """traces.jsonl → 按 question 的轨迹;同题多 run 取文件序最后一 run。"""
+    runs: dict[str, dict] = {}
+    order: list[str] = []
+    p = Path(path)
+    if not p.exists():
+        return {}
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # traces 是尽力而为的旁路记录,坏行跳过(与 load_rows 的响亮失败刻意不同,注释写明)
+        if not isinstance(e, dict):
+            continue
+        rid = str(e.get("run_id") or "")
+        if not rid:
+            continue
+        kind = e.get("kind")
+        if kind == "run":
+            runs[rid] = {"question": str(e.get("question") or "").strip(),
+                         "steps": {}}
+            order.append(rid)
+        elif kind == "step":
+            run = runs.setdefault(rid, {"question": "", "steps": {}})
+            # R41:非对象 detail 按坏值丢弃(旁路记录 best-effort;字符串 detail
+            # 会在下游 ``sl.get`` 处把整份 traces 读取打断)。
+            det = e.get("detail")
+            run["steps"][str(e.get("node") or "")] = det if isinstance(det, dict) else {}
+        elif kind == "finish":
+            runs.setdefault(rid, {"question": "", "steps": {}})
+    out: dict[str, Trajectory] = {}
+    for rid in order:
+        run = runs[rid]
+        if not run.get("question"):
+            continue
+        out[run["question"]] = _trajectory_from_traces_run(run)
+    return out
+
+
+def load_structured(path: str | Path) -> dict[str, Trajectory]:
+    """eval_bird 新 records(含 plan/matched_tables 的 results.jsonl)→ 轨迹。
+
+    坏行响亮失败(带行号),与 attribution.load_rows 同纪律:把截断文件读成
+    「没问题」是诊断工具最不能有的失败模式。
+    """
+    out: dict[str, Trajectory] = {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    for lineno, line in enumerate(
+            p.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{path}:{lineno} 不是合法 JSON: {e}") from e
+        if not isinstance(d, dict):
+            raise ValueError(f"{path}:{lineno} 不是 JSON 对象")
+        q = str(d.get("question") or "").strip()
+        if not q or ("plan" not in d and "matched_tables" not in d):
+            continue
+        mt_state, mt = "absent", ()
+        if "matched_tables" in d:
+            raw_mt = d.get("matched_tables")
+            if isinstance(raw_mt, str):
+                # R40:序列化成了 Python repr/JSON 字符串时按列表解析,绝不逐字符
+                # 展开(``"['aa']"`` → ('[', "'", 'a', 'a', ...) 是静默污染桶)。
+                parsed = _parse_table_list(raw_mt)
+                if parsed is None:
+                    mt_state = "absent"       # 读不出来 ≠ 观察为空(与 T6 同向)
+                else:
+                    mt_state = "present" if parsed else "empty"
+                    mt = parsed
+            else:
+                parsed = tuple(str(x).strip().lower()
+                               for x in (raw_mt or [])
+                               if str(x).strip())
+                mt_state = "present" if parsed else "empty"
+                mt = parsed
+        plan_facts = None
+        pj = d.get("plan")
+        if isinstance(pj, dict) and pj:
+            plan_facts = plan_facts_from_json(pj)
+        retry = d.get("retries")
+        retry = int(retry) if isinstance(retry, int) else None
+        vh = d.get("validation_hits")
+        available = set()
+        if mt_state != "absent":
+            available.add("matched_tables")
+        if plan_facts is not None:
+            available.add("plan")
+        if vh is not None:
+            available.add("validation_hits")
+        if retry is not None:
+            available.add("retry_count")
+        if d.get("rollback_target"):
+            available.add("rollback_target")
+        out[q] = Trajectory(
+            question=q, source="structured",
+            matched_tables=mt, matched_tables_state=mt_state,
+            plan_facts=plan_facts,
+            plan_text_state="present" if plan_facts else "absent",
+            validation_hits_raw=json.dumps(vh, ensure_ascii=False) if vh else "",
+            rollback_target=str(d.get("rollback_target") or ""),
+            retry_count=retry, available=frozenset(available),
+        )
+    return out
+
+
+def merge_trajectories(*maps: dict[str, Trajectory]) -> dict[str, Trajectory]:
+    """逐字段合并:**先传 = 高优先级**(structured > traces > logs)。
+
+    「取保真度最高者」= 高优先级源里该字段非 absent 就用它;没有任何源
+    提供 → 保持 absent(判不了,不猜)。
+    """
+    questions: list[str] = []
+    for m in maps:
+        for q in m:
+            if q not in questions:
+                questions.append(q)
+    out: dict[str, Trajectory] = {}
+    for q in questions:
+        cands = [m[q] for m in maps if q in m]
+
+        def pick(field: str, absent: str = "absent"):
+            for t in cands:
+                if field == "matched_tables":
+                    if t.matched_tables_state != "absent":
+                        return t
+                elif field == "plan":
+                    # R38:状态非 absent 即该源对 plan 有话要说 —— 只看 facts 会把
+                    # 「plan 空/被截断但无 facts」的单源合并洗成 absent,连带丢掉
+                    # plan_truncated(R20 的覆盖计数)。
+                    if t.plan_text_state != "absent" or t.plan_facts is not None:
+                        return t
+                elif field in t.available:
+                    return t
+            return None
+
+        mt_src = pick("matched_tables")
+        plan_src = pick("plan")
+        err_src = pick("error_analysis", "")
+        rb_src = pick("rollback_target", "")
+        rc_src = pick("retry_count", "")
+        vh_src = pick("validation_hits", "")
+        available: set[str] = set()
+        for t in cands:
+            available |= set(t.available)
+        out[q] = Trajectory(
+            question=q,
+            source="+".join(dict.fromkeys(t.source for t in cands if t.source)),
+            matched_tables=mt_src.matched_tables if mt_src else (),
+            matched_tables_state=mt_src.matched_tables_state if mt_src else "absent",
+            plan_facts=plan_src.plan_facts if plan_src else None,
+            plan_text_state=plan_src.plan_text_state if plan_src else "absent",
+            plan_truncated=plan_src.plan_truncated if plan_src else False,
+            validation_hits_raw=vh_src.validation_hits_raw if vh_src else "",
+            error_analysis=err_src.error_analysis if err_src else "",
+            rollback_target=rb_src.rollback_target if rb_src else "",
+            retry_count=rc_src.retry_count if rc_src else None,
+            available=frozenset(available),
+        )
+    return out
