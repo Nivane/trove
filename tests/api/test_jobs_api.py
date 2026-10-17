@@ -171,6 +171,50 @@ class TestJobsCRUD:
     async def test_get_missing_404(self, admin_client):
         assert (await admin_client.get("/v1/admin/jobs/nope")).status_code == 404
 
+    async def test_create_records_the_admin_owner(
+        self, admin_client, auth_service,
+    ):
+        """创建即记所有者:定时运行按该身份执行(§2.4)。"""
+        admin = await auth_service.authenticate("admin", "adminpw")
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "schedule_type": "interval",
+        })
+        assert r.status_code == 201
+        job = r.json()["job"]
+        assert job["owner_id"] == str(admin["id"])
+        listed = await admin_client.get("/v1/admin/jobs")
+        assert listed.json()["jobs"][0]["owner_id"] == str(admin["id"])
+
+    async def test_patch_preserves_an_existing_owner(
+        self, admin_client, jobs_app, auth_service,
+    ):
+        """「编辑不改 owner」:已有所有者不被编辑者覆盖。"""
+        bob = await auth_service.authenticate("bob", "bobpw")
+        job = await _make_job(jobs_app)
+        job.owner_id = str(bob["id"])
+        await jobs_app.state.jobs.store.save_job(job)
+
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "alert_expr": "row_count >= 1",
+        })
+        assert r.status_code == 200
+        assert r.json()["job"]["owner_id"] == str(bob["id"])
+
+    async def test_patch_backfills_a_legacy_empty_owner(
+        self, admin_client, jobs_app, auth_service,
+    ):
+        """存量空所有者:一次编辑补上操作者的 id —— 调度器那句「重新保存」
+        必须有兑现路径。"""
+        admin = await auth_service.authenticate("admin", "adminpw")
+        job = await _make_job(jobs_app)
+        assert job.owner_id == ""
+
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "alert_expr": "row_count >= 1",
+        })
+        assert r.status_code == 200
+        assert r.json()["job"]["owner_id"] == str(admin["id"])
+
 
 class TestJobsRun:
     async def test_run_now(self, admin_client, jobs_app):

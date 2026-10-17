@@ -1098,3 +1098,100 @@ class TestLimitsFromConfig:
         assert limits.series_grain == ""
         assert limits.block_lookback == 12
         assert limits.total_query_budget is None     # 老路径不设上限
+
+
+class TestRowColumnScope:
+    """归因 hop 的行/列授权(设计 §2.3)。
+
+    归因卡展示的就是 hop 查询结果 —— 这是**用户可见取数路径**,必须与
+    ``execute_sql`` 同一道门。三条不变量:
+
+    1. 行 grant 在执行前注入(引擎看到的是可见范围,不是全表);
+    2. 列拒绝让**该跳**失败、整段分析降级,但绝不抛穿节点打断主链;
+    3. 无主体(嵌入部署)/ admin 豁免 → 逐字节不变。
+    """
+
+    @staticmethod
+    def _principal(*, row: dict | None = None, deny: dict | None = None):
+        from trove.services.authz.policy import (
+            Principal,
+            principal_to_wire,
+        )
+
+        return principal_to_wire(Principal(
+            subject="7", role="user", grants=frozenset({"test_db"}),
+            row_grants=None if row is None else {"test_db": row},
+            column_denials=(
+                None if deny is None
+                else {"test_db": {t: frozenset(c) for t, c in deny.items()}}
+            ),
+        ))
+
+    async def test_row_grant_narrows_the_hop_and_the_table(self, attr_registry):
+        """5 人总成绩 449 → 行 grant 后只剩 Alameda 的 2 人 183。"""
+        state = make_attr_state(
+            principal=self._principal(row={"students": "county = 'Alameda'"})
+        )
+        llm = RecordingLLM(["叙事"])
+        out = await make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )(state)
+        attr = out["attribution"]
+        assert attr["total_delta"] == 183.0
+        assert [r["dim"] for r in attr["table"]] == ["Alameda"]
+
+    async def test_blocked_column_degrades_analysis_not_the_chain(
+        self, attr_registry,
+    ):
+        """维度列被禁 → 该跳 ScopeError → 引擎记 degraded,节点照常返回。
+
+        主链(答案)不受影响:归因是增强。hop0(整体总量)不引用 county,
+        先成功;分组跳被拒后产物是「只有 hop0 的部分分析」,不伪造一张表。
+        """
+        state = make_attr_state(
+            principal=self._principal(deny={"students": ["county"]})
+        )
+        llm = RecordingLLM(["不应被调用"])
+        out = await make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )(state)
+        assert out["attribution"]["table"] == []
+        assert out["attribution"]["narrative"] == ""
+        hops = out["attribution_hops"]
+        assert hops and all("county" not in h["sql"].lower() for h in hops)
+
+    async def test_no_principal_matches_admin(self, attr_registry):
+        """无主体 = 嵌入部署的老路径;与 admin 豁免同形(逐字节)。"""
+        node = make_attribution(
+            RecordingLLM(["叙事", "叙事"]), on_config(),
+            connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        admin = await node(make_attr_state())
+        plain = await node(make_attr_state(principal=None))
+        assert plain["attribution"]["total_delta"] == admin["attribution"]["total_delta"]
+        assert plain["attribution"]["table"] == admin["attribution"]["table"]
+
+    async def test_scope_is_told_declared_rls_is_already_injected(
+        self, attr_registry, monkeypatch,
+    ):
+        """编译器已注入声明 RLS —— 这里传 False(否则同一谓词注入两次)。"""
+        import trove.workflow.nodes.attribution as mod
+
+        seen: list[bool] = []
+        real = mod.apply_scope
+
+        def spy(sql, **kwargs):
+            seen.append(kwargs.get("include_declared_rls"))
+            return real(sql, **kwargs)
+
+        monkeypatch.setattr(mod, "apply_scope", spy)
+        await make_attribution(
+            RecordingLLM(["叙事"]), on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )(make_attr_state(
+            principal=self._principal(row={"students": "county = 'Alameda'"})
+        ))
+        assert seen and all(v is False for v in seen)

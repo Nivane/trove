@@ -325,6 +325,10 @@ async def _run_candidate_subagent(
         profiles=profiles,
         semantic_provider=services.semantic_layer,
         egress=egress,
+        # 候选的 probe/check/search 也是用户可见取数路径:同一道执行门与
+        # 同一份行/列 scope(与主 agent 注册表同参,不吃"候选更宽松"的亏)。
+        authorizer=_build_authorizer(services),
+        principal=state.principal,
     )
     prompt = build_sql_prompt_from_state(rotated)
     # ① Prompt caching:与主路径同策略——前缀校验在 agent_loop 内部,
@@ -1119,6 +1123,10 @@ def make_gen_generate(
                 profiles=profiles,
                 semantic_provider=services.semantic_layer,
                 egress=_egress_redactor(services),
+                # 生成工具的真实执行(probe/check/search)是取数路径:授权门
+                # 与 execute_sql 同源,主体 wire 原样传 —— 两次解析会漂移。
+                authorizer=_build_authorizer(services),
+                principal=state.principal,
             )
             # 懒工具名快照:装配 dump 要靠"跑之前的懒集合 + 跑之后还剩谁在
             # 懒集合里"才能判出 lazy/activated(解锁过的会移出 _lazy_specs,
@@ -1991,46 +1999,14 @@ def _route_semantic_gate_after_linking_gen_sql(
 def _build_authorizer(services: "GraphServices"):
     """执行层强制点(设计 §5.3 / G2)。``None`` = 未装配,不判。
 
-    A3 的基准取自语义模型声明过的表名(``rls.declared_tables``)——仓库的
-    grants 只到数据源级,没有数据集级授权源,所以 A3 挡的是**声明之外的表**,
-    即绕开语义层直摸物理表。编译路径与快径产出的 SQL 只引用声明过的表,不会
-    被误伤。
-
-    取模型失败(提供方不可用/类型错误)一律降级为「无基准」→ A3 跳过,**并打
-    warning**:P2 实施时踩过「宽 except 把编程错误吞成静默 miss」的坑(设计
-    §14 P2 记录),A3 的基准缺失必须是看得见的。A1/A2 不受影响,仍然生效。
+    构造本体在 ``authz.enforcer.build_authorizer``:直执行路由
+    (``/v1/semantic/query``)用同一份工厂,两处口径(A3 基准 / warn 兜底)
+    因此只有一处实现。
     """
-    from trove.services.authz.enforcer import Authorizer
-    from trove.services.semantic_layer import rls
+    from trove.services.authz.enforcer import build_authorizer
 
-    config = services.config or AgentConfig()
-    authz_config = getattr(config, "authz", None)
-    if authz_config is not None and not authz_config.require_principal:
-        return None
-    provider = services.semantic_layer
-
-    def _declared(datasource: str | None) -> set[str] | None:
-        if provider is None:
-            return None  # 未接语义层 → 无基准,A3 跳过
-        try:
-            return rls.declared_tables(provider.model())
-        except Exception as e:
-            logger.warning(
-                "authz A3 basis unavailable (semantic model unreadable) for "
-                "datasource %r: %s — table-level check skipped, datasource-level "
-                "authorization still enforced",
-                datasource, e,
-            )
-            return None
-
-    # 兜底档与 ``AuthzConfig.table_enforcement`` 的 dataclass 默认**逐字一致**
-    # (三处默认值同源:dataclass / ConfigLoader / 这里)。兜底的用途是
-    # authz_config 为 None(未提供 config)时仍装到安全档 —— 若兜成 warn,
-    # 「忘了传 config」这条路径会静默把表级判定变成观察档。
-    return Authorizer(
-        declared_tables=_declared,
-        mode=getattr(authz_config, "table_enforcement", "enforce"),
-    )
+    return build_authorizer(
+        services.config or AgentConfig(), services.semantic_layer)
 
 
 def _build_guards(services: "GraphServices"):
@@ -2199,7 +2175,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services), semantic_layer=services.semantic_layer))
     # 语义层/配置一并传入:共识失败的反馈文本里带结果值,而那条路走的是
     # analyze_error(validate 的成功分支才到 masking,这条路不经过)。预览值
     # 在 join 前脱敏 —— 见 nodes/select.py 模块注释与 nodes/masking.py 的
@@ -2416,7 +2392,7 @@ def _build_fixed(
         services, subgraph, agentic=agentic, budget=budget, profiles=profile))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services), semantic_layer=services.semantic_layer))
     g.add_node("validate", make_validate_rules(
         max_retries=MAX_REFLECT_RETRIES, skills=services.skills,
         semantic_layer=services.semantic_layer))

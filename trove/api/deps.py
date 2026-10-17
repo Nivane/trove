@@ -46,6 +46,16 @@ class NullAuth:
         # 这个实现只为 duck-type 完整 —— 没有存储 = 没有收窄配置。
         return None
 
+    async def get_row_grants(
+        self, user_id: int,
+    ) -> dict[str, dict[str, str]] | None:
+        return None
+
+    async def get_column_denials(
+        self, user_id: int,
+    ) -> dict[str, dict[str, list[str]]] | None:
+        return None
+
     async def record_audit(self, *args, **kwargs) -> None:
         pass
 

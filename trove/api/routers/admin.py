@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.api.schemas import (
+    BlockedColumnsSpec,
+    DataGrantsPut,
     DatasourcesPut,
     SettingsUpdate,
     TokenCreate,
@@ -345,6 +347,185 @@ async def set_topic_grants(
     return {"topic_grants": saved}
 
 
+# ── 行/列授权(收窄:未声明 = 不限制,声明后只会更窄)────────
+#
+# 写入前做**解析级**校验(谓词可解析、单语句、只引用目标表;列存在):
+# 一条存得进去、执行时才炸的谓词会让该用户的所有提问都失败,而管理员看到
+# 的却是一次「保存成功」。catalog 取不到时省略存在性检查,但语法仍然要过
+# sqlglot —— 安全边界不因 catalog 故障而放宽。
+
+
+async def _catalog_and_dialect(
+    request: Request, datasource: str,
+) -> tuple[dict[str, set[str]] | None, str]:
+    """物理 catalog + 方言;不可达 → ``(None, "")``(只跳过存在性检查)。"""
+    dialect = ""
+    try:
+        adapter = await _registry(request).get(datasource)
+        try:
+            dialect = adapter.dialect() or ""
+        except Exception:  # noqa: BLE001 —— 方言只影响解析细节
+            dialect = ""
+        schema = await adapter.get_schema()
+    except Exception:  # noqa: BLE001 —— catalog 是可选校验,不是门
+        return None, dialect
+    return (
+        {t.name.lower(): {c.name.lower() for c in t.columns}
+         for t in schema.tables},
+        dialect,
+    )
+
+
+def _validate_predicate(
+    predicate: str, *, table: str,
+    catalog: dict[str, set[str]] | None, dialect: str,
+) -> str:
+    """谓词校验:单表达式、无子查询/其他表、列属于目标表。"""
+    import sqlglot
+    from sqlglot import exp
+
+    text = predicate.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="行过滤谓词不能为空")
+    try:
+        # 包进 WHERE 再解析:谓词本身不是完整语句,直接 parse 会把
+        # ``district_id = 1`` 解析成莫名的表达式;WHERE 位置保证拿到条件树。
+        statements = sqlglot.parse(f"SELECT 1 WHERE {text}", read=dialect or None)
+    except Exception:  # noqa: BLE001 —— sqlglot 的异常类型随版本漂移
+        raise HTTPException(
+            status_code=400, detail=f"谓词无法解析: {text[:120]}") from None
+    if len(statements) != 1 or statements[0] is None:
+        raise HTTPException(
+            status_code=400, detail="谓词必须是单条表达式(不允许分号分隔的多语句)")
+    where = statements[0].args.get("where")
+    if where is None:
+        raise HTTPException(status_code=400, detail=f"谓词无法解析: {text[:120]}")
+    for node in where.this.walk():
+        if isinstance(node, (exp.Subquery, exp.Select, exp.Table, exp.CTE)):
+            raise HTTPException(
+                status_code=400,
+                detail="谓词只能引用目标表本身的列(不允许子查询/其他表)",
+            )
+        if isinstance(node, exp.Column):
+            qualifier = (node.table or "").lower()
+            if qualifier and qualifier != table.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"谓词引用了其他表: {node.table}",
+                )
+            if catalog is not None:
+                columns = catalog.get(table.lower())
+                if columns is None:
+                    raise HTTPException(status_code=400, detail=f"未知表: {table}")
+                if node.name.lower() not in columns:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"表 {table} 没有列 {node.name}",
+                    )
+    return text
+
+
+def _validate_blocked_columns(
+    specs: list[BlockedColumnsSpec], catalog: dict[str, set[str]] | None,
+) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for spec in specs:
+        table = spec.table.strip()
+        if not table:
+            raise HTTPException(status_code=400, detail="被禁列的表名不能为空")
+        if table in out:
+            raise HTTPException(
+                status_code=400, detail=f"表 {table} 出现了重复的被禁列条目")
+        columns = [str(c).strip() for c in spec.columns if str(c).strip()]
+        if not columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"表 {table} 的被禁列表为空(整组请直接删掉)",
+            )
+        if "*" in columns:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"表 {table}: 不支持用 * 表达「全部列」—— 列名保密不是"
+                    "本能力的目标(名字可见,只保护值),请逐列列出"
+                ),
+            )
+        if catalog is not None:
+            known = catalog.get(table.lower())
+            if known is None:
+                raise HTTPException(status_code=400, detail=f"未知表: {table}")
+            unknown = sorted({c for c in columns if c.lower() not in known})
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"表 {table} 没有列: {', '.join(unknown)}",
+                )
+        out[table] = columns
+    return out
+
+
+@router.get("/admin/users/{user_id}/data-grants")
+async def get_data_grants(
+    user_id: int, request: Request, admin: dict = Depends(require_admin)
+) -> dict:
+    """行过滤 + 被禁列的全量现状(按数据源分组;``None`` → 空字典)。
+
+    ``admin_exempt`` 是**读出来的事实**:admin 主体不绑定行/列 grant
+    (§2.4 决策 4),前端据此显示「管理员豁免」而不渲染一张可编辑表。
+    """
+    user = await _user_or_404(request, user_id)
+    auth = _auth(request)
+    return {
+        "row_filters": await auth.get_row_grants(user_id) or {},
+        "blocked_columns": await auth.get_column_denials(user_id) or {},
+        "admin_exempt": str(user.get("role") or "") == "admin",
+    }
+
+
+@router.put("/admin/users/{user_id}/data-grants")
+async def set_data_grants(
+    user_id: int, body: DataGrantsPut, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """按数据源整体替换行过滤 + 被禁列;回显**读回值**而不是请求体。"""
+    user = await _user_or_404(request, user_id)
+    if str(user.get("role") or "") == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="管理员豁免行/列授权;需要收窄的身份应为 analyst/user 角色",
+        )
+    datasource = body.datasource.strip()
+    if not _registry(request).is_registered(datasource):
+        raise HTTPException(status_code=404, detail="datasource not found")
+
+    catalog, dialect = await _catalog_and_dialect(request, datasource)
+    row_filters: dict[str, str] = {}
+    for spec in body.row_filters:
+        table = spec.table.strip()
+        if not table:
+            raise HTTPException(status_code=400, detail="行过滤的表名不能为空")
+        if table in row_filters:
+            raise HTTPException(
+                status_code=400, detail=f"表 {table} 出现了重复的行过滤条目")
+        row_filters[table] = _validate_predicate(
+            spec.predicate, table=table, catalog=catalog, dialect=dialect)
+    blocked_columns = _validate_blocked_columns(body.blocked_columns, catalog)
+
+    auth = _auth(request)
+    await auth.set_data_grants(user_id, datasource, row_filters, blocked_columns)
+    saved_rows = (await auth.get_row_grants(user_id) or {}).get(datasource, {})
+    saved_cols = (await auth.get_column_denials(user_id) or {}).get(datasource, {})
+    await _audit(request, "admin.data_grant.set", admin, 200, {
+        "user_id": user_id, "datasource": datasource,
+        "row_filters": saved_rows, "blocked_columns": saved_cols,
+    })
+    return {
+        "datasource": datasource,
+        "row_filters": saved_rows,
+        "blocked_columns": saved_cols,
+    }
+
+
 # ── Audit log ────────────────────────────────────────────
 
 
@@ -391,12 +572,17 @@ def _refusal_coverage_notes() -> tuple[str, str]:
     """
     zh = (
         "覆盖范围:经对话链路的拒绝轮(Web/API 聊天、MCP ask_data、定时任务)都进本表。"
+        "行/列级授权的拒绝不是拒绝轮:它们记在授权审计(authz.deny,reason=column/unresolved),"
+        "在审计日志页可查,不在本表。"
         "不含:直接编译调用(POST /v1/semantic/query 不过会话管线)、"
         "未启用鉴权的本地运行(CLI/嵌入无审计库)、评测运行(刻意排除)。"
     )
     en = (
         "Coverage: refusals from the chat pipeline (web/API chat, MCP "
-        "ask_data, scheduled jobs) are recorded here. Not covered: direct "
+        "ask_data, scheduled jobs) are recorded here. Row/column authorization "
+        "denials are not refusal rounds: they are recorded in the authz audit "
+        "(authz.deny, reason=column/unresolved) and are visible on the audit "
+        "log page, not in this table. Not covered: direct "
         "compile calls (POST /v1/semantic/query bypasses the session "
         "pipeline), local runs without auth (CLI/embedded have no audit "
         "store), and evaluation runs (deliberately excluded)."

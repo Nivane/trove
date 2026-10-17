@@ -443,6 +443,36 @@ class TopicGrantsPut(BaseModel):
     topic_grants: dict[str, list[str]] | None = None
 
 
+class RowFilterSpec(BaseModel):
+    """一条行过滤:物理表 + 谓词(``district_id = 1``)。
+
+    表名/列名一律是**物理**名称(SQL 的引用面),不是语义层名 —— scope
+    引擎只做「SQL 表名 ↔ grant 表名」的直接比对。
+    """
+
+    table: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+
+
+class BlockedColumnsSpec(BaseModel):
+    """一组被禁列:列名仍可见(目录/提示词),引用即拒绝、值不返回。"""
+
+    table: str = Field(min_length=1)
+    columns: list[str] = Field(default_factory=list)
+
+
+class DataGrantsPut(BaseModel):
+    """PUT /v1/admin/users/{id}/data-grants body — **按数据源整体替换**。
+
+    未声明的表 = 不收窄;``row_filters`` 为空列表 = 该数据源不再有行过滤
+    (收窄语义下「未声明」与「空」等价)。
+    """
+
+    datasource: str = Field(min_length=1)
+    row_filters: list[RowFilterSpec] = Field(default_factory=list)
+    blocked_columns: list[BlockedColumnsSpec] = Field(default_factory=list)
+
+
 class JobCreate(BaseModel):
     """POST /v1/admin/jobs body — a scheduled question (cron/interval + alert)."""
 

@@ -58,6 +58,7 @@ class JobsService:
         decision_rule: str = "",
         topic: str = "",
         scan_spec: str = "",
+        owner_id: str = "",
     ) -> Job | None:
         # A decision/scan job carries `question` only as a human label — the
         # run never asks it. Still required, so the jobs list stays readable.
@@ -81,6 +82,7 @@ class JobsService:
             decision_rule=decision_rule.strip(),
             topic=topic.strip(),
             scan_spec=scan_spec.strip(),
+            owner_id=(owner_id or "").strip(),
             next_run_at=next_run,
         )
         await self.store.save_job(job)

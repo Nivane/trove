@@ -55,7 +55,11 @@ _CREATE_JOBS = """CREATE TABLE IF NOT EXISTS jobs (
     topic TEXT DEFAULT '',
     -- Non-empty = 主动扫描任务(scan_spec 的 JSON;见 services/scan)。
     -- 优先级:decision_rule > scan_spec > NL 管线。
-    scan_spec TEXT DEFAULT ''
+    scan_spec TEXT DEFAULT '',
+    -- 任务所有者(auth 用户 id 的字符串形式)。定时任务**按所有者身份运行**,
+    -- 不再隐式使用本地 admin —— 否则一个普通用户排的任务会读到该用户自己
+    -- 看不到的行/列。"" = 存量任务或无 auth 部署(后者沿用本机可信身份)。
+    owner_id TEXT NOT NULL DEFAULT ''
 )"""
 
 _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
@@ -132,6 +136,9 @@ class Job:
     #: Non-empty = 主动扫描(``ScanSpec`` 的 JSON)。与 ``decision_rule``
     #: 相同的形式(写时校验、运行期只透传);两者都非空时决策规则优先。
     scan_spec: str = ""
+    #: 创建者(auth 用户 id 的字符串形式)。**追加在末尾**:``_row_to_job``
+    #: 按位置读,老行升级后为 ""(见 runner 的响亮失败分支)。
+    owner_id: str = ""
 
 
 @dataclass
@@ -199,6 +206,7 @@ def _job_to_row(job: Job) -> tuple:
         job.decision_rule,
         job.topic,
         job.scan_spec,
+        job.owner_id,
     )
 
 
@@ -222,6 +230,7 @@ def _row_to_job(row) -> Job:
         decision_rule=row[14] or "",
         topic=row[15] or "",
         scan_spec=row[16] or "",
+        owner_id=row[17] or "",
     )
 
 
@@ -278,6 +287,14 @@ class JobStore:
                 AddColumn("jobs", column, "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
                 dialect=dialect,
             ) or added
+        # owner_id 是 NOT NULL DEFAULT '':老行升级后显式为空,由 runner 在
+        # 启用多用户时响亮失败(绝不静默按本地 admin 跑)。
+        added = await ensure_column(
+            self._backend,
+            AddColumn("jobs", "owner_id", "TEXT NOT NULL DEFAULT ''",
+                      "TEXT NOT NULL DEFAULT ''"),
+            dialect=dialect,
+        ) or added
         # ensure_column is a plain write, not a migration step — the caller commits.
         if added:
             await self._backend.commit()
@@ -293,8 +310,8 @@ class JobStore:
                 """INSERT INTO jobs (id, name, question, datasource, workflow,
                    schedule_type, schedule, enabled, alert_expr, alert_channel,
                    alert_cooldown_min, next_run_at, created_at, updated_at,
-                   decision_rule, topic, scan_spec)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   decision_rule, topic, scan_spec, owner_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, question=excluded.question,
                      datasource=excluded.datasource, workflow=excluded.workflow,
@@ -304,7 +321,7 @@ class JobStore:
                      alert_cooldown_min=excluded.alert_cooldown_min,
                      next_run_at=excluded.next_run_at, updated_at=excluded.updated_at,
                      decision_rule=excluded.decision_rule, topic=excluded.topic,
-                     scan_spec=excluded.scan_spec""",
+                     scan_spec=excluded.scan_spec, owner_id=excluded.owner_id""",
                 _job_to_row(job),
             )
             await conn.commit()

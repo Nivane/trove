@@ -46,6 +46,21 @@
           <span>{{ t('loginExpired', ui.lang) }}</span>
         </p>
 
+        <!-- SSO 回调失败(#error=<封闭码>)一次性说明,重新发起时再点按钮即可 -->
+        <div v-if="ssoMessage" class="login-error" role="alert">
+          <AlertCircle :size="15" aria-hidden="true" />
+          <span>{{ ssoMessage }}</span>
+        </div>
+
+        <!-- OIDC 可用时才出现;状态读不到(老后端 404 / 网络失败)就不显示,
+             绝不挂一个点了必然失败的按钮 -->
+        <template v-if="ssoEnabled">
+          <el-button class="login-sso-btn" :disabled="loading" @click="startSso">
+            {{ t('loginSsoBtn', ui.lang) }}
+          </el-button>
+          <div class="login-or"><span>{{ t('loginSsoOr', ui.lang) }}</span></div>
+        </template>
+
         <el-form @submit.prevent="submit">
           <div class="login-field">
             <span class="login-field-icon"><UserCircle :size="17" /></span>
@@ -130,6 +145,7 @@ import { ElInput } from 'element-plus'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
+import { apiGet } from '../api/http'
 import BrandMark from '../components/brand/BrandMark.vue'
 import StatePanel from '../components/base/StatePanel.vue'
 import { t } from '../i18n'
@@ -180,8 +196,53 @@ const versionTitle = computed(
 // ── 一次性信息条：被踢出过来说明来路 ──────────────────────────────────
 const expiredNotice = ref(route.query.reason === 'expired')
 
+// ── SSO（OIDC）：按钮只在后端明确报告 enabled 时出现 ─────────────────
+/** 后端封闭错误码 → i18n 键；未知码走通用文案（不把原始码甩给用户）。 */
+const SSO_ERROR_KEYS: Record<string, Parameters<typeof t>[0]> = {
+  state_invalid: 'loginSsoErrStateInvalid',
+  exchange_failed: 'loginSsoErrExchangeFailed',
+  conflict: 'loginSsoErrConflict',
+  disabled: 'loginSsoErrDisabled',
+  not_provisioned: 'loginSsoErrNotProvisioned',
+}
+const ssoEnabled = ref(false)
+const ssoErrorCode = ref('')
+
+const ssoMessage = computed(() => {
+  if (!ssoErrorCode.value) return ''
+  const key = SSO_ERROR_KEYS[ssoErrorCode.value] ?? 'loginSsoErrGeneric'
+  return t(key, ui.lang)
+})
+
+async function loadSsoStatus() {
+  try {
+    const body = await apiGet('/v1/auth/oidc/status')
+    ssoEnabled.value = Boolean(body?.enabled)
+  } catch {
+    // 老后端（404）与网络失败同路：不显示入口。这里绝不能 toast ——
+    // 密码登录在这两种情况下都仍然可用。
+    ssoEnabled.value = false
+  }
+}
+
+/** 整页跳转（不是 fetch）：IdP 的授权页不在本应用的 SPA 里。 */
+function startSso() {
+  const next = typeof route.query.next === 'string' ? route.query.next : ''
+  const url = next
+    ? `/v1/auth/oidc/login?next=${encodeURIComponent(next)}`
+    : '/v1/auth/oidc/login'
+  window.location.assign(url)
+}
+
 onMounted(() => {
   usernameEl.value?.focus()
+  // 回调失败码来自 store（fragment 已在守卫/启动时收下并清掉）——展示一次
+  // 之后立刻清空：刷新/回退都不该再看一遍。
+  if (auth.ssoError) {
+    ssoErrorCode.value = auth.ssoError
+    auth.ssoError = ''
+  }
+  void loadSsoStatus()
   if (!expiredNotice.value) return
   // 「一次性」= 展示完即从 URL 抹掉：刷新 / 前进后退都不会再看一遍。
   const query: Record<string, string> = {}
@@ -443,6 +504,31 @@ async function submit() {
 
 .login-btn {
   margin-top: var(--sp-1);
+}
+
+/* SSO 入口：与本地登录同宽的主按钮，下面一条「或使用本地账号」分隔线。
+   分隔线用伪元素画线，文本居中 —— 不引入额外的布局容器。 */
+.login-sso-btn {
+  width: 100%;
+  height: 42px;
+  border-radius: var(--r-md);
+}
+
+.login-or {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+.login-or::before,
+.login-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
 }
 
 @media (max-width: 900px) {

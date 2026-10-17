@@ -382,7 +382,8 @@ MASKING_MODES = frozenset({"partial", "hash", "null"})
 #: 与 ``MASKING_MODES`` 同一条纪律:不 import 那一份 —— ``core`` 不该依赖
 #: ``services``,而且这里要的是「计数器接受哪些标签值」这个**观测契约**:
 #: 服务层新增一种拒绝原因时,这里应该被有意识地改一次。
-AUTHZ_DENY_REASONS = frozenset({"no_principal", "datasource", "table", "unresolved"})
+AUTHZ_DENY_REASONS = frozenset({
+    "no_principal", "datasource", "table", "column", "unresolved"})
 
 
 #: 隔离通道的**值域**(设计稿 §5.2/§5.3):模板渲染 / 工具回喂 —— 值**进入模型

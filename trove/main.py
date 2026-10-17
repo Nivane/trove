@@ -157,6 +157,23 @@ async def create_app_components(
         os.environ.get("TROVE_ADMIN_PASSWORD")
     )
 
+    # ── OIDC SSO(可选;默认关闭)─────────────────────────
+    # 只有显式 enabled 且配置自洽时才装配客户端 —— 配置有问题的部署宁可
+    # 让 SSO 路由 404(与「从未支持」同一形状)并让启动日志说清楚原因,
+    # 也不挂一个每次登录都必然失败的路由。关闭 / 配置无效时为 None。
+    from trove.services.auth.oidc import OidcClient, validate_oidc_config
+
+    oidc = None
+    if config.oidc.enabled:
+        problems = validate_oidc_config(config.oidc)
+        if problems:
+            logger.warning(
+                "OIDC is enabled but unusable — SSO stays off: %s",
+                "; ".join(problems),
+            )
+        else:
+            oidc = OidcClient(config.oidc)
+
     # ── LLM Gateway ───────────────────────────────────────
     # egress_policy 是 lambda 而不是快照:管理端 PUT /admin/settings 就地改
     # 活 config,下一次调用立刻生效。审计回调 best-effort(失败静默),
@@ -539,6 +556,9 @@ async def create_app_components(
         "settings": settings_store,
         "auth": auth,
         "bootstrap_admin_password": bootstrap_password,
+        # OIDC 客户端(未启用 / 配置无效时 None):路由按 `app.state.oidc`
+        # 是否存在决定挂不挂,关闭部署没有新端点。
+        "oidc": oidc,
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
         "config_store": config_store,
@@ -820,6 +840,12 @@ async def async_main_serve(argv: list[str]) -> None:
             await server.serve()
         finally:
             await components["connector_registry"].close_all()
+            oidc = components.get("oidc")
+            if oidc is not None:
+                try:
+                    await oidc.dispose()
+                except Exception:
+                    pass
             jobs = components.get("jobs")
             if jobs is not None:
                 try:

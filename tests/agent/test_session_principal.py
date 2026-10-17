@@ -56,6 +56,16 @@ class _FakeAuth:
         raw = self.topic_grants.get(user_id)
         return None if raw is None else {k: list(v) for k, v in raw.items()}
 
+    async def get_row_grants(self, user_id):
+        if self.explode:
+            raise RuntimeError("app.db is gone")
+        return None
+
+    async def get_column_denials(self, user_id):
+        if self.explode:
+            raise RuntimeError("app.db is gone")
+        return None
+
     async def record_audit(self, action, user=None, **kwargs):
         self.audits.append({"action": action, "user": user, **kwargs})
 

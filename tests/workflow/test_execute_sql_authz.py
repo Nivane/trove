@@ -14,6 +14,7 @@ import pytest
 
 from trove.services.authz.enforcer import Authorizer
 from trove.services.authz.policy import Principal, principal_to_wire
+from trove.services.semantic_layer.models import SemanticDataset, SemanticModel
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.state import WorkflowState
 
@@ -296,3 +297,202 @@ class TestWiring:
         update = await node(_state(principal=_user(frozenset({"other"}))))
         assert "AUTHZ_DATASOURCE" in update["error"]
         assert spy.executed == []
+
+
+# ── 行/列 scope(设计 §2.3)─────────────────────────────────────
+
+
+def _scoped_user(*, row=None, deny=None, grants=frozenset({DEFAULT})) -> dict:
+    return principal_to_wire(Principal(
+        subject="7", grants=grants,
+        row_grants=None if row is None else {DEFAULT: row},
+        column_denials=(
+            None if deny is None
+            else {DEFAULT: {t: frozenset(c) for t, c in deny.items()}}
+        ),
+    ))
+
+
+class TestRowColumnScope:
+    """执行前的行/列改写与拒绝 —— 同一份 principal 既判 A1–A3 也判行/列。
+
+    与 A1–A3 相同的两件事:**拒绝的 SQL 不得执行**,且拒绝是**终态**
+    (不可修正,不喂回生成方)。
+    """
+
+    async def test_row_grant_rewrites_the_executed_sql(self):
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(
+            _state(principal=_scoped_user(row={"students": "class = 'A'"})))
+        assert update["row_count"] == 1
+        expected = ("SELECT COUNT(*) FROM (SELECT * FROM students "
+                    "WHERE (students.class = 'A')) AS students")
+        assert spy.executed == [expected]
+        # 用户看到的 SQL 与授权后的执行面一致
+        assert update["sql"] == expected
+        assert update["data_scope"] == {
+            "row_filters": ["students"], "rewritten": True,
+            "column_policy": False,
+        }
+
+    async def test_no_grants_is_byte_identical(self):
+        """未声明 = 不解析、不改写 —— 存量部署的执行链路上不多一次往返。"""
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(_state(principal=_user()))
+        assert spy.executed == ["SELECT count(*) FROM students"]
+        assert update["sql"] == "SELECT count(*) FROM students"
+        assert update["data_scope"] == {
+            "row_filters": [], "rewritten": False, "column_policy": False,
+        }
+
+    async def test_blocked_column_is_refused_before_execution(self):
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(
+            _state(sql="SELECT id, email FROM students",
+                   principal=_scoped_user(deny={"students": ["email"]})))
+        assert "[ERR:AUTHZ_COLUMN]" in update["error"]
+        assert "email" in update["error"]
+        assert spy.executed == [], "被禁列拒绝的 SQL 不得执行"
+        assert "error_feedback" not in update, "列权限不可修正,不进重试环"
+        assert update["authz_decision"]["reason"] == "column"
+        assert update["authz_decision"]["allowed"] is False
+
+    async def test_star_projection_is_refused_for_tables_with_denials(self):
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(
+            _state(sql="SELECT * FROM students",
+                   principal=_scoped_user(deny={"students": ["email"]})))
+        assert "[ERR:AUTHZ_COLUMN]" in update["error"]
+        assert spy.executed == []
+
+    async def test_count_star_still_passes(self):
+        """``COUNT(*)`` 不带出任何值 —— 星号只在直接投影位置才是拒绝面。"""
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(
+            _state(principal=_scoped_user(deny={"students": ["email"]})))
+        assert update["row_count"] == 1
+        assert update["data_scope"]["column_policy"] is True
+
+    async def test_unparseable_sql_with_grants_is_refused(self):
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer())(
+            _state(sql="SELECT FROM WHERE ((",
+                   principal=_scoped_user(row={"students": "class = 'A'"})))
+        assert "[ERR:AUTHZ_UNRESOLVED]" in update["error"]
+        assert spy.executed == []
+
+    async def test_scope_applies_even_when_authorizer_is_not_wired(self):
+        """少装一个组件不能放宽:主体带着 grant 就必须生效(同
+        ``authorize_and_scope`` 的纪律)。"""
+        spy = _SpyConnectors()
+        update = await _node(spy)(
+            _state(principal=_scoped_user(row={"students": "id > 5"})))
+        assert update["row_count"] == 1
+        assert "WHERE (students.id > 5)" in spy.executed[0]
+
+    async def test_no_principal_without_authorizer_still_executes(self):
+        """未装配强制点 + 无主体 = 不判(嵌入部署,存量行为不变)。"""
+        spy = _SpyConnectors()
+        update = await _node(spy)(_state(principal=None))
+        assert update["row_count"] == 1
+        assert update["data_scope"] is None
+
+    async def test_column_denial_is_counted_on_its_own_reason(self):
+        from trove.core.metrics import render_metrics
+
+        node = _node(_SpyConnectors(), authorizer=_authorizer())
+        await node(_state(sql="SELECT email FROM students",
+                          principal=_scoped_user(deny={"students": ["email"]})))
+        assert 'trove_authz_deny_total{reason="column"}' in render_metrics().decode()
+
+
+class _Layer:
+    """语义层替身:``model()`` 返回一份声明了 row_filter 的模型。"""
+
+    def __init__(self, model):
+        self._model = model
+
+    def model(self):
+        if isinstance(self._model, Exception):
+            raise self._model
+        return self._model
+
+
+class TestDeclaredRLSOnGenerationPath:
+    MODEL = SemanticModel(datasets=[
+        SemanticDataset(name="students", source="students",
+                        row_filter="class = 'A'"),
+    ])
+
+    async def test_generation_path_injects_declared_rls(self):
+        """生成路径此前**从未**注入过声明 RLS(无契约、非快径)——
+        本次由 scope 补上。"""
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer(), semantic_layer=_Layer(self.MODEL))(
+            _state(principal=_user()))
+        assert spy.executed == [
+            "SELECT COUNT(*) FROM (SELECT * FROM students "
+            "WHERE (students.class = 'A')) AS students"]
+        assert update["data_scope"]["row_filters"] == ["students"]
+
+    async def test_compiled_path_does_not_inject_a_second_copy(self):
+        """快径/编译路径已在 SQL 里注入(这里以 ``fast_path`` 声明)→
+        不再补一份。"""
+        spy = _SpyConnectors()
+        update = await _node(spy, authorizer=_authorizer(), semantic_layer=_Layer(self.MODEL))(
+            _state(principal=_user(), fast_path=True))
+        assert spy.executed == ["SELECT count(*) FROM students"]
+        assert update["data_scope"]["rewritten"] is False
+
+    async def test_model_unreadable_falls_back_to_principal_grants(self):
+        """语义层故障 → 不补声明 RLS(回到改造前的覆盖面),但主体 grant 照常
+        生效 —— 故障不能变成放宽。"""
+        spy = _SpyConnectors()
+        update = await _node(
+            spy, authorizer=_authorizer(),
+            semantic_layer=_Layer(RuntimeError("boom")),
+        )(_state(principal=_scoped_user(row={"students": "id > 5"})))
+        assert update["row_count"] == 1
+        assert "WHERE (students.id > 5)" in spy.executed[0]
+        assert "class = 'A'" not in spy.executed[0]
+
+
+class _SpyBudget:
+    """记录估算收到的 SQL;``verdict="degrade"`` 时验证 LIMIT 叠在 scope 之后。"""
+
+    def __init__(self, verdict: str = "allow") -> None:
+        from trove.services.sql.budget import ExecutionBudget
+
+        self.verdict = verdict
+        self.budget = ExecutionBudget()
+        self.estimated: list[str] = []
+
+    async def estimate(self, datasource, sql, dialect, tables):
+        from trove.services.sql.budget import CostEstimate
+
+        self.estimated.append(sql)
+        return CostEstimate(10, None, "explain", False, {})
+
+    def decide(self, est):
+        from trove.services.sql.budget import BudgetDecision
+
+        return BudgetDecision(self.verdict)
+
+
+class TestBudgetSeesScopedSQL:
+    async def test_estimate_gets_the_scoped_sql(self):
+        spy, budget = _SpyConnectors(), _SpyBudget()
+        await _node(spy, authorizer=_authorizer(), budget=budget)(
+            _state(principal=_scoped_user(row={"students": "id > 5"})))
+        assert budget.estimated == spy.executed
+        assert "WHERE (students.id > 5)" in budget.estimated[0]
+
+    async def test_degrade_limit_is_applied_on_top_of_the_scoped_sql(self):
+        """降级加 LIMIT 必须作用在 scope 之后 —— 对原串加 LIMIT 会把行过滤
+        整段丢掉(安全洞,不只是账不对)。"""
+        spy = _SpyConnectors()
+        await _node(spy, authorizer=_authorizer(), budget=_SpyBudget("degrade"))(
+            _state(principal=_scoped_user(row={"students": "id > 5"})))
+        executed = spy.executed[0]
+        assert "WHERE (students.id > 5)" in executed
+        assert "LIMIT" in executed.upper()

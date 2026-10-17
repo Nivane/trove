@@ -14,7 +14,10 @@ endpoint has no answer channel, so a refusal is an HTTP error with no rows in
 the body.
 
 Non-admin users are authorized per-datasource via the standard grant surface
-(``require_datasource``).
+(``require_datasource``), then through the **same execution gate the graph uses**
+(``authz.enforcer.build_authorizer``: A1 principal / A2 datasource / A3 declared
+tables) plus the row/column scope engine. This route used to be the one
+execution surface that bypassed the gate — and the first one a script would hit.
 """
 from __future__ import annotations
 
@@ -30,9 +33,15 @@ from trove.api.deps import (
     require_datasource,
 )
 from trove.api.schemas import SemanticQueryRequest
-from trove.core.metrics import record_masking_applied
+from trove.core.metrics import record_authz_deny, record_masking_applied
+from trove.services.authz.enforcer import build_authorizer
 from trove.services.authz.masking import MaskingError, build_masker
 from trove.services.authz.policy import principal_to_wire
+from trove.services.authz.scope import (
+    ScopeError,
+    authorize_and_scope,
+    has_column_denials,
+)
 from trove.services.semantic_layer.query import (
     SemanticQuery,
     SemanticQueryError,
@@ -87,6 +96,32 @@ def _execute_timeout_s(request: Request) -> float:
     except (TypeError, ValueError):
         ms = 0
     return (ms if ms > 0 else 30_000) / 1000.0
+
+
+async def _audit_deny(
+    request: Request, user: dict, datasource: str, exc: ScopeError,
+) -> None:
+    """行/列拒绝的审计(``authz.deny``,best-effort)。
+
+    details 只记授权面(reason/表名/列名),不含行值 —— 与 ``query.refused``
+    同一条隐私边界。
+    """
+    auth = getattr(request.app.state, "auth", None)
+    if auth is None or not hasattr(auth, "record_audit"):
+        return
+    try:
+        await auth.record_audit(
+            "authz.deny", user=user, method=request.method,
+            path=request.url.path, status=403,
+            details={
+                "reason": exc.reason,
+                "datasource": datasource,
+                "tables": list(exc.tables),
+                "columns": list(exc.columns),
+            },
+        )
+    except Exception:
+        pass
 
 
 @router.get("/semantic/topics")
@@ -144,6 +179,7 @@ async def semantic_query(
     _rate: None = Depends(check_api_rate),
 ) -> dict[str, Any]:
     ds = await require_datasource(request, body.datasource, user)
+    principal = await get_principal(request, user)
     kb = _kb(request)
     if kb is not None:
         try:
@@ -171,12 +207,33 @@ async def semantic_query(
     except SemanticQueryError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    # 执行前授权门(与图管线同一份构造)+ 行/列 scope。编译器已把声明层
+    # ``row_filter`` 注进 SQL(``include_declared_rls=False``),这里只叠加
+    # 主体 grant。拒绝 = 403 且响应体**不含行** —— 端点没有 answer 通道,
+    # 「拒绝了但照样执行」在这里与图里一样都是不可接受的失败模式。
+    try:
+        scoped = authorize_and_scope(
+            compiled["sql"],
+            authorizer=build_authorizer(
+                getattr(request.app.state, "config", None), provider),
+            principal=principal,
+            model=model,
+            datasource=ds,
+            dialect=dialect,
+            default=getattr(_registry(request), "default_name", None),
+            include_declared_rls=False,
+        )
+    except ScopeError as e:
+        record_authz_deny(e.reason)
+        await _audit_deny(request, user, ds, e)
+        raise HTTPException(status_code=403, detail=e.render())
+
     try:
         # 有界执行:超时取消走与图管线同一条解栈(适配器的 CancelledError
         # 分支会发 interrupt/KILL,服务端查询真的停下),然后折成 504 ——
         # 「我们等不下去了」与「语句本身出错」(500)是两回事。
         result = await asyncio.wait_for(
-            _registry(request).execute(compiled["sql"], ds),
+            _registry(request).execute(scoped.sql, ds),
             timeout=_execute_timeout_s(request),
         )
     except asyncio.TimeoutError:
@@ -197,11 +254,10 @@ async def semantic_query(
     )
     if apply_masking is not None:
         try:
-            principal = await get_principal(request, user)
             rows, masking_applied = apply_masking(
                 rows, compiled["columns"],
                 principal=principal_to_wire(principal),
-                sql=compiled["sql"],
+                sql=scoped.sql,
             )
         except MaskingError as e:
             # 没有下层的 answer 通道可承载拒绝(节点会清 rows 并在回答里写
@@ -212,7 +268,14 @@ async def semantic_query(
             record_masking_applied(field, str(mode))
 
     return {
-        "sql": compiled["sql"],
+        # scope 后的 SQL(行过滤是派生表重写)—— 返回编译原串会让调用方
+        # 以为执行的与看到的是同一条,而它们可能差一个 `WHERE`。
+        "sql": scoped.sql,
+        "data_scope": {
+            "row_filters": list(scoped.row_filters),
+            "rewritten": scoped.rewritten,
+            "column_policy": has_column_denials(principal, ds),
+        },
         "columns": compiled["columns"],
         "datasets": compiled["datasets"],
         "version": compiled["version"],
