@@ -270,3 +270,102 @@ def test_load_traces_non_dict_detail_is_ignored(tmp_path):
     ]
     t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q eleven?"]
     assert t.matched_tables_state == "absent"
+
+
+def test_merge_available_is_the_union_of_sources(tmp_path):
+    """I1:高优先级源没观察到的 loop 信号,合并后仍要算数(R19 的同款换源)。"""
+    structured = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q one?", "matched_tables": ["aa"]}]))
+    traces = load_traces(_write_lines(tmp_path, "traces.jsonl", TRACES_LINES[:5]))
+    merged = merge_trajectories(structured, traces)["q one?"]
+    assert merged.error_analysis == "need join fix"
+    assert "error_analysis" in merged.available
+    assert loop_state(merged) == "detected_but_unfixed"
+
+
+def test_merge_empty_matched_tables_is_authoritative():
+    """I1:「观察为空」不是「没观察」—— 高优先级空集不许被低优先级 present 盖掉。"""
+    from trove.eval.trajectory import Trajectory
+    hi = Trajectory(question="q", source="structured", matched_tables=(),
+                    matched_tables_state="empty",
+                    available=frozenset({"matched_tables"}))
+    lo = Trajectory(question="q", source="logs", matched_tables=("aa",),
+                    matched_tables_state="present",
+                    available=frozenset({"matched_tables"}))
+    m = merge_trajectories({"q": hi}, {"q": lo})["q"]
+    assert m.matched_tables_state == "empty"
+    assert m.matched_tables == ()
+
+
+def test_structured_empty_validation_hits_is_observed_empty(tmp_path):
+    """M13:空 hits 列表是「观察为空」,available 仍要记它(否则 loop 判不了)。"""
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q vh?", "matched_tables": ["aa"],
+         "validation_hits": []}]))["q vh?"]
+    assert "validation_hits" in t.available
+    assert loop_state(t) == "never_detected"
+
+
+def test_traces_empty_matched_tables_list_is_empty_not_absent(tmp_path):
+    """m1:traces 的 `[]` 是观察为空;``or ""`` 曾把它洗成 absent。"""
+    lines = [
+        {"run_id": "r12", "kind": "run", "question": "q twelve?", "ts": 1.0},
+        {"run_id": "r12", "kind": "step", "node": "schema_linking",
+         "detail": {"matched_tables": []}},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q twelve?"]
+    assert t.matched_tables_state == "empty"
+
+
+def test_traces_missing_rollback_does_not_shadow_lower_source(tmp_path):
+    """m2:analyze_error 没写 rollback 时,不能声称观察过、拿空值遮蔽低优先级源。"""
+    from trove.eval.trajectory import Trajectory
+    traces = load_traces(_write_lines(tmp_path, "traces.jsonl", [
+        {"run_id": "r13", "kind": "run", "question": "q thirteen?", "ts": 1.0},
+        {"run_id": "r13", "kind": "step", "node": "analyze_error",
+         "detail": {"error": "boom"}}]))
+    lo = Trajectory(question="q thirteen?", source="logs",
+                    rollback_target="gen_sql",
+                    available=frozenset({"rollback_target"}))
+    m = merge_trajectories(traces, {"q thirteen?": lo})["q thirteen?"]
+    assert m.rollback_target == "gen_sql"
+    assert "rollback_target" in m.available
+    assert m.error_analysis == "boom"
+
+
+def test_structured_bad_matched_tables_is_loud_with_line(tmp_path):
+    """m3:非列表的 matched_tables 要响亮失败并带行号,不是裸 TypeError。"""
+    import pytest
+    p = _write_lines(tmp_path, "results.jsonl",
+                     [{"question": "q bad?", "matched_tables": 42}])
+    with pytest.raises(ValueError, match=r":1 "):
+        load_structured(p)
+
+
+def test_structured_null_matched_tables_is_absent(tmp_path):
+    """m4:null 是没有观察,不是「观察为空」。"""
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q null?", "matched_tables": None}]))["q null?"]
+    assert t.matched_tables_state == "absent"
+
+
+def test_structured_stringified_empty_hits_is_not_a_hit(tmp_path):
+    """m4:字符串 ``"[]"`` 再 dumps 一次会变成非空字面量,不许读成命中过。"""
+    t = load_structured(_write_lines(tmp_path, "results.jsonl", [
+        {"question": "q str?", "matched_tables": ["aa"],
+         "validation_hits": "[]"}]))["q str?"]
+    assert "validation_hits" in t.available
+    assert loop_state(t) == "never_detected"
+
+
+def test_traces_bad_detail_does_not_erase_good_one(tmp_path):
+    """m5:同一节点先有好 detail、后来坏值 —— 坏值丢弃,不抹掉好值。"""
+    lines = [
+        {"run_id": "r14", "kind": "run", "question": "q fourteen?", "ts": 1.0},
+        {"run_id": "r14", "kind": "step", "node": "schema_linking",
+         "detail": {"matched_tables": "['aa']"}},
+        {"run_id": "r14", "kind": "step", "node": "schema_linking",
+         "detail": "bad"},
+    ]
+    t = load_traces(_write_lines(tmp_path, "traces.jsonl", lines))["q fourteen?"]
+    assert t.matched_tables == ("aa",)

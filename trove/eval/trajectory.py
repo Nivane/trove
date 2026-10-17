@@ -173,7 +173,11 @@ def _trajectory_from_traces_run(run: dict) -> Trajectory:
     sl = steps.get("schema_linking") or {}
     mt_state, mt = "absent", ()
     if "matched_tables" in sl:
-        parsed = _parse_table_list(str(sl.get("matched_tables") or ""))
+        raw_mt = sl.get("matched_tables")
+        # 空列表 [] 也是「观察为空」,不能被 ``or ""`` 洗成 absent(m1)。
+        parsed = _parse_table_list(
+            str(raw_mt) if isinstance(raw_mt, (list, tuple))
+            else str(raw_mt or ""))
         if parsed is None:
             mt_state = "absent"
         elif parsed:
@@ -209,8 +213,13 @@ def _trajectory_from_traces_run(run: dict) -> Trajectory:
         available.add("matched_tables")
     if plan_state != "absent":
         available.add("plan")
-    if aerr:
-        available.update({"error_analysis", "rollback_target"})
+    # available 只认**实际在场的键**(m2):analyze_error 存在但没写 rollback 时
+    # 不能声称「rollback_target 已被观察」—— 否则高优先级源的空值会遮蔽低
+    # 优先级源的真实值,守卫又变成与自己的证据意见相反(R19 同款)。
+    if "analysis" in aerr or "error" in aerr:
+        available.add("error_analysis")
+    if "rollback" in aerr:
+        available.add("rollback_target")
     if val:
         available.add("validation_hits")
     if retry is not None:
@@ -259,7 +268,12 @@ def load_traces(path: str | Path) -> dict[str, Trajectory]:
             # R41:非对象 detail 按坏值丢弃(旁路记录 best-effort;字符串 detail
             # 会在下游 ``sl.get`` 处把整份 traces 读取打断)。
             det = e.get("detail")
-            run["steps"][str(e.get("node") or "")] = det if isinstance(det, dict) else {}
+            node = str(e.get("node") or "")
+            if isinstance(det, dict):
+                run["steps"][node] = det
+            else:
+                # 坏值丢弃 ≠ 抹掉同一节点先前的完好 detail(m5)。
+                run["steps"].setdefault(node, {})
         elif kind == "finish":
             runs.setdefault(rid, {"question": "", "steps": {}})
     out: dict[str, Trajectory] = {}
@@ -306,9 +320,16 @@ def load_structured(path: str | Path) -> dict[str, Trajectory]:
                 else:
                     mt_state = "present" if parsed else "empty"
                     mt = parsed
+            elif raw_mt is None:
+                pass                      # null = 无观察,不猜成「观察为空」
             else:
-                parsed = tuple(str(x).strip().lower()
-                               for x in (raw_mt or [])
+                try:
+                    items = list(raw_mt)
+                except TypeError:
+                    raise ValueError(
+                        f"{path}:{lineno} matched_tables 不是列表: {raw_mt!r}"
+                    ) from None
+                parsed = tuple(str(x).strip().lower() for x in items
                                if str(x).strip())
                 mt_state = "present" if parsed else "empty"
                 mt = parsed
@@ -335,7 +356,11 @@ def load_structured(path: str | Path) -> dict[str, Trajectory]:
             matched_tables=mt, matched_tables_state=mt_state,
             plan_facts=plan_facts,
             plan_text_state="present" if plan_facts else "absent",
-            validation_hits_raw=json.dumps(vh, ensure_ascii=False) if vh else "",
+            # 已是字符串的 hits 原样保留:``"[]"`` 再 json.dumps 一次会变成非空
+            # 字面量,loop_state 会把它读成「命中过」(m4)。
+            validation_hits_raw=(
+                vh if isinstance(vh, str) else json.dumps(vh, ensure_ascii=False)
+            ) if vh else "",
             rollback_target=str(d.get("rollback_target") or ""),
             retry_count=retry, available=frozenset(available),
         )
@@ -357,7 +382,7 @@ def merge_trajectories(*maps: dict[str, Trajectory]) -> dict[str, Trajectory]:
     for q in questions:
         cands = [m[q] for m in maps if q in m]
 
-        def pick(field: str, absent: str = "absent"):
+        def pick(field: str):
             for t in cands:
                 if field == "matched_tables":
                     if t.matched_tables_state != "absent":
@@ -374,10 +399,10 @@ def merge_trajectories(*maps: dict[str, Trajectory]) -> dict[str, Trajectory]:
 
         mt_src = pick("matched_tables")
         plan_src = pick("plan")
-        err_src = pick("error_analysis", "")
-        rb_src = pick("rollback_target", "")
-        rc_src = pick("retry_count", "")
-        vh_src = pick("validation_hits", "")
+        err_src = pick("error_analysis")
+        rb_src = pick("rollback_target")
+        rc_src = pick("retry_count")
+        vh_src = pick("validation_hits")
         available: set[str] = set()
         for t in cands:
             available |= set(t.available)
