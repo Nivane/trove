@@ -226,10 +226,10 @@ flowchart LR
           <tr><td><code>--datasource demo</code></td><td>只体检一个数据源</td></tr>
           <tr><td><code>--json</code></td><td>机器可读整份报告（CI 消费）</td></tr>
           <tr><td><code>--strict</code></td><td>警告也视为失败（退出码 1）</td></tr>
-          <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong>——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1384">service.py:1384 <span class="ref-line">run_validate</span></a>）</td></tr>
+          <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong> + <strong>声明验证</strong>（自然键唯一 / 关系基数 / <code>fan_out: dedup</code> 前提，对库只读探测，四态裁决——违例即硬错误）——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1431">service.py:1431 <span class="ref-line">run_validate</span></a>）</td></tr>
           <tr><td><code>--run</code></td><td><strong>装前试跑</strong>：用本机语料对已确认资产做「装 / 不装」双态消融（零 LLM；语料见 <code>--fixtures</code> / <code>--episodes</code>）</td></tr>
           <tr><td><code>--impact &lt;包|目录&gt;</code></td><td><strong>影响面回放</strong>：候选资产集（待导入的包，或直接的资产目录）装上前后，同一份语料的判定差分；与 <code>--run</code> 互斥</td></tr>
-          <tr><td><code>--packs</code></td><td><strong>反作弊检查</strong>：KB 示例 SQL 与本地 gold 集（<code>gold.sql</code>）的相似度——命中只出警告，绝不自动拒载或改写 KB；没有 gold 集时如实报 <code>skipped</code>（未检查 ≠ 检查过，<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1312">service.py:1312 <span class="ref-line">_check_packs</span></a>）</td></tr>
+          <tr><td><code>--packs</code></td><td><strong>反作弊检查</strong>：KB 示例 SQL 与本地 gold 集（<code>gold.sql</code>）的相似度——命中只出警告，绝不自动拒载或改写 KB；没有 gold 集时如实报 <code>skipped</code>（未检查 ≠ 检查过，<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1359">service.py:1359 <span class="ref-line">_check_packs</span></a>）</td></tr>
         </tbody>
       </table>
     </div>
@@ -239,7 +239,7 @@ flowchart LR
     <p>
       <code>--run</code> 拿<strong>本机语料</strong>（默认读 <code>.trove/kb/&lt;ds&gt;/fixtures.yml</code>；
       <code>--episodes</code> 追加本机历史问答）把已确认资产「装 / 不装」两种装配各判一遍，
-      差分出这批资产的净效果（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1523">service.py:1523 <span class="ref-line">run_validate_with_dryrun</span></a>）。
+      差分出这批资产的净效果（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1573">service.py:1573 <span class="ref-line">run_validate_with_dryrun</span></a>）。
       两个细节：
     </p>
 
@@ -278,7 +278,7 @@ flowchart LR
       <li><strong>与 <code>--run</code> 互斥。</strong>两条路问的是不同的问题（装/不装 vs 现状/现状+候选），
       同时给两个是<strong>用法错误</strong>（stderr + 退出码 2），不是「两个都跑一遍」。
       两条路各自的结论与静态检查取更严的一支
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1600">service.py:1600 <span class="ref-line">combined_exit_code</span></a>）——
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L1650">service.py:1650 <span class="ref-line">combined_exit_code</span></a>）——
       静态干净但试跑没跑成，「这次没验成」不许被静态的 0 盖过去。</li>
     </ul>
 
@@ -286,7 +286,7 @@ flowchart LR
       同一套校验在 REPL 里是
       <code>/validate [--live] [--run [--episodes]] [--impact &lt;包|目录&gt;]</code>
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L157">validate_cmds.py:157 <span class="ref-line">/validate</span></a>，不出退出码——结论落在输出末尾的「退出码 N」一行）。
-      技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L507">service.py:507 <span class="ref-line">_check_skills</span></a>）——
+      技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L554">service.py:554 <span class="ref-line">_check_skills</span></a>）——
       包括 validator 与 guard 两型技能的断言规格（结果域 / SQL 域两套闭集校验，
       见<a href="decision-engine.html">判定内核</a>）。
     </p>
@@ -587,7 +587,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: cdf460d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

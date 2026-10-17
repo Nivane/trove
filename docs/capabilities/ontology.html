@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 本体（对象层）：把数据集声明成业务对象、给关系起业务名、把维度链声明成层级——三块声明长在语义模型里，一次声明全链消费；对象图是它的只读投影，/admin/ontology 只读且三态诚实。">
+<meta name="description" content="Trove 本体（对象层）：把数据集声明成业务对象、给关系起业务名、把维度链声明成层级——三块声明长在语义模型里，一次声明全链消费；对象图是它的只读投影，/admin/ontology 只读且三态诚实，trove validate --live 对库验证声明的真假。">
 <title>本体 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -436,6 +436,79 @@ flowchart LR
       草稿是用来审的材料，不是用来一键覆盖现有声明的开关。
     </p>
 
+    <h2 id="verify">声明怎么被验证</h2>
+
+    <p>
+      写盘前的 lint 证的是<strong>声明自洽</strong>——自然键引用的字段在这份模型里存在、层级不重名；
+      证不了<strong>声明为真</strong>——自然键在库里到底重不重复、标着 1:N 的边「一」侧到底唯不唯一，
+      这两件事只有连上库才知道。而它们恰恰是准确性杠杆的承重墙：键锚定与骨架保真保的是
+      「自然键唯一」这个前提，fan-out 拦截读的正是基数声明。声明一旦不成立，守卫不会报错——
+      它只会安静地朝反方向使劲：该拦行倍增的地方，自己变成行倍增。
+    </p>
+
+    <p>
+      所以 <code>trove validate --live</code> 带了第三族检查：<strong>对库探测</strong>——
+      每条声明翻成一条只读 <code>COUNT</code>，零 LLM、纯确定性。裁决是四态闭集，没有一态叫「静默通过」：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>裁决</th><th>含义</th><th>报告面</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>verified</code></td>
+            <td>声明在今天的库上成立（消息里带计数）</td>
+            <td>只进计数（<code>decl_verified</code>），不出条目</td>
+          </tr>
+          <tr>
+            <td><code>violated</code></td>
+            <td>声明为假</td>
+            <td><strong>硬错误</strong>，退出码 1（与 <code>kb.enums</code> 同款：声明与库不一致）</td>
+          </tr>
+          <tr>
+            <td><code>advisory</code></td>
+            <td>成立，但数据里有值得看一眼的东西（键含 NULL、没有可折叠的重复行）</td>
+            <td>warning</td>
+          </tr>
+          <tr>
+            <td><code>unverifiable</code></td>
+            <td>探测跑不了（表不在、方言不支持）——<strong>判不了 ≠ 通过</strong></td>
+            <td>warning，绝不折算成 verified</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>三类探测各自证什么：</p>
+
+    <ul>
+      <li><strong>键唯一</strong>——实体自然键（未声明实体则退回主键）：非空键行去重后变少就是违例。这是键锚定与骨架保真的前提被对库核实；</li>
+      <li><strong>关系基数</strong>——many→one 的全部含义就是「to 侧唯一」；1:1 加验 from 侧；M:N 不主张唯一（编译器本就不许直接连），它唯一可证伪的面是豁免；</li>
+      <li><strong>fan_out 前提</strong>——<code>dedup</code> 豁免只在「重复是整行精确重复」时成立：<code>DISTINCT *</code> 折叠后每键仍多于一行即违例（同键不同行，去重去不掉，豁免看着放行、行倍增照旧）；库上根本没有重复行只是 advisory——豁免没在做事。</li>
+    </ul>
+
+    <p>
+      两个细节是承重的。其一，<strong>NULL 语义</strong>：SQL 唯一语义对 NULL 不去重，
+      混口径的计数（<code>COUNT(*)</code> 含 NULL、<code>COUNT(DISTINCT …)</code> 排除 NULL）
+      会把两行 NULL 键读成「重复键违例」——探测在非空行上判唯一，NULL 单列成 advisory，不制造假警报。
+      其二，<strong>只探测声明过的东西</strong>：未声明的键与边没有可证伪的声明，它们进同一份报告的
+      <strong>覆盖率</strong>节——哪些数据集没实体、哪些对象没键、哪几个数据集之间一条边都没有——
+      advisory、零查询；覆盖率是进度指标，不是可用性开关。
+    </p>
+
+    <p>
+      这一族只在 <code>--live</code> 下存在：不带 <code>--live</code> 既不连库、输出也逐字节不变。
+      方言不支持反引号引用标识符时（如 Postgres）给一条诚实的「跳过」，而不是逐条报 SQL 错刷屏——
+      与 <code>kb.columns</code> 的 MySQL-only 闸同款。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L91">verify.py:91 <span class="ref-line">verify_declarations</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L239">verify.py:239 <span class="ref-line">_probe_dedup</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L282">verify.py:282 <span class="ref-line">_coverage</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L336">service.py:336 <span class="ref-line">_live_semantic_checks</span></a>
+    </p>
+
     <h2 id="limits">诚实边界</h2>
 
     <div class="table-wrap">
@@ -462,6 +535,10 @@ flowchart LR
             <td>图上不编数据</td>
             <td>对象图不编实例数据、不编基数、不编名字：图上没有的东西就是没声明的东西</td>
           </tr>
+          <tr>
+            <td>验证是快照，不是承诺</td>
+            <td>对库探测证的是<strong>今天这份数据</strong>：自然键唯一、基数成立，都是探测那一刻为真。数据演进之后可能不再成立，重跑 <code>trove validate --live</code> 才知道。验证只报不改——违例不会被自动修正，也不阻断查询（它报告的是前提，不是运行时开关）；<code>fan_out: bridge:*</code> 这类保留豁免还会被标成不生效的死配置</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -485,7 +562,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 287cd52</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: cdf460d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

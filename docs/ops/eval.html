@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、四类产物的消费方式、退出码语义，以及检索/RRF 评测脚本。">
+<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、四类产物的消费方式、退出码语义、回顾归因（历史失败 vs 声明层），以及检索/RRF 评测脚本。">
 <title>评测与回归门 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -554,6 +554,89 @@ uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L27">offline_eval.py:27 <span class="ref-line">DEFAULT_OUTPUT</span></a>
     </p>
 
+    <h2 id="retro">回顾归因：历史失败能解释多少</h2>
+
+    <p>
+      跑完一次端到端总剩一批失败。动手改之前先答一个问题：
+      <strong>这些失败里，有多少是语义模型（声明层）的缺口，多少是生成端自己的事？</strong>
+      <code>scripts/eval_attribution.py</code> 把历史失败条目（<code>failures.jsonl</code>
+      自带 gold SQL）对到当下的 <code>semantics.yml</code> 上，零 LLM 给一张分桶表——
+      它是「要不要继续在声明层投入、要不要花钱跑效果 A/B」的前置判据。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>步</th><th>问什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>gold 路径覆盖</strong></td><td>这题本来该走的表与连接，有多少落在声明内（表是不是数据集、连接是不是声明的边）</td></tr>
+          <tr><td><strong>前提真假</strong></td><td>声明过的东西对库证伪——直接复用 <code>verify.py</code> 的三类探测（键唯一、关系「一」侧唯一、<code>fan_out: dedup</code> 前提）</td></tr>
+          <tr><td><strong>实际走过的路</strong></td><td>生成的那条 SQL 有没有走未声明 / 被拒 / 假前提的边（观察量，不进桶）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>归因桶（闭集、互斥，先命中的先算）</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>假前提·实际走过</td><td>声明了一件事、库上不成立，而生成的 SQL 正走过它——声明直接造成错误</td></tr>
+          <tr><td>假前提·需要走</td><td>gold 需要的边 / 键已被证伪——声明既没帮上，也拦不住</td></tr>
+          <tr><td>声明拦路（连接被拒）</td><td>gold 要走的边编译期走不通（M:N 无豁免、<code>bridge:</code> 未实现）</td></tr>
+          <tr><td>未声明·需要走</td><td>gold 用了没声明为数据集的表，或没声明的连接</td></tr>
+          <tr><td>判不了</td><td>SQL 解析失败、连接复原不到基表，或声明的前提本次没实测</td></tr>
+          <tr><td>前提为真（声明层解释不了）</td><td>gold 需要的路径全在声明内、前提实测成立——这批失败<strong>得去别处找原因</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">四条诚实边界</span>
+      <div>
+        <p><strong>判不了 ≠ 通过</strong>：不给 <code>--dsn</code> 就不连库，声明过的前提一律进「判不了」；连了库但探测失败（<code>unverifiable</code>）同理。</p>
+        <p><strong>派生表只认穿透列</strong>：<code>JOIN (SELECT a FROM t) AS T2</code> 能复原成 <code>t</code>；<code>SUM(x) AS total</code> 这类输出列不给映射——猜错会把「解析不到」变成一条错指控。</p>
+        <p><strong>它是反事实诊断</strong>：拿今天的声明去问过去的失败。失败记录早于 KB 改动时，报告带 <code>kb_changed_since</code> 与一行 ⚠——回答的是「今天的声明遇到这些题会怎样」，不是「当时为什么错」。</p>
+        <p><strong>它不主张因果</strong>：分桶是描述而非效果测量；声明层的收益仍要配对 A/B 才算数。</p>
+      </div>
+    </div>
+
+    <pre><code>uv run python scripts/eval_attribution.py \
+  --failures .trove/eval/failures.jsonl \
+  --kb-dir .trove/kb/financial \
+  --dsn mysql://root:root@127.0.0.1:3306/financial
+uv run python scripts/eval_attribution.py ... --kb-rev HEAD~3   # 用历史版本的 KB 归因
+uv run python scripts/eval_attribution.py ... --strict          # 有假前提/拦路 → 退出码 1
+uv run python scripts/eval_attribution.py ... --json --out r.json</code></pre>
+
+    <p>
+      退出码 0 正常 · 1 <code>--strict</code> 下有「假前提」或「声明拦路」 · 2 用法或输入错误。
+      <code>--kb-rev</code> 从 git 里取那一版 <code>semantics.yml</code>（失败记录早于 KB 入库时，
+      这是能拿到的最接近「当时」的版本）。报告里的 DSN 口令一律打码。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">一次真实归因（2026-10，financial）</span>
+      <div>
+        <p>97 条历史失败、24 道不同问题：<strong>100% 落在「前提为真」</strong>——
+        8 条声明的边与 8 个键全部实测成立，180 条 gold 连接等式无一走出声明之外，
+        没有一条 pred 走了未声明或被拒的边；失败签名 <code>mismatch (pred # rows, gold # rows)</code> 占 86 条，
+        另有 22 题的 pred 根本没读 gold 用到的表。</p>
+        <p>也就是说：<strong>这批失败不是声明层造成的</strong>。负结果同样是结论——
+        它把下一步的投入指向生成与消费端，而不是继续补声明。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/attribution.py#L64">attribution.py:64 <span class="ref-line">BUCKETS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/attribution.py#L438">attribution.py:438 <span class="ref-line">classify_join</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/attribution.py#L617">attribution.py:617 <span class="ref-line">attribute_row</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_attribution.py#L44">eval_attribution.py:44 <span class="ref-line">STRICT_BUCKETS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_attribution.py#L113">eval_attribution.py:113 <span class="ref-line">_kb_provenance</span></a>
+    </p>
+
     <h2 id="next">继续读</h2>
 
     <div class="table-wrap">
@@ -563,6 +646,7 @@ uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明
         </thead>
         <tbody>
           <tr><td>检索指标的具体含义</td><td><a href="../capabilities/retrieval.html#eval">混合检索 · 评测</a></td></tr>
+          <tr><td>被归因的那一层（语义模型 / 声明）</td><td><a href="../capabilities/ontology.html">本体</a></td></tr>
           <tr><td>失败轨迹怎么回放</td><td><a href="observability.html">可观测性</a></td></tr>
           <tr><td>另一类离线门（漂移）</td><td><a href="drift.html">数据漂移治理</a></td></tr>
           <tr><td>eval 段的配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
@@ -573,7 +657,7 @@ uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 7c6df87</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 59c8cd9</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
