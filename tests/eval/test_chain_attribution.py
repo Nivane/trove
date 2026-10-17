@@ -776,3 +776,99 @@ print(render_report(rep))
         assert r.returncode == 0, r.stderr
         outs.add(r.stdout)
     assert len(outs) == 1, f"跨进程不一致: {outs}"
+
+
+def _aggregate_rows_and_trajs():
+    from trove.eval.chain import plan_facts_from_json
+    rows = [
+        FailureRow(question="q1",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q1",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q2",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i"
+                            " JOIN cc c ON c.i = a.i", verdict="MISMATCH"),
+        FailureRow(question="q3",
+                   gold_sql="SELECT a.x FROM aa a WHERE a.gender = 'F'",
+                   pred_sql="SELECT a.x FROM aa a WHERE a.gender = 'f'",
+                   verdict="MISMATCH"),
+        FailureRow(question="q4",
+                   gold_sql="SELECT a.x FROM aa a ORDER BY a.x DESC LIMIT 1",
+                   pred_sql="SELECT MAX(a.x) FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q5", gold_sql="SELECT a.x FROM aa a", pred_sql="",
+                   verdict="REFUSED"),
+    ]
+    trajs = {"q1": Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i",
+            "conditions": [], "aggregation": "none", "answer_columns": ["x"]}),
+        plan_text_state="present", plan_truncated=True,
+        validation_hits_raw='[{"rule": "f1_shape"}]',
+        available=frozenset({"matched_tables", "plan", "validation_hits"}))}
+    return rows, trajs
+
+
+def test_report_aggregate_blocks_positive():
+    rows, trajs = _aggregate_rows_and_trajs()
+    rep = build_report(rows, trajs, dialect="mysql", meta={"failures": "x"})
+    c = rep["counts"]
+    assert c["rows"] == 6 and c["questions"] == 5
+    assert c["l1"] == {"no_sql": 1, "table_set": 3, "filter_diff": 1, "agg_diff": 1}
+    assert c["l1_by_question"] == {"no_sql": 1, "table_set": 2,
+                                   "filter_diff": 1, "agg_diff": 1}
+    assert c["l2"] == {"linking_missed_table": 2, "undecidable": 4}
+    assert c["l2_by_question"] == {"linking_missed_table": 1, "undecidable": 4}
+    assert c["loop"] == {"detected_but_unfixed": 2, "undecidable": 4}
+    assert c["loop_by_l2"] == {
+        "linking_missed_table": {"detected_but_unfixed": 2},
+        "undecidable": {"undecidable": 4}}
+    cov = rep["coverage"]
+    assert cov["l1_judged_rows"] == 6
+    assert cov["l2_judged_rows"] == 2
+    assert cov["plan_truncated_rows"] == 2
+    assert cov["fidelity"] == {
+        "matched_tables": {"present": 2, "empty": 0, "absent": 4},
+        "plan": {"present": 2, "empty": 0, "absent": 4}}
+    assert rep["observations"] == {
+        "case_only_value_diff": 1, "extra_table_read": 1,
+        "extreme_style_mismatch": 1, "needed_table_never_read": 2}
+    l1s, l2s = rep["samples"]["l1"], rep["samples"]["l2"]
+    assert set(l1s) == {"table_set", "filter_diff", "agg_diff", "no_sql"}
+    assert {s["question"] for s in l1s["table_set"]} == {"q1", "q2"}
+    assert len(l1s["table_set"]) >= 2
+    assert set(l2s) == {"linking_missed_table", "undecidable"}
+    assert all(s["l2_reason"] for s in l2s["linking_missed_table"])
+    assert {s["question"] for s in l2s["undecidable"]} == {"q2", "q3", "q4"}
+    assert all({"question", "reason", "l2_reason"} <= set(s)
+               for bag in (l1s, l2s) for b in bag.values() for s in b)
+    text = render_report(rep)
+    assert "L1 可判行=6" in text
+    assert "L2 可判行=2" in text
+    assert "plan 被截断行=2" in text
+    assert "needed_table_never_read: 2" in text
+    assert "[l2:linking_missed_table]" in text
+
+
+def test_refused_row_does_not_use_residual_pred_for_link_attribution():
+    """REFUSED 行的 pred 是残留:拿它当「已读表」会把 linking_missed_table 压成 gen_ignored_plan。"""
+    from trove.eval.chain import plan_facts_from_json
+    row = FailureRow(
+        question="q1",
+        gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+        pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",  # 上一轮残留
+        verdict="REFUSED")
+    traj = Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i",
+            "conditions": [], "aggregation": "none", "answer_columns": ["x"]}),
+        plan_text_state="present")
+    f = attribute_row(row, traj)
+    assert f.l1.bucket == "no_sql"
+    assert f.l2 == "linking_missed_table", f.l2_reason

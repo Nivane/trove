@@ -997,7 +997,11 @@ def attribute_row(row: FailureRow, traj: Trajectory | None, *,
                 had_sql=bool(row.pred_sql.strip()))
     l2, reason = "undecidable", "gold 不可判" if (gold is None or not gold.ok) else "无轨迹"
     if gold is not None and gold.ok:
-        l2, reason = responsibility(gold=gold, pred=pred, l1=l1, traj=traj)
+        # no_sql 行的 pred_sql 是上一轮残留(failures.jsonl 原样留档的口径):
+        # 拿它当「已读表」会把 linking_missed_table 压成 gen_ignored_plan。
+        l2, reason = responsibility(
+            gold=gold, pred=None if l1.bucket == "no_sql" else pred,
+            l1=l1, traj=traj)
     return ChainFinding(
         question=row.question, l1=l1, l2=l2, l2_reason=reason,
         loop=loop_state(traj), source=(traj.source if traj else ""),
@@ -1123,7 +1127,7 @@ def render_report(report: dict) -> str:
         lines.append(f"  {b:28s} {detail}")
     lines.append("== 覆盖 ==")
     cov = report["coverage"]
-    lines.append(f"  L1 可判行={cov['l1_judged_rows']} · L2 有轨迹行={cov['l2_judged_rows']}"
+    lines.append(f"  L1 可判行={cov['l1_judged_rows']} · L2 可判行={cov['l2_judged_rows']}"
                  f" · plan 被截断行={cov['plan_truncated_rows']}")
     for field, m in cov["fidelity"].items():
         lines.append(f"  fidelity[{field}] " +
