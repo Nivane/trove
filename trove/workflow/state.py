@@ -116,6 +116,15 @@ class WorkflowState(BaseModel):
     # None = 这一步**没跑**(没有结果集 / 装配关掉),不是「跑了、什么都没改」。
     masking_applied: dict[str, Any] | None = None
 
+    # LLM 数据出境治理的 run 级汇总(services/authz/egress):
+    # ``{tool: {"fields": {字段名: 模式}, "rows": n, "values": n, "withheld": n}}``。
+    #
+    # **只记字段名与计数,不记值** —— 与 ``masking.applied`` 同一条纪律。
+    # None = 这一问没有发生任何出境脱敏(未声明 ``mask`` / 无工具回喂)。
+    # 汇总跨修正轮合并(每个注册表各记一轮),session 在 run 结束 best-effort
+    # 写一条 ``llm.egress`` 审计,受 ``config.egress.audit`` 门控。
+    egress_report: dict[str, Any] | None = None
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

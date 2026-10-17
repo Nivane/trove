@@ -1067,6 +1067,7 @@ def build_sql_registry(
     budget: Any = None,
     profiles: Any = None,
     semantic_provider: Any = None,
+    egress: Any = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -1110,13 +1111,18 @@ def build_sql_registry(
             看到结构违规、当场修正。读不出 / 无声明 → None,check_result
             整段静默。注册表生命周期 = 一次生成轮,上下文在这里取一次
             快照(一轮内声明不会变;跨轮的现读由每轮重建注册表保证)。
+        egress: 可选的出境脱敏口(``services/authz/egress.EgressRedactor``)。
+            装配后工具观测在回喂模型前按 ``mask`` 声明脱敏,汇总记在
+            ``registry.egress_report``;None = 未接(测试直调逐字节不变)。
     """
     from trove.llm.agent_loop import ToolRegistry
 
     # 对象约束上下文:一次生成轮取一次快照(never-raise,见 object_check)。
     object_ctx = context_from_provider(semantic_provider)
 
-    registry = ToolRegistry(finish=finish, allowed_roles=roles)
+    registry = ToolRegistry(
+        finish=finish, allowed_roles=roles, egress_redactor=egress,
+    )
     registry.check_hits = []
     # check_result **通过**的次数。今天通过时 hits 为空,配合 graphs 的
     # `if registry.check_hits:`,跑完整条规则链且全过这件事零痕迹 —— 而

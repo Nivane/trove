@@ -158,7 +158,29 @@ async def create_app_components(
     )
 
     # ── LLM Gateway ───────────────────────────────────────
-    llm_gateway = LLMGateway(providers=config.providers)
+    # egress_policy 是 lambda 而不是快照:管理端 PUT /admin/settings 就地改
+    # 活 config,下一次调用立刻生效。审计回调 best-effort(失败静默),
+    # 且只记 provider/model,不记 prompt。
+    def _audit_egress_denied(provider: str, model: str) -> None:
+        async def _write() -> None:
+            try:
+                await auth.record_audit(
+                    action="llm.egress_denied",
+                    details={"provider": provider, "model": model},
+                )
+            except Exception:
+                pass
+
+        try:
+            asyncio.get_running_loop().create_task(_write())
+        except RuntimeError:
+            pass
+
+    llm_gateway = LLMGateway(
+        providers=config.providers,
+        egress_policy=lambda: config.egress,
+        on_egress_denied=_audit_egress_denied,
+    )
 
     # ── Datasource ────────────────────────────────────────
     from trove.services.datasource.config_store import ConfigStore, boot_register
