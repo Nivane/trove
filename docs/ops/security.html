@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 安全边界：只读执行的三层门、限流与日配额、连接串加密、审计日志，以及人在环的默认拒绝与认证的 fail-closed 设计。">
+<meta name="description" content="Trove 安全边界：只读执行的三层门、执行前授权与行/列 scope、限流与日配额、OIDC 单点登录、字段级脱敏与模型数据出境治理、连接串加密与审计日志，以及认证与隔离的 fail-closed 设计。">
 <title>安全边界 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -29,7 +29,8 @@
       <h1>安全边界</h1>
       <p class="lede">
         问数系统要执行<strong>模型生成的 SQL</strong>。这一页讲 Trove 怎么把这件事变安全：
-        只读的三层门、限流、加密、审计，以及几处刻意选择「失败时拒绝」而不是「失败时放行」的地方。
+        只读的三层门、执行前授权与行/列 scope、OIDC 单点登录、脱敏与模型出境治理、限流、
+        加密、审计，以及几处刻意选择「失败时拒绝」而不是「失败时放行」的地方。
       </p>
     </div>
 
@@ -79,12 +80,13 @@ flowchart TB
     SRC["SQL 从哪来：模型生成 · 编译产物 · job 载荷 · CLI · MCP"]:::entry --> G1["只读门 ① 关键词正则<br/>廉价筛查明显的写操作"]:::gate
     G1 --> G2["只读门 ② AST 防火墙<br/>SQLGlot 整树扫 DML / DDL 节点"]:::gate
     G2 --> G3["只读门 ③ 执行器统一门<br/>注册表执行入口再查一次"]:::gate
-    G3 --> AU["执行前授权门（execute_sql）<br/>数据源级恒拦；表级默认只警告"]:::gate
-    AU --> HITL["人在环（开启时）<br/>载荷认不出 → 默认拒绝"]:::gate
-    HITL --> EX["正式执行<br/>只读账号 · 30s 超时"]:::exec
+    G3 --> HITL["人在环（开启时）<br/>载荷认不出 → 默认拒绝"]:::gate
+    HITL --> AU["执行前授权门（execute_sql）<br/>A1 / A2 恒拒 · A3 默认 enforce"]:::gate
+    AU --> SC["行/列 scope<br/>行谓词子查询重写 · 被禁列拒绝"]:::gate
+    SC --> EX["正式执行<br/>只读账号 · 30s 超时"]:::exec
     EX --> MK["字段级脱敏<br/>partial / hash / null"]:::exec
     MK --> OUT["交付：前端 / 模型上下文"]:::entry
-    SEM["POST /v1/semantic/query"]:::entry -. "不走 workflow：只有路由层数据源授权 + 只读门" .-> EX
+    SEM["POST /v1/semantic/query"]:::entry -. "路由内自建：同一授权门 + scope + 脱敏（不经过 HITL / 反思）" .-> EX
 
     classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
     classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
@@ -92,7 +94,7 @@ flowchart TB
         </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 一条 SQL 从生成到交付要过的每一道门——本页正是按这个顺序展开。虚线那条是声明式接口的独立路径：授权门与脱敏长在 workflow 节点里，它够不到。</span>
+        <span class="cap-rendered">图 1 · 一条 SQL 从生成到交付要过的每一道门——本页正是按这个顺序展开。虚线是声明式接口：它不经过工作流节点，但授权门、行/列 scope 与脱敏用的是同一份构造与引擎。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -262,7 +264,7 @@ flowchart TB
     </p>
 
     <p>
-      授权有两个层次，容易混淆，值得分清：
+      授权分几层，容易混淆，值得分清：
     </p>
 
     <div class="table-wrap">
@@ -285,6 +287,11 @@ flowchart TB
             <td><strong>数据源 grants</strong></td>
             <td>用户 ↔ 数据源的授权表</td>
             <td>决定能问哪些源</td>
+          </tr>
+          <tr>
+            <td><strong>行 / 列授权</strong></td>
+            <td>数据源内的行谓词与被禁列（只收窄、不授予）</td>
+            <td>决定源内能看到哪些行、哪些列；见<a href="#rowcol">下一节</a></td>
           </tr>
         </tbody>
       </table>
@@ -318,6 +325,92 @@ flowchart TB
       </div>
     </div>
 
+    <h2 id="oidc">单点登录：OIDC</h2>
+
+    <p>
+      本地密码登录之外，Trove 支持 OIDC 授权码 + PKCE 登录。它<strong>默认整体关闭</strong>：
+      没有 <code>oidc:</code> 配置时没有新路由、没有登录按钮、没有一次网络调用，
+      本地密码登录逐字节不变。
+    </p>
+
+    <p>
+      SSO 成功后签发的<strong>仍是既有的 opaque Bearer token</strong>——不是另一套会话机制。
+      下游的 <code>/v1/chat</code>、MCP 与管理端依赖因此零改动；「SSO 用户」与
+      「密码用户」在授权判定里没有区别，能问什么照旧由 grants 决定。
+    </p>
+
+    <pre><code>oidc:
+  enabled: true
+  issuer: https://idp.example.com
+  client_id: trove
+  client_secret_ref: env:TROVE_OIDC_SECRET
+  redirect_uri: https://trove.example.com/v1/auth/oidc/callback
+  post_login_redirect: /
+  groups_claim: groups
+  role_map:
+    trove-admins: admin
+    data-analysts: analyst
+  default_role: user</code></pre>
+
+    <p>
+      <code>client_secret_ref</code> 只接受 <code>env:NAME</code>，与 masking 的 salt
+      引用是同一条纪律：<strong>这是引用不是值</strong>——密钥不进 YAML、不进 git，
+      也不进管理端可回显的配置面，所以 OIDC 这一组<strong>不在</strong>管理端设置白名单里。
+      <code>issuer</code> 与显式配置的 <code>redirect_uri</code> 必须是 https
+      （<code>localhost</code> / <code>127.0.0.1</code> 例外，留给本地联调）。
+      写了 <code>enabled: true</code> 但自洽性检查不过时，<strong>SSO 保持关闭</strong>
+      （路由 404，与「从未支持」同一形状），启动日志写明原因——不挂一个必然失败的登录入口。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /v1/auth/oidc/status</td><td>是否启用与登录入口；关闭时 404</td></tr>
+          <tr><td class="mono">GET /v1/auth/oidc/login</td><td>生成 state / nonce / PKCE，302 到 IdP；<code>next</code> 只收站内相对路径</td></tr>
+          <tr><td class="mono">GET /v1/auth/oidc/callback</td><td>校验 state、换 token、验 ID token、映射或建号，最后签发本地 token</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三道校验缺一不可：<strong>state / nonce / PKCE verifier 一次性落库</strong>（app.db，
+      TTL 10 分钟，重放或过期一律 <code>state_invalid</code>）；<strong>ID token 只接受
+      JWKS 的非对称签名</strong>（<code>none</code> 与 HS* 直接拒绝），并校验
+      iss / aud / exp / nonce；JWKS 缓存 3600 秒，遇到未知 <code>kid</code> 只刷新一次，
+      仍找不到就拒绝。身份只从验签后的 token 取，回调里的任何明文参数都不算数。
+    </p>
+
+    <p>
+      失败一律 303 回 <code>post_login_redirect#error=&lt;code&gt;</code>，码是闭集：
+      <code>state_invalid</code> / <code>exchange_failed</code> / <code>conflict</code> /
+      <code>disabled</code> / <code>not_provisioned</code>。成功走
+      <code>#token=…&amp;next=…</code>，前端取走 token 后清掉 fragment。
+      审计 <code>auth.oidc.login</code> 成功失败都记，<strong>绝不记</strong> token / code / ID token。
+    </p>
+
+    <p>
+      身份与角色：稳定键是 <code>(issuer, subject)</code>，不是用户名。首次登录可自动建号，
+      写哨兵密码 <code>!oidc</code>（本地密码登录对这个账号必定失败）且<strong>零授权</strong>
+      ——数据源、主题域、行/列一律不给，管理员之后照常授权。用户名已被本地账号占用且
+      未绑定同一 identity → <strong>冲突</strong>，绝不静默合并：合并等于让 IdP 接管一个既有账号。
+      IdP group → 本地角色走显式 <code>role_map</code>，多个命中取<strong>最高权限</strong>，
+      无命中用 <code>default_role</code>；角色每次登录重算，但降级若会撞上「最后一个管理员」
+      守卫，则保留原角色并审计 <code>auth.oidc.role_rejected</code>——守卫保护的是账号体系，
+      不能为了同步角色把管理端锁死。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/oidc.py#L154">oidc.py:154 <span class="ref-line">OidcClient</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/oidc.py#L74">oidc.py:74 <span class="ref-line">validate_oidc_config</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L149">auth.py:149 <span class="ref-line">oidc_callback</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L359">service.py:359 <span class="ref-line">resolve_oidc_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L39">service.py:39 <span class="ref-line">map_oidc_role</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L161">config.py:161 <span class="ref-line">OidcConfig</span></a>
+    </p>
+
     <h2 id="enforce">执行前的授权门</h2>
 
     <p>
@@ -338,11 +431,13 @@ flowchart TB
     </p>
 
     <p>
-      一个例外要单独说：声明式接口 <code>POST /v1/semantic/query</code> 不经过工作流，
-      它自己编译、自己交给注册表执行。它拿到的是<strong>路由层的数据源授权</strong>与注册表那道
-      <strong>只读 AST 门</strong>，但上面这道执行前授权门与字段级脱敏都不在它的路径上
-      ——两者都长在 workflow 的节点里。这不是漏接，是那条路的定位（严格契约、未声明即 422）；
-      只是评估它的暴露面时要按「授权到数据源一级」来算。
+      声明式接口 <code>POST /v1/semantic/query</code> 不经过工作流，但授权并不因此少一道：
+      它在路由内用<strong>同一个 <code>build_authorizer</code></strong> 跑 A1 / A3，用
+      <strong>同一个 <code>authorize_and_scope</code></strong> 叠加行/列 scope，再用
+      <strong>同一个 <code>build_masker</code></strong> 做交付脱敏。差别只在 HITL、反思回滚、
+      答案生成这些工作流节点不在路径上。拒绝时返回 403 且响应体<strong>不含行</strong>——
+      这个端点没有 answer 通道，「拒绝了但照样执行」在这里与主链一样不可接受。
+      它的定位仍是严格契约（未声明即 422），不是一条旁路。
     </p>
 
     <p>
@@ -353,6 +448,8 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L181">semantic_query.py:181 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L215">semantic_query.py:215 <span class="ref-line">authorize_and_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L251">semantic_query.py:251 <span class="ref-line">build_masker</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L236">semantic_query.py:236 <span class="ref-line">execute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L109">config.py:109 <span class="ref-line">require_principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L200">enforcer.py:200 <span class="ref-line">require_principal</span></a>
@@ -391,11 +488,115 @@ flowchart TB
       三条出口各答一个问题——日志给现场，计数器给量，审计行给名字。
     </p>
 
+    <h2 id="rowcol">行级与列级授权</h2>
+
+    <p>
+      数据源 grants 回答「能不能问这个源」；行/列授权回答同一个源里
+      「能看到哪些行、哪些列」。语义是<strong>收窄，不是白名单</strong>：
+      未设置 = 维持存量行为（源内不受限），设置后只在原有权限上再叠一层 AND，
+      绝不会授予任何本来看不到的东西。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>限制</th><th>怎么生效</th><th>边界</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>行谓词</strong></td>
+            <td>每个引用该表的 FROM / JOIN 位置改写成
+            <code>(SELECT * FROM t WHERE pred) alias</code>；语义模型声明的 RLS 与主体 grant
+            合进同一个子查询用 AND 连接。</td>
+            <td>不注入顶层 WHERE——顶层条件在子查询 / UNION / CTE 里会把内层别名提到外层，
+            产生无效 SQL。没有别名的表引用会合成别名；同一张表被多个别名引用时各自包裹。</td>
+          </tr>
+          <tr>
+            <td><strong>被禁列</strong></td>
+            <td>SQL 的任何位置引用该列即拒绝：SELECT、WHERE、ORDER BY、GROUP BY、HAVING、函数内。</td>
+            <td><code>SELECT *</code> / <code>t.*</code> 对含被禁列的表一律拒绝（不展开星号），
+            <code>COUNT(*)</code> 放行。被禁列的<strong>名字仍然可见</strong>——目录、schema、
+            提示词照常出现；保护的是值，不是列名的保密。</td>
+          </tr>
+          <tr>
+            <td><strong>解析失败</strong></td>
+            <td>解析不出别名、列归属或表名 → 拒绝执行。</td>
+            <td>fail-closed：不猜、不放宽成「不过滤」，宁可少答一次。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      规则在同一个确定性引擎里，零 LLM：SQLGlot 解析、按查询作用域栈解析别名，
+      输出集合排序稳定，不随进程哈希种子漂移。
+    </p>
+
+    <p>
+      <strong>每一个用户可见的取数入口</strong>都过它：主链 <code>execute_sql</code>；
+      <code>POST /v1/semantic/query</code>；生成期的 <code>probe_query</code> /
+      <code>check_result</code> / <code>search_values</code>；候选投票的 select 预执行；
+      归因分析的每一跳；草稿自动确认前的试跑。MCP <code>ask_data</code>、REPL 与 HTTP
+      会话走主图，自动继承。定时任务<strong>按任务所有者的身份运行</strong>——owner 是
+      admin 就豁免，owner 是普通用户就自动套用他的行/列授权；启用认证的部署里，
+      owner 为空的旧任务会<strong>显式失败</strong>，而不是悄悄以本地 admin 运行。
+    </p>
+
+    <p>
+      明确不在覆盖内的：判定 / 扫描这类系统任务（admin 配置的只读通道，不是用户请求）、
+      KB init 与 profiling（管理员建模行为）、metadata / 目录（只返回名字，按设计可见）。
+      把这条边界写出来，是为了让「没有套用」是一个决定，而不是一处遗漏。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/scope.py#L193">scope.py:193 <span class="ref-line">apply_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/scope.py#L161">scope.py:161 <span class="ref-line">authorize_and_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L299">execute_sql.py:299 <span class="ref-line">apply_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L178">enforcer.py:178 <span class="ref-line">build_authorizer</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L193">policy.py:193 <span class="ref-line">row_grants</span></a>
+    </p>
+
+    <p>
+      管理员<strong>豁免</strong>行/列授权：A1–A3 与 scope 都不作用于 admin，管理端也不能给
+      admin 配置行/列授权（PUT 返回 400，提示应为 analyst / user 角色）。这不是宽容——
+      「能改配置」与「能看数据」本来就该分开判断。
+    </p>
+
+    <pre><code>PUT /v1/admin/users/{id}/data-grants
+{
+  "datasource": "demo",
+  "row_filters": [{"table": "loans", "predicate": "district_id = 1"}],
+  "blocked_columns": [{"table": "client", "columns": ["email", "phone"]}]
+}</code></pre>
+
+    <p>
+      PUT 按数据源<strong>整体替换</strong>（先读后改请走一次对应的 GET）。
+      <code>table</code> / <code>column</code> 一律是<strong>物理表名与列名</strong>，
+      与 SQL 的引用面直接比对，不需要第二套语义名映射。写入前逐项校验：谓词能解析、
+      单语句、无子查询 / 无其他表、列属于该表；错误 400 带原因。
+      审计 <code>admin.data_grant.set</code> 记数据源、表名、列名与谓词（谓词是管理员策略，
+      可以记；任何业务数据值都不记）。前端在用户详情抽屉里编辑：行过滤是
+      table + predicate 的增删表，被禁列按表输入；文案写清「未设置 = 不限制；设置后只收窄」，
+      admin 用户直接显示「管理员豁免」。
+    </p>
+
+    <p>
+      回复缓存的键里含主体授权的快照（数据源 grants、主题域、行/列）。收窄授权之后，
+      同一个问题的第一条不会再复用 TTL 内按旧范围取到的结果。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L379">admin.py:379 <span class="ref-line">_validate_predicate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L486">admin.py:486 <span class="ref-line">set_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/store.py#L734">store.py:734 <span class="ref-line">set_data_grants</span></a>
+    </p>
+
     <h2 id="masking">字段级脱敏</h2>
 
     <p>
-      RLS 管行，此前<strong>没人管列</strong>——手机号、身份证、邮箱照样出到前端与模型上下文。
-      现在在语义层声明字段的脱敏模式，SQL 验证之后、任何模型节点之前改写结果值。
+      行/列授权管「能不能取到」，脱敏管「取到之后怎么显示」——一个被禁列根本进不了 SQL，
+      而一个允许读取的列仍可按声明改写成掩码。手机号、身份证、邮箱这类字段，
+      在语义层声明脱敏模式后，SQL 验证之后、任何模型节点之前改写结果值。
     </p>
 
     <div class="table-wrap">
@@ -428,6 +629,121 @@ flowchart TB
       函数/聚合投影（<code>sum(amount)</code>）拿不到位置，走的是列名兜底或有意不脱敏；
       模型与 salt 读不出来时<strong>拒绝执行</strong>，不降级为明文；
       值本身不写日志、不写审计——审计只记「对哪些字段用了哪种模式」。
+    </p>
+
+    <h2 id="egress">模型数据出境治理</h2>
+
+    <p>
+      交付前的脱敏解决的是「用户看到什么」；<strong>模型是另一个接收方</strong>。
+      生成阶段 <code>probe_query</code> 会把最多 10 行真实数据回喂模型，
+      <code>search_values</code> 会返回真实值——这些发生在结果脱敏之前，
+      是一条独立的出境路径。两件控制：工具回喂按语义层 <code>mask</code> 声明脱敏，
+      provider 白名单在网关调用之前拦截。
+    </p>
+
+    <h3>工具回喂脱敏</h3>
+
+    <p>
+      收口点只有一个：<code>agent_loop._model_observation</code>。所有工具观测进模型上下文
+      之前都过这里，新增工具自动继承。脱敏发生在隔离核<strong>之前</strong>，所以结构粒度仍然保留
+      ——逐单元格改写，而不是把整个载荷拼成字符串。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>通道</th><th>形状</th><th>怎么处理</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">probe_query</td><td>columns + rows</td><td>按声明字段逐值改写（partial / hash / null），并附一行提示说明样例值已脱敏</td></tr>
+          <tr><td class="mono">search_values</td><td>values / hits</td><td>逐列套用声明模式；每次命中的列都过同一套掩码实现</td></tr>
+          <tr><td class="mono">check_result</td><td>规则文本</td><td>规则链只插值列名与行数，不插值单元格值——无值出境，不做文本替换</td></tr>
+          <tr><td class="mono">few-shot</td><td>sample_values</td><td>装配阶段脱敏一次；提示词渲染与 token 估算用<strong>同一份</strong>脱敏后的 shots</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三条设计纪律：<strong>以 <code>principal=None</code> 运行</strong>——egress 不读
+      <code>may_bypass_masking</code>，管理员能看原文不等于模型能收原文；
+      <strong>不读 <code>masking.enabled</code></strong>——关掉交付面脱敏不等于允许声明字段出境，
+      两个接收方各有自己的开关；<strong><code>strict=True</code></strong>——SQL 投影位置解析不出
+      且模型确有 <code>mask</code> 声明时抛错，整条观测扣留，绝不回退到按列名匹配
+      （<code>SELECT email AS phone</code> 这类别名会让回退路径漏掉）。
+    </p>
+
+    <p>
+      失败方向是<strong>整条作废</strong>：整个工具观测替换成
+      <code>[ERR:EGRESS_REDACT] observation withheld</code>，不把原文交给模型。
+      被改写过的观测会带 <code>note</code> 说明「声明字段的值已脱敏」，
+      避免模型拿掩码串去做 WHERE。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/egress.py#L76">egress.py:76 <span class="ref-line">EgressRedactor</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">agent_loop.py:89 <span class="ref-line">_model_observation</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/egress.py#L58">egress.py:58 <span class="ref-line">WITHHELD_OBSERVATION</span></a>
+    </p>
+
+    <h3>provider 白名单</h3>
+
+    <p>
+      网关在<strong>真正调用 provider 之前</strong>判定；拒绝抛
+      <code>LLMEgressDenied</code>，请求不触网。匹配（小写、去空白）：
+      空列表或 <code>*</code> = 全部允许；含 <code>/</code> 的条目 = 精确模型名
+      （<code>openai/gpt-4o</code>）；不含 <code>/</code> 的条目 = provider 前缀
+      （<code>openai</code> 匹配 <code>openai/…</code>）。白名单非空时，
+      不带 provider 前缀的模型名匹配不到任何条目，按拒绝处理。
+    </p>
+
+    <p>
+      管理端可以热改 <code>egress.enabled</code> / <code>egress.redact_tool_results</code> /
+      <code>egress.allow_providers</code>，下一调用生效。拒绝记
+      <code>trove_llm_egress_denied_total{provider}</code>，并写审计
+      <code>llm.egress_denied</code>（provider / model，永不记 prompt）。
+      配置读取本身出故障时按拒绝处理（哨兵白名单不匹配任何模型），不会因为读不到策略就开闸。
+    </p>
+
+    <p>
+      诚实边界：白名单约束的是 litellm 的 <strong>provider / model 标识</strong>；
+      <code>providers[].api_base</code> 指向的自定义端点仍是管理端的信任决定——
+      把 api_base 指向别处，白名单拦不住。自定义端点应当按敏感配置审计。
+    </p>
+
+    <h3>配置与审计</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">enabled</td><td class="mono">true</td><td>整层开关；没有 <code>mask</code> 声明时工具回喂逐字节不变</td></tr>
+          <tr><td class="mono">redact_tool_results</td><td class="mono">true</td><td>是否在回喂前脱敏声明字段</td></tr>
+          <tr><td class="mono">allow_providers</td><td><em>空</em></td><td>空 = 全部允许；写法见上</td></tr>
+          <tr><td class="mono">audit</td><td class="mono">true</td><td>每轮汇总写一条 <code>llm.egress</code>（字段名与计数，不含值）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>egress:
+  enabled: true
+  redact_tool_results: true
+  allow_providers: [openai, anthropic, deepseek]
+  audit: true</code></pre>
+
+    <p>
+      也可以写在 <code>agent:</code> 段内，两种写法等价。前三个键在管理端设置页可热改；
+      <code>audit</code> 只在配置文件里。这一层<strong>只覆盖语义模型已声明 <code>mask</code>
+      的字段</strong>——未声明字段仍可能出境，不是全量 DLP。工具历史、transcript 与日志
+      保留原文是<strong>有意</strong>的：那是对账现场；这一层管的是模型接收方，不是日志。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L153">gateway.py:153 <span class="ref-line">_check_egress</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L132">config.py:132 <span class="ref-line">EgressConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1988">session.py:1988 <span class="ref-line">_audit_egress</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L275">metrics.py:275 <span class="ref-line">record_llm_egress_denied</span></a>
     </p>
 
     <h2 id="isolation">不可信内容隔离</h2>
@@ -619,9 +935,10 @@ flowchart TB
     </p>
 
     <p>
-      身份与脱敏这条链上另有五条。其中四条由同一个后置审计写——它们记的是运行结果里的
-      判定报告与脱敏报告，得等结果回来；<code>authz.on_behalf_of</code> 早在重放主体解析出来时就写了，
-      那时还没有结果可等。
+      身份、数据边界与模型出境这条链上另有十条。一部分由同一个后置审计写——它们记的是
+      运行结果里的判定、脱敏与出境报告，得等结果回来；<code>authz.on_behalf_of</code>
+      在重放主体解析出来时就写，<code>llm.egress_denied</code> 在网关拒绝的那一刻写，
+      <code>auth.oidc.login</code> 在回调结束前写，授权变更则在管理端写入时写。
     </p>
 
     <div class="table-wrap">
@@ -630,11 +947,16 @@ flowchart TB
           <tr><th>action</th><th>记的是</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">authz.deny</td><td>执行期的拒绝：哪个数据源、哪张表、什么原因</td></tr>
+          <tr><td class="mono">authz.deny</td><td>执行期的拒绝：哪个数据源、哪张表或列、什么原因（表未声明 / 被禁列 / 解析失败）</td></tr>
           <tr><td class="mono">authz.table_warn</td><td><code>warn</code> 期<strong>放行</strong>了未声明的表：数据源 + 表名清单。门看见了越界并让行——比一次干脆的拒绝更值得留痕，也是「哪些表会被拒」唯一答得全的地方</td></tr>
           <tr><td class="mono">authz.on_behalf_of</td><td>谁发起了一次以他人身份的重放</td></tr>
           <tr><td class="mono">masking.applied</td><td>哪些字段被改写成哪种模式（<strong>不记值</strong>）</td></tr>
           <tr><td class="mono">masking.bypass</td><td>谁按原文读走了数据（持 <code>pii</code> scope 的那次）</td></tr>
+          <tr><td class="mono">llm.egress</td><td>这一问里哪些声明字段的值被回喂过模型：字段名、行数、值数（<strong>不记值</strong>）</td></tr>
+          <tr><td class="mono">llm.egress_denied</td><td>网关按白名单拒绝了哪个 provider / model（不含 prompt）</td></tr>
+          <tr><td class="mono">auth.oidc.login</td><td>SSO 登录成功或失败与失败码；<strong>不记</strong> token / code / ID token</td></tr>
+          <tr><td class="mono">auth.oidc.role_rejected</td><td>角色同步撞上「最后一个管理员」守卫：想改成什么、保留了什么</td></tr>
+          <tr><td class="mono">admin.data_grant.set</td><td>谁改了谁的行/列授权：数据源、表名、列名与谓词（管理员策略，不是业务数据）</td></tr>
         </tbody>
       </table>
     </div>
@@ -698,7 +1020,8 @@ flowchart TB
         </thead>
         <tbody>
           <tr><td>只读账号怎么建</td><td><a href="../guide/datasource.html#readonly">接入数据源</a></td></tr>
-          <tr><td>用户、授权、审计的管理界面</td><td><a href="admin.html">运维管理</a></td></tr>
+          <tr><td>用户、授权、审计的管理界面</td><td><a href="admin.html">运维管理</a> · <a href="admin.html#data-grants">行/列授权怎么配</a></td></tr>
+          <tr><td>OIDC 与出境治理的全部配置项</td><td><a href="../reference/config.html#oidc-cfg">配置参考 · oidc</a> · <a href="../reference/config.html#egress-cfg">egress</a></td></tr>
           <tr><td>日志与轨迹</td><td><a href="observability.html">可观测性</a></td></tr>
           <tr><td>限流与相关配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
         </tbody>
