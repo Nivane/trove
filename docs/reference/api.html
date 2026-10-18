@@ -268,6 +268,7 @@ flowchart TB
           <tr><td class="mono">/v1/admin/skills</td><td>Skills 草案、确认、tier</td></tr>
           <tr><td class="mono">/v1/admin/drift</td><td>漂移检测与处置</td></tr>
           <tr><td class="mono">/v1/admin/decisions</td><td>决策规则</td></tr>
+          <tr><td class="mono">/v1/admin/question-coverage</td><td>覆盖率体检：预检 / CSV 解析 / 运行与历史 / 两轮对比 / 缺口生成待确认草稿 / 取消（admin；编译判定，不执行 SQL）</td></tr>
           <tr><td class="mono">/v1/admin/audit</td><td>审计日志；<span class="mono">/refusal-report</span> 拒绝频率报表（窗口天数为参）</td></tr>
           <tr><td class="mono">/v1/admin/memory…</td><td>画像与偏好草稿</td></tr>
         </tbody>
@@ -279,9 +280,9 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L376">app.py:376 <span class="ref-line">include_router</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L468">admin.py:468 <span class="ref-line">get_data_grants</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L486">admin.py:486 <span class="ref-line">set_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L377">app.py:377 <span class="ref-line">include_router</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L469">admin.py:469 <span class="ref-line">get_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L487">admin.py:487 <span class="ref-line">set_data_grants</span></a>
     </p>
 
     <h2 id="cors">关于 CORS</h2>
@@ -323,7 +324,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e139f72</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

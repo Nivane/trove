@@ -46,6 +46,7 @@
         { href: "admin/datasources.html", text: "数据源接入" },
         { href: "admin/kb.html", text: "知识库运营" },
         { href: "admin/semantic.html", text: "语义层治理" },
+        { href: "admin/question-coverage.html", text: "覆盖率体检" },
         { href: "admin/automation.html", text: "自动化与治理" },
         { href: "admin/access.html", text: "用户·权限·安全" }
       ]

@@ -108,6 +108,13 @@
       并作为一次提交留痕（图 2 的历史）。批量勾选可以一次确认或拒绝多条。
     </p>
 
+    <p>
+      待审批队列里的草稿从哪来？除了手工新建与历史蒸馏，还可以先跑一轮
+      <a href="question-coverage.html">覆盖率体检</a>：把一批真实问题按编译结果分类，
+      指标 / 字段 / 值 / 实体缺口可一键落成<strong>待确认</strong>草稿，再回到这里的「待审批」逐条确认；
+      关系与数据集类缺口只给深链，需要在这里手工声明。
+    </p>
+
     <div class="callout note">
       <span class="callout-tag">为什么改动都要过审批流</span>
       <p>
@@ -260,6 +267,7 @@
       <table>
         <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
         <tbody>
+          <tr><td>体检一批真实问题的可答覆盖，缺口一键生成待确认草稿</td><td><a href="question-coverage.html">覆盖率体检</a></td></tr>
           <tr><td>补词表（术语、同义词、定义）</td><td><a href="kb.html#entries">知识库运营 · 术语与指标</a></td></tr>
           <tr><td>看编译机制（语义编译档位怎么来）</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
           <tr><td>漂移的处置与影响面</td><td><a href="../ops/drift.html">漂移检测</a></td></tr>
