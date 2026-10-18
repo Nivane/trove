@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove API 参考：端点分类清单、鉴权依赖、SSE 流式对话与 HITL 恢复，以及为什么活文档在 /v1/docs 而不在这里。">
+<meta name="description" content="Trove API 参考：端点分类清单、鉴权依赖与 OIDC 登录端点、SSE 流式对话与 HITL 恢复，以及为什么活文档在 /v1/docs 而不在这里。">
 <title>API 参考 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -119,6 +119,41 @@ flowchart TB
       </figcaption>
     </figure>
 
+    <h3>OIDC 端点</h3>
+
+    <p>
+      只有配置了 <code>oidc:</code> 且配置自洽时这些路由才存在；关闭时一律 404，
+      与「从未支持」同一形状。成功签发的仍是既有的 opaque Bearer token，
+      后续请求照常走上面的 <code>get_current_user</code>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /v1/auth/oidc/status</td><td>是否启用、登录入口；关闭时 404</td></tr>
+          <tr><td class="mono">GET /v1/auth/oidc/login</td><td>302 到 IdP；<code>next</code> 只接受站内相对路径</td></tr>
+          <tr><td class="mono">GET /v1/auth/oidc/callback</td><td>校验 state 与 ID token，映射或建号后签本地 token</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      回调成功 303 到 <code>post_login_redirect#token=…&amp;next=…</code>；
+      失败 303 到 <code>#error=&lt;code&gt;</code>，码是闭集
+      （<code>state_invalid</code> / <code>exchange_failed</code> / <code>conflict</code> /
+      <code>disabled</code> / <code>not_provisioned</code>）。
+      审计只记成功/失败与码，绝不记 token / code / ID token。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L104">auth.py:104 <span class="ref-line">oidc_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L115">auth.py:115 <span class="ref-line">oidc_login</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L149">auth.py:149 <span class="ref-line">oidc_callback</span></a>
+    </p>
+
     <h2 id="groups">端点分类</h2>
 
     <h3>对话</h3>
@@ -226,7 +261,7 @@ flowchart TB
           <tr><th>分组</th><th>内容</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">/v1/admin/users</td><td>用户与 token</td></tr>
+          <tr><td class="mono">/v1/admin/users</td><td>用户与 token；<span class="mono">…/{id}/data-grants</span> 行/列授权（GET / PUT，按数据源整体替换）</td></tr>
           <tr><td class="mono">/v1/admin/datasources</td><td>数据源注册、测试、KB 初始化；<span class="mono">…/kb/distill-history</span> 从历史蒸馏（202 长任务）</td></tr>
           <tr><td class="mono">/v1/admin/actions</td><td>行动模板与提案；<span class="mono">…/proposals/batch</span> 批量批准 / 驳回（逐条结果）</td></tr>
           <tr><td class="mono">/v1/admin/jobs</td><td>定时任务 CRUD 与运行历史</td></tr>
@@ -245,6 +280,8 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L376">app.py:376 <span class="ref-line">include_router</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L468">admin.py:468 <span class="ref-line">get_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L486">admin.py:486 <span class="ref-line">set_data_grants</span></a>
     </p>
 
     <h2 id="cors">关于 CORS</h2>

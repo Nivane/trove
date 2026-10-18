@@ -271,14 +271,14 @@ docker compose down
 
 ## 能力速览
 
-每一行都有更深的一层——文档站章节,或者直接是源码:
+每一行都有更深的一层——文档站章节:
 
 | 能力 | 一句话 | 深入 |
 |---|---|---|
 | 语义层 | 可答边界是一份可读、可 diff、可 git 回滚的文件 | [语义层](https://nivane.github.io/trove/capabilities/semantic.html) |
 | 主题域 | 语义模型里的可选收窄:域内收敛锚定、超域显式拒绝;管理台可按用户授权到域 | [语义层 · 主题域](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
-| 行/列授权 | 授权只收窄:行谓词以子查询重写进主链、语义查询 API、生成期探测与归因;被禁列引用即拒(列名仍可见,只保护值),管理员豁免,定时任务按所有者身份运行 | [源码 · scope 引擎](https://github.com/Nivane/trove/blob/main/trove/services/authz/scope.py) |
-| 身份与 SSO | OIDC 授权码 + PKCE 登录,组映射角色,首登自动建号零授权;关闭时无新路由、无新按钮,本地密码登录不变 | [源码 · OIDC 客户端](https://github.com/Nivane/trove/blob/main/trove/services/auth/oidc.py) |
+| 行/列授权 | 授权只收窄:行谓词以子查询重写进主链、语义查询 API、生成期探测与归因;被禁列引用即拒(列名仍可见,只保护值),管理员豁免,定时任务按所有者身份运行 | [安全 · 行级与列级授权](https://nivane.github.io/trove/ops/security.html#rowcol) |
+| 身份与 SSO | OIDC 授权码 + PKCE 登录,组映射角色,首登自动建号零授权;关闭时无新路由、无新按钮,本地密码登录不变 | [安全 · 单点登录](https://nivane.github.io/trove/ops/security.html#oidc) |
 | 本体 | 数据集声明成对象、关系声明业务名、维度链声明成层级;声明一次全链改说业务的词,未声明保持物理列名 | [本体](https://nivane.github.io/trove/capabilities/ontology.html) |
 | 语义变更评审 | 成批改动先进隔离区:模型级 diff → 零 LLM 沙箱回放 → 影响面;合入是唯一写入口,带漂移警告门 | [语义层治理 · 变更评审](https://nivane.github.io/trove/admin/semantic.html#changes) |
 | 自校验闭环 | 规则链 / AST 防火墙 / 代价守卫 / 带版本回归的反思回滚 | [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
@@ -289,7 +289,7 @@ docker compose down
 | 订阅 | 定时分析的结果按「每期 / 仅告警」投递到通知通道,失败留痕;任务可限定主题域 | [自动化与治理](https://nivane.github.io/trove/admin/automation.html) |
 | 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
-| LLM 数据出境治理 | 工具回喂在进模型前按 `mask` 声明脱敏,失败整条扣留;provider 白名单在网关前置拦截;审计只记字段名不记值 | [源码 · 网关](https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py) · [回喂脱敏](https://github.com/Nivane/trove/blob/main/trove/services/authz/egress.py) |
+| LLM 数据出境治理 | 工具回喂在进模型前按 `mask` 声明脱敏,失败整条扣留;provider 白名单在网关前置拦截;审计只记字段名不记值 | [安全 · 模型数据出境治理](https://nivane.github.io/trove/ops/security.html#egress) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | 组织级方法论:四档——`required` 注入 / `available` 按需 / `validator` 断结果 / guard 断 SQL;确认门禁,可颗粒停用 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;显著性、置信与季节基线出自可复算的统计器械;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [噪声带](https://nivane.github.io/trove/capabilities/decisions.html#significance) |

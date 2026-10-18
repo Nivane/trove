@@ -272,14 +272,14 @@ Default local login is admin / `admin123` (production is controlled by `TROVE_AD
 
 ## Capabilities at a Glance
 
-Every row has a deeper layer — a docs-site chapter, or the source itself:
+Every row has a deeper layer — a docs-site chapter:
 
 | Capability | In one line | Read more |
 |---|---|---|
 | Semantic layer | The answerable boundary is a readable, diffable, git-revertible file | [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) |
 | Topic areas | An optional narrowing inside the semantic model: queries anchor and converge within the area, out-of-area questions are refused outright; grants narrow users to areas in the console | [Semantic layer · topics](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
-| Row/column grants | Grants only narrow: row predicates are rewritten as subqueries across the main pipeline, the semantic query API, generation-time probes and attribution; referencing a blocked column is refused (names stay visible, values are protected), admins are exempt, scheduled jobs run as the job owner | [Source · scope engine](https://github.com/Nivane/trove/blob/main/trove/services/authz/scope.py) |
-| Identity and SSO | OIDC authorization-code + PKCE login, group-to-role mapping, auto-provisioned with zero grants; when disabled there are no new routes or buttons and local password login is unchanged | [Source · OIDC client](https://github.com/Nivane/trove/blob/main/trove/services/auth/oidc.py) |
+| Row/column grants | Grants only narrow: row predicates are rewritten as subqueries across the main pipeline, the semantic query API, generation-time probes and attribution; referencing a blocked column is refused (names stay visible, values are protected), admins are exempt, scheduled jobs run as the job owner | [Security · row and column grants](https://nivane.github.io/trove/ops/security.html#rowcol) |
+| Identity and SSO | OIDC authorization-code + PKCE login, group-to-role mapping, auto-provisioned with zero grants; when disabled there are no new routes or buttons and local password login is unchanged | [Security · single sign-on](https://nivane.github.io/trove/ops/security.html#oidc) |
 | Ontology | Datasets as objects, joins with business names, dimension chains as hierarchies; declare once and the whole chain speaks business, undeclared stays physical | [Ontology](https://nivane.github.io/trove/capabilities/ontology.html) |
 | Semantic change review | Batch edits land in a staging area: model-level diff → zero-LLM sandbox replay → impact set; merge is the single write funnel, behind a warn-only drift gate | [Semantic layer governance · change review](https://nivane.github.io/trove/admin/semantic.html#changes) |
 | Self-checking loop | Rule chain / AST firewall / cost guard / reflection with version regression | [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
@@ -290,7 +290,7 @@ Every row has a deeper layer — a docs-site chapter, or the source itself:
 | Subscriptions | Scheduled analysis is delivered to a notification channel as "every run / alerts only", failures on record; a job can be scoped to a topic area | [Automation & governance](https://nivane.github.io/trove/admin/automation.html) |
 | Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
-| LLM egress governance | Tool results are redacted against declared `mask` fields before reaching the model, and a failed redaction withholds the whole observation; a provider allowlist gates the gateway before any call; audit records field names, never values | [Source · gateway](https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py) · [redactor](https://github.com/Nivane/trove/blob/main/trove/services/authz/egress.py) |
+| LLM egress governance | Tool results are redacted against declared `mask` fields before reaching the model, and a failed redaction withholds the whole observation; a provider allowlist gates the gateway before any call; audit records field names, never values | [Security · model data egress](https://nivane.github.io/trove/ops/security.html#egress) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | Org-wide methodology in four tiers: `required` injected / `available` on demand / `validator` result assertions / guard SQL assertions; confirmation gate, individually disableable | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; significance, confidence and seasonal baselines come from a recomputable statistics kit; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) · [noise band](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
