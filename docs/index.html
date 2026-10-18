@@ -83,7 +83,7 @@
       <div class="hp-scroll">
         <img class="hp-svg" src="assets/hero-chains.svg" width="992" height="424" alt="一条链路：问数 → 分析 → 决策 → 行动，终点在外部系统。主行下方四行是每段自己的内部管线：靛蓝描边的节点由模型参与，琥珀描边的是闸门，其余为零 LLM 的确定性步骤；行动的效果验收有一条虚线回环到决策的质量回评">
       </div>
-      <p class="hp-facts">问数管线 <span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">8000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
+      <p class="hp-facts">问数管线 <span class="repro-n" data-count="nodes">28</span> 节点（默认配置） · <span class="repro-n" data-count="adapters">8</span> 方言适配器 · <span class="repro-n">9000+</span> 条测试（零网络零密钥） · <span class="repro-n">0</span> LLM 调用的回归门</p>
     </div>
 
     <div class="hp-connector" aria-hidden="true">
@@ -343,7 +343,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
       <span class="sec-label">边界 · 05</span>
       <h2>安全与可核对</h2>
       <p class="sec-intro">
-        问数系统要落地，安全边界不能是提示词里的一句请求。以下八条都在链路上生效——
+        问数系统要落地，安全边界不能是提示词里的一句请求。以下十一条都在链路上生效——
         它们全部是代码，不是模型行为。
       </p>
     </div>
@@ -365,9 +365,19 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L136">services/sql/budget.py:136 <span class="ref-line">BudgetService</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L236">:236 <span class="ref-line">decide</span></a></td>
           </tr>
           <tr>
+            <td>身份与单点登录</td>
+            <td>OIDC 授权码 + PKCE：state / nonce 一次性落库，ID token 只接受 JWKS 的非对称签名并校验 iss / aud / exp；成功后签发的仍是既有的 opaque Bearer，下游零改动。组映射角色，首登自动建号但<strong>零授权</strong>；未配置时没有新路由，本地密码登录不变。</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/oidc.py#L154">services/auth/oidc.py:154 <span class="ref-line">OidcClient</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L149">api/routers/auth.py:149 <span class="ref-line">oidc_callback</span></a></td>
+          </tr>
+          <tr>
             <td>执行前授权门</td>
             <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是全量快径示例 SQL 静态核验违规 0 条）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L89">services/authz/enforcer.py:89 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L81">core/config.py:81 <span class="ref-line">AuthzConfig</span></a></td>
+          </tr>
+          <tr>
+            <td>行/列级授权</td>
+            <td>主体 grant <strong>只收窄、不授予</strong>：行谓词以表引用子查询重写（不用顶层 WHERE——它在子查询 / UNION 里会把内层别名提到外层），被禁列在任何位置被引用即拒（<code>SELECT *</code> 拒绝、<code>COUNT(*)</code> 放行），解析不出别名或列就拒绝执行。主链、语义查询 API、生成期探测（probe / check / search）、候选投票与归因共用同一个 scope 引擎；管理员豁免，定时任务按任务所有者身份运行。</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/scope.py#L193">services/authz/scope.py:193 <span class="ref-line">apply_scope</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L299">workflow/nodes/execute_sql.py:299 <span class="ref-line">apply_scope</span></a></td>
           </tr>
           <tr>
             <td>组织守卫（guard 档）</td>
@@ -378,6 +388,11 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <td>字段级脱敏</td>
             <td>结果集在进模型上下文之前按语义层声明改写（partial / hash / null）；声明了 <code>hash</code> 却取不到 salt 即拒绝执行，不降级为明文。</td>
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L327">services/authz/masking.py:327 <span class="ref-line">Masker</span></a></td>
+          </tr>
+          <tr>
+            <td>模型数据出境治理</td>
+            <td>生成期回喂给模型的探测行与查值结果，在进入模型上下文前按语义层 <code>mask</code> 声明脱敏——以 <code>principal=None</code> 运行，管理员也不能把声明字段原文发给模型；脱敏失败<strong>整条观测作废</strong>，绝不回落原文。provider 白名单在网关调用前判定，拒绝的请求不触网；审计只记字段名与行数，不记值。</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/egress.py#L76">services/authz/egress.py:76 <span class="ref-line">EgressRedactor</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L153">llm/gateway.py:153 <span class="ref-line">_check_egress</span></a></td>
           </tr>
           <tr>
             <td>不可信内容隔离</td>
