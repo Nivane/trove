@@ -182,9 +182,15 @@ async def test_refusal_report_aggregates_and_singles_out_relations(
         {"reason": "no_model", "count": 1},
         {"reason": "topic_out_of_scope", "count": 1},
     ]
+    # label 由后端随行下发(miss_copy 双语短语),前端直接渲染、不再复制 slug 文案
     assert body["by_miss"] == [
-        {"reason": "no_metric_match", "count": 2},
-        {"reason": "unknown_cardinality", "count": 2},
+        {"reason": "no_metric_match", "count": 2,
+         "label": {"zh": "指标", "en": "the metric"}},
+        {"reason": "unknown_cardinality", "count": 2,
+         "label": {
+             "zh": "表之间的关联关系(基数未声明——请在语义模型里声明这两张表如何关联)",
+             "en": "how the tables relate (cardinality undeclared — declare the relationship in the semantic model)",
+         }},
     ]
     # 榜单:count 降序,question 升序稳定
     top = body["top_questions"]

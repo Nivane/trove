@@ -346,6 +346,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.routers import jobs as jobs_router
     from trove.api.routers import presets as presets_router
     from trove.api.routers import quality as quality_router
+    from trove.api.routers import question_coverage as question_coverage_router
     from trove.api.routers import skills as skills_router
     from trove.api.routers import subscriptions as subscriptions_router
     from trove.api.routers import usage as usage_router
@@ -384,6 +385,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         # 行动提案面(模板门 + 审批 + 外送回执):全 require_admin 自持门禁,
         # 与 decisions 同档 —— 行动的每一次外送都是治理动作。
         app.include_router(actions_router.router, prefix="/v1")
+        # 覆盖率体检(逐题编译级回放):管理动作 —— 问题是业务原文,
+        # 只给 admin;服务缺失时端点自身回 503(组件未装配 ≠ 404)。
+        app.include_router(question_coverage_router.router, prefix="/v1")
         # 漂移面是管理动作(改状态、下豁免、承接外部声明),与 semantic 同档。
         app.include_router(drift.router, prefix="/v1")
         # 总览聚合面同属管理动作(require_admin 自持门禁)。

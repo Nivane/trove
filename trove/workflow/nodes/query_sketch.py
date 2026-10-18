@@ -1724,6 +1724,23 @@ def _compile_semantic(
         return None, CompileMiss("guardrail_rejected", str(e)[:200])
 
 
+def resolve_sketch_model(config: AgentConfig) -> tuple[str, str]:
+    """计划起草用的模型与来源(``(model, source)``)。
+
+    节点与覆盖率体检的 preflight **共用这一条表达式** —— preflight 展示的
+    模型名必须是真正会被调用到的那个;两处各写一遍回落链,「说好的便宜档
+    实际跑了 target」这类偏差只有账单能发现。
+    """
+    for source, value in (
+        ("node_models.query_sketch", config.node_models.get("query_sketch")),
+        ("model_fast", config.model_fast),
+        ("target", config.target),
+    ):
+        if value:
+            return value, source
+    return "openai/gpt-4o", "default"
+
+
 def make_query_sketch(
     llm: LLMGateway,
     config: AgentConfig,
@@ -1732,6 +1749,7 @@ def make_query_sketch(
     semantic_layer=None,
     skills=None,
     max_retries: int = 10,
+    schema_map: dict[str, set[str]] | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the query_sketch node bound to an LLM gateway.
 
@@ -1741,6 +1759,9 @@ def make_query_sketch(
             absent → only the built-in code skills (backward compatible).
         max_retries: Shared correction budget (与 execute_sql 同一份)——
             计划自相矛盾的有界重规划要过预算闸(另一道闸是 MAX_PLAN_REPLANS)。
+        schema_map: 预取的「小写表名 → 小写列名」表(体检一次 run 只读一次
+            schema)。``None`` = 按老路径现取;空 dict 是**合法值**(空库),
+            不能用真值判断 —— 传空 dict 反而跳过现场读取正是空库想要的。
     """
 
     async def query_sketch(state: WorkflowState) -> dict[str, Any]:
@@ -1763,14 +1784,12 @@ def make_query_sketch(
         base_correction = " ".join(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
         )
-        schema_map = await _schema_map(connectors, state.datasource or None)
-        # 计划起草走 fast 档(未配置 fast → 回退 target)
-        model = (
-            config.node_models.get("query_sketch")
-            or config.model_fast
-            or config.target
-            or "openai/gpt-4o"
+        tables_map = (
+            schema_map if schema_map is not None
+            else await _schema_map(connectors, state.datasource or None)
         )
+        # 计划起草走 fast 档(未配置 fast → 回退 target)
+        model, _model_source = resolve_sketch_model(config)
         system_prompt = render(
             "query_sketch/system",
             lang=state.lang,
@@ -1863,7 +1882,7 @@ def make_query_sketch(
             plan_query = _typed_plan(raw)
             plan_json = plan_query.to_dict() if plan_query is not None else None
             plan = _render_plan(plan_json, state.lang) if plan_query is not None else _prose(raw)
-            errors = validate_plan(plan_json, schema_map, metrics=metric_names)
+            errors = validate_plan(plan_json, tables_map, metrics=metric_names)
             if errors:
                 fix_correction = (
                     base_correction
@@ -1877,7 +1896,7 @@ def make_query_sketch(
                     _render_plan(plan_json, state.lang)
                     if plan_query is not None else _prose(raw)
                 )
-                errors = validate_plan(plan_json, schema_map, metrics=metric_names)
+                errors = validate_plan(plan_json, tables_map, metrics=metric_names)
             if errors:
                 logger.info("Plan dropped after validation: %s", "; ".join(errors))
                 update: dict[str, Any] = {
