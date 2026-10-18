@@ -198,7 +198,7 @@ flowchart TB
 
     <p>
       硬 MISS 出口在 refuse 节点
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L71">refuse.py:71 <span class="ref-line">_no_model_message</span></a>）：
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L77">refuse.py:77 <span class="ref-line">_no_model_message</span></a>）：
       每条拒绝都随一份<strong>一键下一步</strong>（<code>next_actions</code>，形状统一为
       <code>[{id, kind, label, href, admin_only, payload?}]</code>，后端给全双语 label、
       前端只渲染不分类）。数据源整体没模型时，这一出口直接给 <code>/kb init</code> 引导，
@@ -248,17 +248,17 @@ flowchart LR
         <tbody>
           <tr>
             <td><strong>确定性冲突检测</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L597">refuse.py:597 <span class="ref-line">_detect_conflict</span></a>，code 闭集：同名/表达式不可解析/数据集未声明/…</td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L557">refuse.py:557 <span class="ref-line">_detect_conflict</span></a>，code 闭集：同名/表达式不可解析/数据集未声明/…</td>
             <td>草稿与现有模型冲突分两类：<em>可人工修正</em>的（重名、表达式错）照落 pending 待审；<strong>agg_duplicate</strong>（已有同聚合签名指标）既不落库也不给建档动作——落一条必然重复的指标是诱导管理员确认错误，补救是换问法加过滤条件</td>
           </tr>
           <tr>
             <td><strong>A 档：物理列字段</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L680">refuse.py:680 <span class="ref-line">_physical_column_field</span></a></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L640">refuse.py:640 <span class="ref-line">_physical_column_field</span></a></td>
             <td>字段名在<strong>物理表</strong>里确认存在（读连接器 catalog，零 LLM）——「这个列真的存在」是结构事实，不需要人再背书一次</td>
           </tr>
           <tr>
             <td><strong>B 档：机械聚合指标</strong></td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L731">refuse.py:731 <span class="ref-line">_mechanical_metric_ok</span></a></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L691">refuse.py:691 <span class="ref-line">_mechanical_metric_ok</span></a></td>
             <td>四步全过才免人工：①表达式是<strong>单个值无关机械聚合</strong>（<code>count/sum/avg</code>，白名单 <code>_MECHANICAL_AGGS</code>，带 CASE/WHERE/FILTER/子查询 = 值被写死，不算）；②单数据集、表可达、引用列存在（超大表跳过真实执行退回人工）；③草稿指标并入<strong>模型副本</strong>走权威编译器——<strong>完整编译</strong>（软 MISS 骨架不算）+ guardrail；④真实执行权威 SQL、过 rules 的 shape 链（单行单列标量）。任一不过 → pending 走人工</td>
           </tr>
         </tbody>
@@ -268,9 +268,9 @@ flowchart LR
     <p>
       免确认入库后，<code>auto_confirmed</code> 标记让图<strong>同轮路由回重答</strong>——
       用户感知是「系统补充了声明，正在重新回答」而不是一次拒绝
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L1240">refuse.py:1240 <span class="ref-line">A/B 判定</span></a>）。
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L1200">refuse.py:1200 <span class="ref-line">A/B 判定</span></a>）。
       防打转的护栏是 <code>AUTO_CONFIRM_MAX_ROUNDS = 2</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L721">refuse.py:721 <span class="ref-line">单问上限</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L681">refuse.py:681 <span class="ref-line">单问上限</span></a>：
       同一问题连续补两个字段还编译不过，就停止自动、回退人工——自动确认是省人工的便道，
       不是绕过评审的暗门。
     </p>
@@ -426,7 +426,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e139f72</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

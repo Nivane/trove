@@ -309,6 +309,25 @@ async def create_app_components(
         git_enabled=config.git_kb,
     )
 
+    # ── 覆盖率体检(逐题编译级回放)──
+    # 运行记录落 ``<root>/.trove/coverage/``(已 gitignore);项目根与漂移
+    # 巡检同一口径从 ``kb_dir`` 反推。启动时懒恢复崩溃留下的 running 行
+    # (→ interrupted + skipped),状态端点绝不把死进程报成 running。
+    from trove.services.question_coverage.service import QuestionCoverageService
+    from trove.services.question_coverage.store import CoverageStore
+
+    coverage_root = Path(kb.kb_dir).parent.parent
+    question_coverage = QuestionCoverageService(
+        CoverageStore(coverage_root),
+        kb=kb,
+        connectors=connector_registry,
+        llm=llm_gateway,
+        config=config,
+        skills=skills,
+        root=coverage_root,
+    )
+    await question_coverage.startup()
+
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
     # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
     # 隔离,注入 gen_sql 个性化上下文(多用户共用时每人有自己的口径)。
@@ -351,35 +370,14 @@ async def create_app_components(
     # 任何初始化失败都不阻断问题流程。
     semantic_layer = None
     try:
-        from trove.services.semantic_layer.provider import (
-            SemanticLayerProvider,
-        )
+        from trove.services.semantic_layer.factory import build_provider
         adapter = await connector_registry.get()
         ds_name = connector_registry.default_name or "default"
-        schema = await adapter.get_schema()
-        known_tables = {t.name.lower() for t in schema.tables}
-        catalog = {
-            t.name.lower(): {c.name.lower() for c in t.columns}
-            for t in schema.tables
-        }
-        semantic_dir = (
-            Path.cwd() / config.semantic_layer_path / ds_name
-            if config.semantic_layer_path else Path.cwd() / ".trove" / "semantic" / ds_name
-        )
-        semantic_layer = SemanticLayerProvider(
-            directory=semantic_dir,
-            datasource=ds_name,
-            dialect=adapter.dialect(),
-            table_exists=lambda t: t.lower() in known_tables,
-            kb_semantics_path=kb.semantics_path(ds_name),
-            catalog=catalog,
-        )
-        if semantic_layer.enabled:
+        semantic_layer = await build_provider(kb, config, ds_name, adapter)
+        if semantic_layer is not None:
             logger.info(
                 "Semantic layer enabled: %s (+KB semantics.yml)",
                 semantic_layer.directory)
-        else:
-            semantic_layer = None
     except Exception as e:
         logger.warning(
             "Semantic layer init failed (%s); continuing without it.", e)
@@ -572,6 +570,7 @@ async def create_app_components(
         "lineage": lineage,
         "skills": skills,
         "presets": presets,
+        "question_coverage": question_coverage,
         "graphs": graphs,
         "session_manager": session_manager,
         "checkpointer": checkpointer,
@@ -850,6 +849,14 @@ async def async_main_serve(argv: list[str]) -> None:
             if jobs is not None:
                 try:
                     await jobs.store.dispose()
+                except Exception:
+                    pass
+            coverage = components.get("question_coverage")
+            if coverage is not None:
+                try:
+                    # 先收掉后台体检任务,再释放存储(aiosqlite 线程不关会
+                    # 挂住进程退出 —— 与 jobs.store 同款防线)。
+                    await coverage.dispose()
                 except Exception:
                     pass
 

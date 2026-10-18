@@ -99,6 +99,13 @@ export const router = createRouter({
           meta: { titleKey: 'ontology' },
         },
         {
+          // 覆盖率体检：逐题回放生产前段的管理端测量页（admin-only，默认拒绝档）。
+          path: 'question-coverage',
+          name: 'admin-question-coverage',
+          component: () => import('../views/admin/QuestionCoverageView.vue'),
+          meta: { titleKey: 'qcNav' },
+        },
+        {
           path: 'audit',
           name: 'admin-audit',
           component: () => import('../views/admin/AuditView.vue'),

@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[文档站](https://nivane.github.io/trove/)** —— 47 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[文档站](https://nivane.github.io/trove/)** —— 48 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -353,7 +353,7 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 47 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 48 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
 
 | | |
 |---|---|

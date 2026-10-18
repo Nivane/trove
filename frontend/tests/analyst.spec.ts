@@ -81,6 +81,7 @@ describe('navModel ↔ 路由 meta.roles 契约（R1 三处一致之一）', () 
       '/admin/kb',
       '/admin/semantic',
       '/admin/ontology',
+      '/admin/question-coverage',
       '/admin/skills',
       '/admin/decisions',
       '/admin/actions',

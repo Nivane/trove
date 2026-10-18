@@ -308,6 +308,145 @@ def candidate_specs(misses: list[Any], model: Any) -> list[dict[str, Any]]:
     return metrics + fields + entities
 
 
+def _outcome(
+    spec: dict[str, Any],
+    status: str,
+    *,
+    draft_id: str = "",
+    errors: list[str] | None = None,
+    entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """规格 → 逐条处理结果(``created|exists|invalid`` 闭集)。
+
+    ``entry`` 是内部键(新建草稿的完整条目),``capture_candidates`` 用它
+    保持旧返回形状;对外的 read 路径(覆盖率体检)只消费前六个键。
+    """
+    row: dict[str, Any] = {
+        "kind": str(spec.get("kind") or ""),
+        "name": str(spec.get("name") or ""),
+        "reason": str(spec.get("reason") or ""),
+        "status": status,
+        "draft_id": draft_id,
+        "errors": list(errors or []),
+    }
+    if entry is not None:
+        row["entry"] = entry
+    return row
+
+
+async def create_specs(
+    kb: Any,
+    datasource: str,
+    specs: list[dict[str, Any]],
+    *,
+    actor: str = "",
+    note_prefix: str = "auto",
+    max_candidates: int = MAX_CANDIDATES_PER_RUN,
+    validate: bool = False,
+    dialect: str | None = None,
+) -> list[dict[str, Any]]:
+    """候选规格 → pending 草稿;返回**逐条**结果,单条失败不连坐。
+
+    这是「规格 → 草稿」的唯一写路径:``capture_candidates``(软 MISS 收尾)
+    与覆盖率体检的「生成草稿」共用它,去重语义因此只有一份。
+
+    - **只写 pending**:``create_draft`` 只落 ``semantic_drafts.yml``;本函数
+      从不调用 ``confirm_draft``(确认门在人手里)。
+    - 幂等 = ``(kind, name)``:metric/field 按 pending 去重(已确认/已拒绝的
+      不进 pending 桶,允许重新起草);entity 按**全状态**去重(命名定过
+      一次就不再问)。命中 → ``exists``(带既有草稿 id)。
+    - ``validate=True`` 时逐条跑 ``validate_draft``(与 confirm 同一条应用
+      路径的干跑):不过门禁 → ``invalid`` + 错误文案,**不落一条注定
+      确认不了的草稿**。``capture_candidates`` 保持 ``validate=False``
+      ——老行为逐字节不变。
+    - ``spec["question"]``(可选)进 note:``{prefix}:{reason}:{evidence}:{q[:100]}``。
+    """
+    if kb is None or not datasource or not specs:
+        return []
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    try:
+        manager = SemanticManager(kb)
+    except Exception as e:  # 路径都构不出来:每条都如实报 invalid,不假装成功
+        logger.warning("Candidate manager unavailable (%s): %s", datasource, e)
+        return [_outcome(s, "invalid", errors=[f"semantic layer unavailable: {e}"])
+                for s in specs]
+
+    try:
+        entries = manager.drafts(datasource)
+    except Exception:
+        entries = {"pending": []}  # 读队列失败不挡写入:宁可多一条由人看
+    pending_ids: dict[tuple[str, str], str] = {}
+    decided_entities: dict[tuple[str, str], str] = {}
+    for status, bucket in entries.items():
+        for d in bucket:
+            key = (str(d.get("kind") or ""), str(d.get("name") or ""))
+            draft_id = str(d.get("id") or "")
+            if status == "pending":
+                pending_ids.setdefault(key, draft_id)
+            elif key[0] == "entity":
+                decided_entities.setdefault(key, draft_id)
+
+    document: dict[str, Any] | None = None
+    if validate:
+        try:
+            document = manager.document(datasource)
+        except Exception:
+            document = {}
+        from trove.services.semantic_layer.issues import validate_draft
+
+    outcomes: list[dict[str, Any]] = []
+    created = 0
+    for spec in specs:
+        if created >= max_candidates:
+            break
+        key = (str(spec.get("kind") or ""), str(spec.get("name") or ""))
+        if key in pending_ids:
+            outcomes.append(_outcome(spec, "exists", draft_id=pending_ids[key]))
+            continue
+        if key[0] == "entity" and key in decided_entities:
+            outcomes.append(
+                _outcome(spec, "exists", draft_id=decided_entities[key]))
+            continue
+        if validate:
+            check = validate_draft(
+                document, kind=key[0], action="upsert", name=key[1],
+                payload=spec.get("payload") or {}, dialect=dialect,
+            )
+            if not check.get("ok"):
+                errors = [
+                    str(item.get("message") or item)
+                    for item in (check.get("errors") or [])
+                ]
+                errors += [
+                    str(item.get("message") or item)
+                    for item in (check.get("warnings") or [])
+                ]
+                outcomes.append(_outcome(spec, "invalid", errors=errors[:10]))
+                continue
+        evidence = str(spec.get("evidence") or "")
+        note_head = f"{evidence}:" if evidence else ""
+        question = str(spec.get("question") or "")
+        try:
+            entry = await manager.create_draft(
+                datasource, key[0], "upsert", key[1],
+                payload=spec.get("payload"),
+                note=f"{note_prefix}:{spec.get('reason', '')}:"
+                     f"{note_head}{question[:100]}",
+                actor=actor,
+            )
+        except Exception as e:
+            logger.warning(
+                "Candidate draft write failed (%s, %s): %s",
+                datasource, key[1], e)
+            outcomes.append(_outcome(spec, "invalid", errors=[str(e)[:300]]))
+            continue
+        created += 1
+        outcomes.append(_outcome(
+            spec, "created", draft_id=str(entry.get("id") or ""), entry=entry))
+    return outcomes
+
+
 async def capture_candidates(
     kb: Any,
     datasource: str,
@@ -318,14 +457,9 @@ async def capture_candidates(
 ) -> list[dict[str, Any]]:
     """软 MISS → pending 草稿(best-effort;返回实际落库的草稿条目)。
 
-    幂等:``(kind, name)`` 已在 pending 队列 → 跳过(同题重跑不刷屏;
-    create_draft 自身无去重,这里是唯一的闸门)。单条失败不清空整批 ——
-    第一次写成功、第二条炸掉,第一条的候选不该被连坐。
-
-    实体候选多一道**全状态**去重(applied/rejected 也算):实体命名是
-    「定过一次就不用再问」的事,拒绝过的命名更不该回灌(与历史蒸馏的
-    ``(kind,name)`` 全状态去重同一姿态)。metric/field 保持 pending-only
-    —— 老行为逐字节不变。
+    幂等与去重语义全在 :func:`create_specs`(唯一写路径);本函数只负责
+    「当前模型 → 候选规格」与把问题带进 note(``auto:{reason}:...``,
+    与抽取前逐字节一致)。
     """
     if kb is None or not datasource or not misses:
         return []
@@ -340,42 +474,8 @@ async def capture_candidates(
     specs = candidate_specs(misses, model)
     if not specs:
         return []
-    try:
-        entries = manager.drafts(datasource)
-        pending = {
-            (str(d.get("kind") or ""), str(d.get("name") or ""))
-            for d in entries.get("pending", [])
-        }
-        # 实体候选的全状态桶:applied/rejected 里的 (entity, dataset)。
-        decided_entities = {
-            (str(d.get("kind") or ""), str(d.get("name") or ""))
-            for status, bucket in entries.items() if status != "pending"
-            for d in bucket
-            if str(d.get("kind") or "") == "entity"
-        }
-    except Exception:
-        pending, decided_entities = set(), set()  # 读队列失败不挡写入:宁可多一条由人看
-
-    created: list[dict[str, Any]] = []
-    for spec in specs:
-        if len(created) >= max_candidates:
-            break
-        if (spec["kind"], spec["name"]) in pending:
-            continue
-        if spec["kind"] == "entity" and (spec["kind"], spec["name"]) in decided_entities:
-            continue
-        evidence = str(spec.get("evidence") or "")
-        note_head = f"{evidence}:" if evidence else ""
-        try:
-            entry = await manager.create_draft(
-                datasource, spec["kind"], "upsert", spec["name"],
-                payload=spec["payload"],
-                note=f"auto:{spec['reason']}:{note_head}{str(question or '')[:100]}",
-            )
-        except Exception as e:
-            logger.warning(
-                "Candidate draft write failed (%s, %s): %s",
-                datasource, spec["name"], e)
-            continue
-        created.append(entry)
-    return created
+    tagged = [{**spec, "question": question} for spec in specs]
+    outcomes = await create_specs(
+        kb, datasource, tagged, max_candidates=max_candidates)
+    return [o["entry"] for o in outcomes
+            if o.get("status") == "created" and o.get("entry")]

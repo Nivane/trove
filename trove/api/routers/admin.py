@@ -39,6 +39,7 @@ from trove.core.types import DatasourceConfig
 from trove.services.datasource.naming import validate_datasource_name
 from trove.services.datasource.urls import build_url, parse_datasource_url
 from trove.services.kb.locks import KbInitBusy, KbInitLock
+from trove.workflow.miss_copy import RELATION_MISS_REASONS, miss_label
 
 router = APIRouter()
 
@@ -547,13 +548,11 @@ async def list_audit(
 
 # ── 拒绝频率报表(query.refused 的只读投影) ────────────────
 
-#: 关系未声明类的 compile_miss(声明指引见 refuse.py 的 _MISS_COPY):基数
-#: 未声明 / 扇出 / 多路径 / 不连通。A2 决策(d):不做「关系声明草稿」(错基数
-#: = 静默算错,代价不对称),替代就是把这类拒绝**单列出来**交回管理员的
-#: 可见决策 —— 这张报表就是那个「可见」。
-_RELATION_MISS_REASONS = (
-    "unknown_cardinality", "fan_out", "ambiguous_join_path", "unreachable_table",
-)
+#: 关系未声明类的 compile_miss(文案与名单的唯一权威 = workflow/miss_copy.py,
+#: 拒绝节点与本报表共用同一份):基数未声明 / 扇出 / 多路径 / 不连通。A2
+#: 决策(d):不做「关系声明草稿」(错基数 = 静默算错,代价不对称),替代就是
+#: 把这类拒绝**单列出来**交回管理员的可见决策 —— 这张报表就是那个「可见」。
+_RELATION_MISS_REASONS = RELATION_MISS_REASONS
 
 #: 聚合投影的读取上限:total 用 COUNT 报精确值,榜单按最新这么多行聚合;
 #: 超出时 capped=True(榜单计数是下界),由前端显示为「≥」。
@@ -693,11 +692,16 @@ def _refusal_report_projection(
         e for e in entries
         if str(e.get("miss_reason") or "") in relation_set
     ]
+    # miss 分因带双语标签 —— 前端直接渲染后端给的文案,不再复制 slug 文案
+    # (文案唯一权威 = workflow/miss_copy.py;与拒绝节点同一份)。
+    by_miss = _distribution("miss_reason")
+    for row in by_miss:
+        row["label"] = miss_label(row["reason"])
     return {
         "total": total,
         "capped": capped,
         "by_reason": _distribution("reason"),
-        "by_miss": _distribution("miss_reason"),
+        "by_miss": by_miss,
         "by_table": _by_table(relation_entries),
         "top_questions": _group(entries)[:_REFUSAL_TOP_N],
         "relationship_missing": {
