@@ -8,10 +8,24 @@ export class ApiError extends Error {
   status: number
   /** 429 的 `Retry-After`（秒）；后端没给数值头时为 undefined（P6 §2.4）。 */
   retryAfter?: number
-  constructor(status: number, message: string, retryAfter?: number) {
+  /**
+   * 后端响应体里的原始 `detail`（字符串 / 数组 / 结构化对象）。
+   *
+   * `message` 仍然只承载**一句人话**；结构化字段（如试跑成本确认门的
+   * `n_items/tier/model`）必须从 `detail` 读 —— 把它们拼进 message 再
+   * 用正则拆回来是第二套会漂移的解析。
+   */
+  detail?: unknown
+  constructor(
+    status: number,
+    message: string,
+    retryAfter?: number,
+    detail?: unknown,
+  ) {
     super(message)
     this.status = status
     this.retryAfter = retryAfter
+    this.detail = detail
   }
 }
 
@@ -44,9 +58,13 @@ async function onUnauthorized() {
 async function apiError(resp: Response): Promise<ApiError> {
   const raw = await resp.text().catch(() => '')
   let message = raw || resp.statusText
+  let detail: unknown
   if (raw) {
     try {
       const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        detail = (parsed as { detail?: unknown }).detail
+      }
       if (parsed && typeof parsed.detail === 'string') {
         message = parsed.detail
       } else if (parsed && Array.isArray(parsed.detail)) {
@@ -69,7 +87,7 @@ async function apiError(resp: Response): Promise<ApiError> {
       /* keep raw text */
     }
   }
-  return new ApiError(resp.status, message, parseRetryAfter(resp))
+  return new ApiError(resp.status, message, parseRetryAfter(resp), detail)
 }
 
 export async function apiFetch(
