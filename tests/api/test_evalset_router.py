@@ -147,6 +147,51 @@ class TestItems:
         assert body["source"] == "manual"
         assert body["evalset_rev"]
 
+    async def test_tags_use_the_model_dict_shape(self, admin_client):
+        body = await _create_item(
+            admin_client, tags={"metric": True, "owner": "analytics"})
+        assert body["tags"] == {"metric": True, "owner": "analytics"}
+
+        # 列表形状在 pydantic 层就被拒(422),不会走到 dict(list) 的
+        # 巧合语义(``["ab"]`` → ``{"a": "b"}``),更不会 500。
+        r = await admin_client.post(
+            f"{BASE}/items",
+            json={"question": "另一个问题？",
+                  "reference_sql": "SELECT 1", "tags": ["metric"]})
+        assert r.status_code == 422, r.text
+
+    async def test_patch_replaces_and_clears_tags(self, admin_client):
+        item = await _create_item(admin_client, tags={"metric": True})
+        r = await admin_client.patch(
+            f"{BASE}/{item['qid']}", json={"tags": {"owner": "ops"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["tags"] == {"owner": "ops"}
+
+        # None = 不改,{} = 清空 —— 两个状态必须分得开。
+        r = await admin_client.patch(
+            f"{BASE}/{item['qid']}", json={"note": "reviewed"})
+        assert r.json()["tags"] == {"owner": "ops"}
+        r = await admin_client.patch(
+            f"{BASE}/{item['qid']}", json={"tags": {}})
+        assert r.status_code == 200, r.text
+        assert r.json()["tags"] == {}
+
+    async def test_write_under_a_held_lock_is_409(self, admin_client,
+                                                  evalset_app):
+        """真实锁竞争 → 409 evalset.busy(不是 500)。"""
+        from trove.services.evalset.lock import EvalsetLock
+
+        lock = EvalsetLock(_project_root(evalset_app) / ".trove" / "evalsets")
+        with lock.acquire(DS):
+            r = await admin_client.post(
+                f"{BASE}/items",
+                json={"question": "有多少学生？",
+                      "reference_sql": "SELECT COUNT(*) FROM students"})
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["code"] == "evalset.busy"
+        assert detail["issues"] == []
+
     async def test_patch_edits_a_pending_item(self, admin_client):
         item = await _create_item(admin_client)
         r = await admin_client.patch(
@@ -252,6 +297,9 @@ class TestLatestVerdict:
         degraded = [d for d in body["degraded"]
                     if d["code"] == "run_store_unreadable"]
         assert len(degraded) == 1, "读不出的降级条目必须去重"
+        # 只有 verified 坏,降级条目只报 verified —— 不能把健康的 tier
+        # 一起列为「结果读不出」。
+        assert degraded[0]["tiers"] == ["verified"]
 
 
 # ── run / generate task plumbing ─────────────────────────
@@ -288,6 +336,33 @@ class TestRun:
         assert status["status"] == "done"
         assert status["kind"] == "evalset_run"
         assert status["summary"] == "exit=0"
+
+    async def test_gate_counts_only_exact_confirmed_items(self, admin_client,
+                                                         evalset_app):
+        """n_items 复刻 runner ``_select``:非 exact 的已确认条目不计数。"""
+        first = await _create_item(
+            admin_client, question="有多少学生？",
+            sql="SELECT COUNT(*) FROM students")
+        second = await _create_item(
+            admin_client, question="平均分是多少？",
+            sql="SELECT AVG(grade) FROM students")
+        r = await admin_client.post(
+            f"{BASE}/confirm", json={"qids": [first["qid"], second["qid"]]})
+        assert r.status_code == 200, r.text
+
+        # 手编资产里可能存在非 exact 的已确认条目(confirm 门挡的是新写入,
+        # 历史/legacy 数据不归它管)。
+        from trove.services.evalset.store import load_evalset, save_evalset
+
+        root = _project_root(evalset_app)
+        doc, _issues, _exists = load_evalset(root, DS)
+        next(item for item in doc.items if item.qid == second["qid"]).match = (
+            "sidecar")
+        save_evalset(root, doc)
+
+        r = await admin_client.post(f"{BASE}/run", json={})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["n_items"] == 1
 
 
 class TestGenerate:
@@ -345,7 +420,10 @@ class TestPreview:
         # masking 默认开启;模型读不出来 → 取数之前拒绝(服务层契约)。
         evalset_app.state.semantic_layer = SimpleNamespace(model=lambda: None)
 
-        r = await admin_client.post(f"{BASE}/{item['qid']}/preview")
+        r = await admin_client.get(f"{BASE}/{item['qid']}/preview")
         assert r.status_code == 403, r.text
         assert r.json()["detail"]["code"] == "evalset.masking_refused"
         assert "rows" not in r.text
+        # R30:预览只留 GET,不再有 POST 写入口。
+        post = await admin_client.post(f"{BASE}/{item['qid']}/preview")
+        assert post.status_code == 405, post.text

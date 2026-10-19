@@ -56,6 +56,7 @@ from trove.services.evalset.generate import (
     GenerateRequest,
     generate_evalset,
 )
+from trove.services.evalset.lock import EvalsetBusy
 from trove.services.evalset.service import EvalsetError, EvalsetService
 from trove.services.kb.init_tasks import init_tasks
 
@@ -116,12 +117,20 @@ def _status_for(code: str) -> int:
     return 400
 
 
-def _http(exc: EvalsetError) -> HTTPException:
+def _http(exc: EvalsetError | EvalsetBusy) -> HTTPException:
+    """两种服务异常 → 同一错误形状。
+
+    ``EvalsetBusy`` **不是** ``EvalsetError``(锁竞争在写锁模块里,不依赖
+    服务层的错误类型):真实锁竞争必须落成 409 ``evalset.busy``,而不是
+    逃逸成 500。两者在这里汇合,``_status_for`` 的 busy 分支因此是活代码。
+    """
+    if isinstance(exc, EvalsetBusy):
+        code, message, issues = "evalset.busy", str(exc), []
+    else:
+        code, message, issues = exc.code, exc.message, exc.issues
     return HTTPException(
-        status_code=_status_for(exc.code),
-        detail={
-            "code": exc.code, "message": exc.message, "issues": exc.issues,
-        },
+        status_code=_status_for(code),
+        detail={"code": code, "message": message, "issues": issues},
     )
 
 
@@ -155,13 +164,15 @@ def _latest_verdicts(
     """
     verdicts: dict[str, dict[str, Any]] = {}
     degraded: list[dict[str, Any]] = []
-    unreadable = False
+    unreadable_tiers: list[str] = []
     for tier in _TIERS:
         try:
             entries = read_latest_entries(root, datasource, tier)
             summary = read_latest_summary(root, datasource, tier)
         except RunStoreUnreadable as exc:
-            unreadable = True
+            # 只记**真正读失败**的 tier —— 把健康的 tier 也列进降级条目,
+            # 会让按 tier 过滤的读端误报「结果缺失」。
+            unreadable_tiers.append(tier)
             logger.warning(
                 "evalset api: unreadable run store for %s/%s: %s",
                 datasource, tier, exc,
@@ -184,14 +195,14 @@ def _latest_verdicts(
             if entry.get("reference_error") is not None:
                 verdict["reference_error"] = entry["reference_error"]
             verdicts[qid] = verdict
-    if unreadable:
+    if unreadable_tiers:
         degraded.append({
             "code": "run_store_unreadable",
             "message": (
                 "latest run results exist but could not be read; "
                 "latest_verdict is null for the affected tiers"
             ),
-            "tiers": list(_TIERS),
+            "tiers": unreadable_tiers,
         })
     return verdicts, degraded
 
@@ -239,7 +250,7 @@ async def list_items(
         data = await service.list_items(
             name, status=status, tier=tier, source=source, q=q,
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
     verdicts, degraded = _latest_verdicts(_root(request), name)
     data["items"] = [
@@ -265,7 +276,7 @@ async def get_readiness(
     service = _service(request, name, admin)
     try:
         return await service.readiness(name)
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -341,7 +352,7 @@ async def create_item(
             actor=_actor(admin),
             force=body.force,
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -358,7 +369,7 @@ async def confirm_batch(
         return await service.confirm_batch(
             name, body.qids, actor=_actor(admin), force=body.force,
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -423,8 +434,8 @@ async def generate(
     task_id = str(task["id"])
 
     async def _run() -> None:
-        init_tasks.update(task_id, stage="generate", progress=5)
         try:
+            init_tasks.update(task_id, stage="generate", progress=5)
             report = await generate_evalset(
                 root,
                 GenerateRequest(
@@ -521,9 +532,14 @@ async def run(
     if not payload.compile_only and not payload.confirm:
         try:
             listed = await service.list_items(name, tier=tier, status="confirmed")
-        except EvalsetError as exc:
+        except (EvalsetError, EvalsetBusy) as exc:
             raise _http(exc) from exc
-        n_items = len(listed.get("items") or [])
+        # 与 runner ``_select`` 同口径:confirmed + exact 才是会真正跑的题;
+        # 非 exact 条目被 runner 跳过,不该出现在成本提示的数字里。
+        n_items = sum(
+            1 for item in (listed.get("items") or [])
+            if str(item.get("match") or "") == "exact"
+        )
         raise HTTPException(
             status_code=400,
             detail={
@@ -561,8 +577,8 @@ async def run(
     task_id = str(task["id"])
 
     async def _run() -> None:
-        init_tasks.update(task_id, stage="run", progress=5)
         try:
+            init_tasks.update(task_id, stage="run", progress=5)
             result = await run_evalset(RunOptions(
                 project_root=root,
                 datasource=name,
@@ -604,7 +620,27 @@ async def run_status(
     return _task_status(name, "evalset_run")
 
 
-# ── 读:单条 / 预览 ─────────────────────────────────────
+# ── 读:预览 / 单条 ─────────────────────────────────────
+
+
+@router.get("/{qid}/preview")
+async def preview_item(
+    name: str,
+    qid: str,
+    request: Request,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict:
+    """参考 SQL 的有界预览(20 行 / 5s),经脱敏后才返回。
+
+    R30:只留 GET —— 预览是纯只读动作,没有消费方需要 POST;把一次只读
+    预览广告成写语义只会扩大 CSRF 面。声明在 ``/{qid}`` 之前(顺序纪律)。
+    """
+    service = _service(request, name, admin)
+    principal = await get_principal(request, admin)
+    try:
+        return await service.preview(name, qid, principal=principal)
+    except (EvalsetError, EvalsetBusy) as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/{qid}")
@@ -618,7 +654,7 @@ async def get_item(
     service = _service(request, name, admin)
     try:
         data = await service.list_items(name)
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
     item = next(
         (row for row in (data.get("items") or [])
@@ -657,7 +693,7 @@ async def patch_item(
             note=body.note,
             force=body.force,
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -675,7 +711,7 @@ async def confirm_item(
             name, qid, actor=_actor(admin),
             force=bool(body.force) if body else False,
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -693,7 +729,7 @@ async def reject_item(
             name, qid, actor=_actor(admin),
             reason=body.reason if body else "",
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -711,7 +747,7 @@ async def vouch_item(
         return await service.vouch(
             name, qid, actor=_actor(admin), note=body.note if body else "",
         )
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc
 
 
@@ -729,26 +765,5 @@ async def retire_item(
             name, qid, actor=_actor(admin),
             reason=body.reason if body else "",
         )
-    except EvalsetError as exc:
-        raise _http(exc) from exc
-
-
-@router.post("/{qid}/preview")
-@router.get("/{qid}/preview", include_in_schema=False)
-async def preview_item(
-    name: str,
-    qid: str,
-    request: Request,
-    admin: dict[str, Any] = Depends(require_admin),
-) -> dict:
-    """参考 SQL 的有界预览(20 行 / 5s),经脱敏后才返回。
-
-    GET 别名是两份需求文档间的一处不一致(brief 写 GET、任务书正文写
-    POST):两者都答,走同一条只读路径;改的只是方法,不是权限或脱敏。
-    """
-    service = _service(request, name, admin)
-    principal = await get_principal(request, admin)
-    try:
-        return await service.preview(name, qid, principal=principal)
-    except EvalsetError as exc:
+    except (EvalsetError, EvalsetBusy) as exc:
         raise _http(exc) from exc

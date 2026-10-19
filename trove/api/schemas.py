@@ -699,21 +699,27 @@ class EvalsetItemCreate(BaseModel):
 
     SQL 的语法校验、试执行、泄漏与重复检测都在服务层(``EvalsetError``
     决定 HTTP 状态),这里只做形状;``force`` 与 CLI 的 ``--force`` 同义。
+    ``tags`` 是 **dict**(与 ``EvalsetItem.tags``、CLI ``_parse_tags`` 同一
+    形状):列表形状在这里就被 pydantic 拒绝(422),而不是送进服务层让
+    ``dict(list)`` 的巧合语义静默写坏资产。
     """
 
     question: str = Field(min_length=1)
     reference_sql: str = Field(min_length=1)
-    tags: list[str] = Field(default_factory=list)
+    tags: dict[str, Any] = Field(default_factory=dict)
     note: str = ""
     force: bool = False
 
 
 class EvalsetItemPatch(BaseModel):
-    """PATCH /…/evalset/{qid} body —— 只改给出的字段(``None`` = 不动)。"""
+    """PATCH /…/evalset/{qid} body —— 只改给出的字段(``None`` = 不动)。
+
+    ``tags=None`` = 不改,``tags={}`` = 清空(与服务的同一区分)。
+    """
 
     question: str | None = None
     reference_sql: str | None = None
-    tags: list[str] | None = None
+    tags: dict[str, Any] | None = None
     note: str | None = None
     force: bool = False
 
