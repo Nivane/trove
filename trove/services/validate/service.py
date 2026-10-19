@@ -42,6 +42,8 @@ from trove.services.decision.rules import (
     parse_rule,
 )
 from trove.services.decision.service import DecisionService
+from trove.services.evalset.leakage import check_leakage, load_example_questions
+from trove.services.evalset.store import load_evalset
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
@@ -52,6 +54,7 @@ from trove.services.kb.lint import (
 )
 from trove.services.kb.live_lint import check_enums, check_undocumented_columns
 from trove.services.kb.service import KbService, _parse_file
+from trove.services.kb.sql_guard import sqlglot_ok
 from trove.services.presets.models import Preset, parse_preset
 from trove.services.presets.service import _builtin_root
 from trove.services.semantic_layer.ossie import parse_ossie
@@ -172,6 +175,75 @@ def _datasource_names(kb: KbService) -> list[str]:
         d.name for d in kb._datasource_dirs()
         if any(d.glob("*.yml"))
     )
+
+
+# ── 验收集(evalset)──────────────────────────────────────
+
+
+def _check_evalset(datasource: str, project_root: Path, *,
+                   has_kb: bool) -> list[Issue]:
+    """Lint ``.trove/evalsets/<datasource>/evalset.yml`` (zero LLM).
+
+    A missing asset is not an issue — a datasource may simply not have an
+    evalset yet. Parse problems keep their own ``evalset.<code>`` ids (the
+    reader's code is already namespaced), so CI can filter one family.
+
+    Content is judged only on ``pending``/``confirmed`` items: ``rejected``
+    and ``retired`` rows are tombstones kept for dedup, and linting their
+    SQL/shape would report on entries that can never score. Leakage is
+    re-read from the *current* ``examples.yml`` — the same live check the
+    confirmation gate runs; a stored ``leakage`` flag describes the last
+    check, not a permanent property.
+    """
+    asset = project_root / ".trove" / "evalsets" / datasource / "evalset.yml"
+    if not asset.is_file():
+        return []
+
+    doc, parse_issues, _exists = load_evalset(project_root, datasource)
+    issues = [
+        _err(issue.code, issue.message, datasource=datasource)
+        for issue in parse_issues
+    ]
+    examples = load_example_questions(
+        project_root / ".trove" / "kb" / datasource / "examples.yml")
+
+    for item in doc.items:
+        if item.status not in ("pending", "confirmed"):
+            continue
+        sql = item.reference_sql.strip()
+        if item.status == "confirmed":
+            if not sql:
+                issues.append(_err(
+                    "evalset.confirmed_no_sql",
+                    f"条目 {item.qid!r} 已确认但没有 reference_sql —— 无法评分",
+                    target=item.qid, datasource=datasource))
+            if item.match != "exact":
+                issues.append(_err(
+                    "evalset.confirmed_shape",
+                    f"条目 {item.qid!r} 已确认但 match={item.match!r};"
+                    "P0 只有 exact 可确认/可运行",
+                    target=item.qid, datasource=datasource))
+        if sql and not sqlglot_ok(sql):
+            issues.append(_err(
+                "evalset.sql_invalid",
+                f"条目 {item.qid!r} 的 reference_sql 无法解析: {sql[:80]!r}",
+                target=item.qid, datasource=datasource))
+        hit = check_leakage(item.question, examples)
+        if hit is not None:
+            make = _err if item.status == "confirmed" else _warn
+            issues.append(make(
+                "evalset.leakage",
+                f"条目 {item.qid!r} 的问题与 KB 示例重合({hit.note()})"
+                " —— 确认门会拒绝;清掉示例或改写问题",
+                target=item.qid, datasource=datasource))
+
+    if not has_kb:
+        issues.append(_warn(
+            "evalset.no_kb",
+            "没有 KB 目录(.trove/kb/<datasource>/)—— 泄漏检查无示例可对照,"
+            "确认门也无从复检",
+            datasource=datasource))
+    return issues
 
 
 def _collect_entries(ds_dir: Path) -> tuple[
@@ -1462,16 +1534,41 @@ async def run_validate(
                 "kb", f"KB 目录不存在: {kb.kb_dir / datasource}",
                 datasource=datasource))
     else:
-        names = _datasource_names(kb)
+        # 验收集可以建在还没有 KB 的源上(先攒题、后接 KB),所以发现面
+        # 取两侧并集;``.locks`` 是资产目录的锁实现,不是数据源。
+        names = sorted({
+            *_datasource_names(kb),
+            *[p.name for p in (root / ".trove" / "evalsets").glob("*")
+              if p.is_dir() and p.name != ".locks"],
+        })
         if not names:
             report.issues.append(_warn(
                 "kb", "未发现任何数据源 KB(.trove/kb/<datasource>/)"))
 
     for name in names:
         ds_dir = kb.kb_dir / name
+        # 验收集检查放在 KB 目录判定**之前**:evalset-only 数据源没有 KB
+        # 目录,在旧循环里会被 ``continue`` 静默跳过。
+        try:
+            report.issues += _check_evalset(
+                name, root, has_kb=ds_dir.is_dir())
+            if (root / ".trove" / "evalsets" / name / "evalset.yml").is_file():
+                # datasources = 实际检查过的源;一个有目录没资产的空目录
+                # 不改报告形状。
+                if name not in report.datasources:
+                    report.datasources.append(name)
+                doc, _issues, _exists = load_evalset(root, name)
+                report.counts[f"{name}.evalset"] = len(doc.items)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("validate: evalset 检查失败 %s", name)
+            report.issues.append(_err(
+                "validate.internal", f"evalset 检查异常: {e}",
+                datasource=name))
+
         if not ds_dir.is_dir():
             continue
-        report.datasources.append(name)
+        if name not in report.datasources:
+            report.datasources.append(name)
         try:
             issues, counts = _check_kb(name, ds_dir)
             report.issues += issues
