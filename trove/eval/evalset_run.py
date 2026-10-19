@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import os
 import re
@@ -205,17 +204,27 @@ def _kb_dir(options: RunOptions) -> Path:
     return Path(kb_dir)
 
 
-async def _kb_rev(kb: Any, datasource: str) -> dict[str, Any] | None:
-    """KB 指纹;KB 缺席/读取失败 → ``None``(**绝不猜一个 rev**)。"""
+async def _kb_rev_probe(kb: Any, datasource: str) -> tuple[bool, dict[str, Any] | None]:
+    """``(readable, snapshot)``:KB 缺席/无 ``kb_rev``/读取失败 → ``(False, None)``。
+
+    区分「KB 未启用」与「读取失败」是收尾摘要的事:前者静默,后者必须
+    如实标注 ``kb_rev_end_unavailable`` —— 否则一次读取失败会被读成
+    「KB 中途变了」(一个从未发生过的结论)。
+    """
     if kb is None:
-        return None
+        return False, None
     fn = getattr(kb, "kb_rev", None)
     if fn is None:
-        return None
+        return False, None
     try:
-        return await fn(datasource)
+        return True, await fn(datasource)
     except Exception:  # noqa: BLE001 — 指纹缺失是缺席容忍,不阻断跑题
-        return None
+        return False, None
+
+
+async def _kb_rev(kb: Any, datasource: str) -> dict[str, Any] | None:
+    """KB 指纹;KB 缺席/读取失败 → ``None``(**绝不猜一个 rev**)。"""
+    return (await _kb_rev_probe(kb, datasource))[1]
 
 
 async def _ensure_synced(kb: Any, datasource: str) -> None:
@@ -335,10 +344,6 @@ async def _judge_one(
             graph, item.question, run_id=run_id, index=index,
             lang=options.lang, datasource=datasource,
         )
-        # 兼容同步 runner / 测试替身:其返回值本身也可能是 awaitable
-        # (真正的 graph_runner 返回 WorkflowState,这里零开销)。
-        while inspect.isawaitable(final):
-            final = await final
     except Exception as exc:  # noqa: BLE001 — 单题崩溃不拖垮整轮
         verdict = "CRASH"
         error = f"crash: {str(exc)[:200]}"
@@ -475,6 +480,7 @@ def _build_summary(
     evalset_fingerprint: str,
     kb_start: Any,
     kb_end: Any,
+    kb_end_readable: bool = False,
 ) -> dict[str, Any]:
     """summary = 设计 §10 的形状 + ``run_id/datasource/tier/at/degraded``。
 
@@ -491,7 +497,9 @@ def _build_summary(
 
     start_rev = _rev_of(kb_start)
     end_rev = _rev_of(kb_end)
-    changed = kb_end != kb_start
+    # 收尾快照读失败 ≠ KB 变了:先钉住这个状态,再谈变更。
+    end_unavailable = bool(start_rev) and kb_end is None and not kb_end_readable
+    changed = (kb_end != kb_start) and not end_unavailable
     degraded: list[dict[str, Any]] = []
     if changed:
         degraded.append({
@@ -500,6 +508,14 @@ def _build_summary(
                 "KB rev changed during the run "
                 f"({start_rev or 'none'} -> {end_rev or 'none'}); "
                 "scores are a mixed-version view"
+            ),
+        })
+    elif end_unavailable:
+        degraded.append({
+            "code": "kb_rev_end_unavailable",
+            "message": (
+                "KB rev could not be re-read after the run; "
+                "mid-run changes cannot be ruled out"
             ),
         })
 
@@ -521,7 +537,7 @@ def _build_summary(
         "reference_missing": reference_missing,
         "evalset_rev": evalset_fingerprint,
         "kb_rev": start_rev,
-        "kb_rev_end": end_rev,
+        "kb_rev_end": end_rev if kb_end is not None else None,
         "kb_rev_changed_mid_run": changed,
         "degraded": degraded,
     }
@@ -616,7 +632,7 @@ async def _run_formal(
             kb_start=kb_start, evalset_fingerprint=fingerprint,
         ))
 
-    kb_end = await _kb_rev(options.kb, datasource)
+    kb_end_readable, kb_end = await _kb_rev_probe(options.kb, datasource)
     summary = _build_summary(
         run_id=run_id,
         datasource=datasource,
@@ -627,6 +643,7 @@ async def _run_formal(
         evalset_fingerprint=fingerprint,
         kb_start=kb_start,
         kb_end=kb_end,
+        kb_end_readable=kb_end_readable,
     )
     out_dir = _run_root(options.project_root, datasource, options.tier)
     _write_run(out_dir, run_id, entries, summary)
@@ -659,19 +676,27 @@ async def _run_locked(
 ) -> RunResult:
     """持有 KB init 锁后的完整流程:选题 → 护栏 → 正式跑。"""
     runnable, skipped = _select(doc, options)
-    if not runnable and not skipped:
-        # 该 tier 没有已确认的题:退出 2(与「资产解析失败」同档 ——
-        # 没有任何可评分的题,一次"成功"的空跑只会让人误以为测过了)。
+    if not runnable:
+        # R23:没有可运行条目 = 响亮的「没得跑」,exit 2 且**不写 run 文件** ——
+        # 空跑写出的空 latest.* 会覆盖上一份好结果,让就绪视图把「从未测过」
+        # 呈现成「测过、零题」。跳过计数照常可见(不是失败,但也不许消失)。
+        if skipped:
+            message = (
+                f"tier={options.tier} 没有可运行的题目:"
+                f"{len(skipped)} 条被跳过(match != exact);未写运行文件。"
+            )
+        else:
+            message = (
+                f"tier={options.tier} 没有已确认的题目;"
+                "先确认验收集条目再运行。"
+            )
         return RunResult(
             exit_code=2,
             tier=options.tier,
-            summary={},
+            summary={"skipped": len(skipped)},
             entries=[],
-            skipped=0,
-            message=(
-                f"tier={options.tier} 没有已确认的题目;"
-                "先确认验收集条目再运行。"
-            ),
+            skipped=len(skipped),
+            message=message,
         )
 
     if options.compile_only:
