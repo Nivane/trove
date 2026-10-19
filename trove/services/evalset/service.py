@@ -181,7 +181,9 @@ class EvalsetService:
             )
             doc.items.append(item)
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: create {item.qid} for {datasource}")
+            self._commit(
+                path, f"evalset: create {item.qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.create", actor, {
                 "qid": item.qid,
                 "question": question,
@@ -203,7 +205,9 @@ class EvalsetService:
                 datasource, doc, item, actor=actor, force=force,
             )
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: confirm {qid} for {datasource}")
+            self._commit(
+                path, f"evalset: confirm {qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.confirm", actor, {
                 "qid": qid,
                 "force": bool(force),
@@ -264,6 +268,7 @@ class EvalsetService:
                     path,
                     f"evalset: confirm {applied} item(s) for {datasource} "
                     f"({listed}{more})",
+                    actor,
                 )
             return {
                 "results": results,
@@ -286,7 +291,9 @@ class EvalsetService:
             item.rejection_reason = str(reason or "")
             resolve_duplicates(doc, item.qid)
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: reject {qid} for {datasource}")
+            self._commit(
+                path, f"evalset: reject {qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.reject", actor, {
                 "qid": qid,
                 "reason": item.rejection_reason,
@@ -325,6 +332,7 @@ class EvalsetService:
                     "editing a confirmed item requires a note",
                 )
 
+            question_changed = False
             if question is not None:
                 new_question = str(question).strip()
                 if not new_question:
@@ -332,6 +340,7 @@ class EvalsetService:
                         "evalset.invalid_asset", "question must not be empty",
                     )
                 if new_question != item.question:
+                    question_changed = True
                     item.question = new_question
                     # 编辑问题后**自动重查并更新**泄漏标记(设计 §6.5):
                     # 编辑是改写题的合法路径,确认门才是拒绝的出口。
@@ -339,10 +348,16 @@ class EvalsetService:
                     item.leakage = hit is not None
                     item.leakage_hit = hit.note() if hit is not None else ""
 
-            if reference_sql is not None and reference_sql != item.reference_sql:
+            reference_sql_changed = False
+            if reference_sql is not None:
+                # 显式给出的参考 SQL 是**人工提供的 oracle**(采集条目正是
+                # 靠它补齐 `needs_reference`):即使文本与存量相同也照常过
+                # 护栏 —— 存量可能来自未经护栏的路径,文本相同不代表它合规。
                 candidate = str(reference_sql)
+                reference_sql_changed = candidate != item.reference_sql
                 await self._validate_reference(datasource, candidate)
                 item.reference_sql = candidate
+                item.needs_reference = False
 
             if tags is not None:
                 item.tags = dict(tags or {})
@@ -358,11 +373,13 @@ class EvalsetService:
 
             item.content_hash = content_hash(item.question, item.reference_sql)
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: edit {qid} for {datasource}")
+            self._commit(
+                path, f"evalset: edit {qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.edit", actor, {
                 "qid": qid,
-                "question_changed": question is not None,
-                "reference_sql_changed": reference_sql is not None,
+                "question_changed": question_changed,
+                "reference_sql_changed": reference_sql_changed,
                 "force": bool(force),
             })
             return self._result(doc, item)
@@ -397,7 +414,9 @@ class EvalsetService:
             marker = f"vouched: {note_text}"
             item.note = f"{item.note}; {marker}" if item.note else marker
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: vouch {qid} for {datasource}")
+            self._commit(
+                path, f"evalset: vouch {qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.vouch", actor, {
                 "qid": qid,
                 "previous_origin": previous_origin,
@@ -421,7 +440,9 @@ class EvalsetService:
                 item.note = f"{item.note}; {marker}" if item.note else marker
             resolve_duplicates(doc, item.qid)
             path = save_evalset(self.root, doc)
-            self._commit(path, f"evalset: retire {qid} for {datasource}")
+            self._commit(
+                path, f"evalset: retire {qid} for {datasource}", actor,
+            )
             await self._audit_event("evalset.retire", actor, {
                 "qid": qid,
                 "reason": reason_text,
@@ -440,7 +461,9 @@ class EvalsetService:
         的永远是一份完整版本)。
 
         失败方向取严:SQL 解析失败/执行失败都不会把未脱敏的行交出去;
-        脱敏开启而模型读不出来 → :class:`MaskingError` → 拒绝预览。
+        脱敏开启而模型读不出来 → **执行前**就以 ``evalset.masking_refused``
+        拒绝(绝不先取一批自己脱不了敏的行);``apply`` 阶段的
+        :class:`MaskingError` 同样拒绝。
         """
         doc = self._load_or_raise(datasource)
         item = self._find(doc, qid)
@@ -455,6 +478,29 @@ class EvalsetService:
                 "no datasource registry is configured for preview",
             )
 
+        # 脱敏依据先于执行取齐:``build_masker`` 只在部署级开启时返回
+        # masker,而开启后**没有可读语义模型**时它的 ``apply`` 会原样返回
+        # 行 —— 那不是「脱敏过」。模型读不出来就在取数之前拒绝(设计 §7.4)。
+        provider = await self._provider(datasource)
+        masker = build_masker(semantic_layer=provider, config=self.config)
+        masking: Any = "off"
+        if masker is not None:
+            model = None
+            if provider is not None:
+                try:
+                    model = provider.model()
+                except Exception as exc:  # noqa: BLE001 — provider 契约是从不上抛
+                    raise EvalsetError(
+                        "evalset.masking_refused",
+                        "masking is enabled but the semantic model is "
+                        f"unavailable: {exc}",
+                    ) from exc
+            if model is None:
+                raise EvalsetError(
+                    "evalset.masking_refused",
+                    "masking is enabled but the semantic model is unavailable",
+                )
+
         wrapped = f"SELECT * FROM ({sql}) t LIMIT {PREVIEW_LIMIT}"
         try:
             result = await asyncio.wait_for(
@@ -468,14 +514,7 @@ class EvalsetService:
 
         columns = list(getattr(result, "columns", []) or [])
         rows = [list(row) for row in (getattr(result, "rows", []) or [])]
-        masker = build_masker(
-            semantic_layer=await self._provider(datasource),
-            config=self.config,
-        )
-        if masker is None:
-            # 部署级关闭:原样返回,并如实标注(不是「脱敏过」)。
-            masking: Any = "off"
-        else:
+        if masker is not None:
             try:
                 rows, report = masker(
                     rows, columns,
@@ -547,15 +586,38 @@ class EvalsetService:
         那一次的指标;摘要存在但读不出 = 该 tier ``None`` + ``available=
         false`` + ``degraded``(去重一条)。语义模型/连接器不可用只影响
         ``coverage``,不让整份 readiness 报错(R16)。
+
+        资产本身读不出(`evalset.yml` 坏/解析 issue)同样不是「空集」:
+        ``available=false`` + 一条 ``asset_unreadable``,计数/覆盖/修订一律
+        ``None`` —— 拿空文档算一份全 0 的「健康报告」会静默把坏资产洗成
+        「还没建验收集」。
         """
-        doc, _issues, _exists = load_evalset(self.root, datasource)
+        doc, issues, _exists = load_evalset(self.root, datasource)
         all_items = list(doc.items)
         degraded: list[dict[str, Any]] = []
+        available = not issues
 
-        coverage = await self._coverage(datasource, all_items, degraded)
+        if issues:
+            degraded.append({
+                "code": "asset_unreadable",
+                "message": (
+                    "could not read evalset.yml; counts and coverage are "
+                    "unavailable: " + "; ".join(
+                        f"{issue.code}: {issue.message}" for issue in issues[:3]
+                    ) + (" …" if len(issues) > 3 else "")
+                ),
+            })
+            coverage: dict[str, Any] | None = None
+            counts: dict[str, int] | None = None
+            by_tier: dict[str, dict[str, int]] | None = None
+            rev: str | None = None
+        else:
+            coverage = await self._coverage(datasource, all_items, degraded)
+            counts = self._counts(all_items)
+            by_tier = self._by_tier(all_items)
+            rev = evalset_rev(doc)
 
         latest_runs: dict[str, Any] = {}
-        available = True
         unreadable_tiers: list[str] = []
         for tier in _TIERS:
             summary, readable = self._read_summary(datasource, tier)
@@ -575,12 +637,12 @@ class EvalsetService:
         return {
             "datasource": datasource,
             "available": available,
-            "counts": self._counts(all_items),
-            "by_tier": self._by_tier(all_items),
+            "counts": counts,
+            "by_tier": by_tier,
             "coverage": coverage,
             "latest_runs": latest_runs,
             "degraded": degraded,
-            "evalset_rev": evalset_rev(doc),
+            "evalset_rev": rev,
         }
 
     # ── 内部:加载/校验 ─────────────────────────────────────────
@@ -639,6 +701,10 @@ class EvalsetService:
                 "evalset.leakage",
                 f"question matches a KB example ({hit.note()})",
             )
+        # 现读现查通过 → 清掉生成/历史留下的旧标记(与 edit 同一取向:
+        # 标记描述的是「最近一次判定的结果」,不是一条永久污点)。
+        item.leakage = False
+        item.leakage_hit = ""
         if item.duplicate_of:
             if not force:
                 raise EvalsetError(
@@ -986,12 +1052,15 @@ class EvalsetService:
 
     # ── 内部:提交/审计/结果 ────────────────────────────────────
 
-    def _commit(self, path: Path, message: str) -> None:
+    #: ``commit_files`` 的常态性不提交原因(不值得每次写操作都报一条告警)。
+    _QUIET_COMMIT_REASONS = frozenset({"disabled", "no-repo", "nothing-to-commit"})
+
+    def _commit(self, path: Path, message: str, actor: str) -> None:
         """只暂存这一份 ``evalset.yml`` 的 best-effort 提交。
 
         ``kb.git`` 缺失是正常形态(未启用版本化);``commit_files`` 返回的
         状态字典不改写操作结果 —— 版本化失败绝不阻断已经成功的写入,但
-        异常会记日志,不让它烂在静默里。
+        非常态的失败(lint/暂存/提交报错)会记日志,不让它烂在静默里。
         """
         git = getattr(self.kb, "git", None)
         if git is None:
@@ -1000,9 +1069,22 @@ class EvalsetService:
         if not callable(commit_files):
             return
         try:
-            commit_files([path], message)
+            status = commit_files(
+                [path],
+                message,
+                trailers={"Approved-by": actor, "Generator": "evalset"},
+            )
         except Exception as exc:  # noqa: BLE001 — 版本化绝不阻断写入
             logger.warning("evalset service: git commit failed: %s", exc)
+            return
+        if not isinstance(status, dict) or status.get("committed") is not False:
+            return
+        reason = str(status.get("reason") or "")
+        if reason not in self._QUIET_COMMIT_REASONS:
+            logger.warning(
+                "evalset service: git commit not applied (%s): %s",
+                reason or "unknown", message,
+            )
 
     async def _audit_event(
         self, action: str, actor: str, details: dict[str, Any],
@@ -1019,8 +1101,17 @@ class EvalsetService:
 
     @staticmethod
     def _result(doc: EvalsetDoc, item: EvalsetItem) -> dict[str, Any]:
-        """单条写操作的统一返回形状(条目 + 冻结后的评分修订)。"""
-        return {**item.to_dict(), "evalset_rev": evalset_rev(doc)}
+        """单条写操作的统一返回形状(条目 + 冻结后的评分修订 + 派生 tier)。
+
+        ``tier`` 是 R22 的 additive key:管理端 ``POST /items`` 的契约要求
+        响应直接带派生分层,而 ``to_dict()`` 刻意不落盘 tier —— 服务层是
+        唯一知道「刚刚写入的是哪一条」的地方。
+        """
+        return {
+            **item.to_dict(),
+            "evalset_rev": evalset_rev(doc),
+            "tier": tier_of(item),
+        }
 
 
 __all__ = ["EvalsetService", "PREVIEW_LIMIT", "PREVIEW_TIMEOUT_S"]
