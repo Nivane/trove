@@ -44,18 +44,32 @@ def test_run_without_yes_is_dry_run(tmp_path, monkeypatch):
 def test_run_yes_requires_explicit_flag(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from trove.cli.commands import evalset_cmds as c
+
+    runtime = SimpleNamespace(
+        config=object(), kb=object(), registry=object(),
+        adapter=object(), semantic_layer=object(), auth_store=None,
+    )
+
     async def fake_build(root, ds):
-        return SimpleNamespace(config=object(), kb=object(), registry=object(),
-                               adapter=object(), semantic_layer=None,
-                               auth_store=None)
+        return runtime
     monkeypatch.setattr(c, "build_runtime", fake_build)
+    captured = {}
+
     async def fake_run(options):
+        captured["options"] = options
         return SimpleNamespace(exit_code=0, message="ran", summary={}, entries=[])
     monkeypatch.setattr(c, "run_evalset", fake_run)
     assert main_evalset([
         "run", "--datasource", "demo", "--yes",
         "--project-root", str(tmp_path),
     ]) == 0
+    options = captured["options"]
+    assert options.yes is True
+    # 运行时对象原样接线(不是拷贝、不是 None)。
+    assert options.kb is runtime.kb
+    assert options.registry is runtime.registry
+    assert options.config is runtime.config
+    assert options.semantic_layer is runtime.semantic_layer
 
 
 # ── 本任务的补充用例(控制器裁定 R25/R26 与成本护栏)─────────────
@@ -104,11 +118,21 @@ class _RecordingRegistry:
         self.closed = True
 
 
-@pytest.mark.parametrize("extra", [
-    ["--sources", "semantic,synthetic"],
-    ["--rewrite"],
+@pytest.mark.parametrize("extra,expected", [
+    (
+        ["--sources", "semantic,synthetic"],
+        "dry-run: 将使用模型 draft-model 处理最多 7 条问题"
+        "（生成源 semantic, synthetic）；加 --yes 才会调用 LLM。",
+    ),
+    (
+        ["--rewrite"],
+        "dry-run: 将使用模型 draft-model 处理最多 7 条问题"
+        "（生成源 semantic，含改写）；加 --yes 才会调用 LLM。",
+    ),
 ])
-def test_generate_llm_paths_require_yes(tmp_path, monkeypatch, capsys, extra):
+def test_generate_llm_paths_require_yes(
+    tmp_path, monkeypatch, capsys, extra, expected,
+):
     """含 synthetic 或 --rewrite 且缺 --yes → 只报模型与题数,零 LLM。"""
     c = _patch_build(monkeypatch)
     monkeypatch.setattr(c, "LLMGateway", _NoLLM)
@@ -124,8 +148,32 @@ def test_generate_llm_paths_require_yes(tmp_path, monkeypatch, capsys, extra):
     ])
     out = capsys.readouterr().out
     assert code == 0
-    assert "draft-model" in out
-    assert "7" in out
+    assert out.strip() == expected
+
+
+@pytest.mark.parametrize("limit,effective", [(0, 30), (500, 100)])
+def test_generate_dry_run_reports_effective_limit(
+    tmp_path, monkeypatch, capsys, limit, effective,
+):
+    """M2:成本干跑报 Task 7 同口径的有效条数(<=0 → 30,封顶 100)。"""
+    c = _patch_build(monkeypatch)
+    monkeypatch.setattr(c, "LLMGateway", _NoLLM)
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("generation must not run in a cost dry-run")
+
+    monkeypatch.setattr(c, "generate_evalset", unexpected)
+
+    assert main_evalset([
+        "generate", "--datasource", "demo", "--sources", "semantic,synthetic",
+        "--limit", str(limit), "--project-root", str(tmp_path),
+    ]) == 0
+    out = capsys.readouterr().out.strip()
+    assert out == (
+        f"dry-run: 将使用模型 draft-model 处理最多 {effective} 条问题"
+        "（生成源 semantic, synthetic）；加 --yes 才会调用 LLM。"
+    )
+    assert f"处理最多 {limit} 条问题" not in out
 
 
 def test_generate_semantic_only_needs_no_llm(tmp_path, monkeypatch):
@@ -331,6 +379,52 @@ def test_write_error_prints_code_and_issues_to_stderr(
     assert "e-404" in err
 
 
+def test_evalset_busy_becomes_clean_error(tmp_path, monkeypatch, capsys):
+    """M3:非阻塞锁的 ``EvalsetBusy`` 是一条干净错误,不是 traceback。"""
+    from trove.services.evalset.lock import EvalsetBusy
+
+    class FakeService:
+        def __init__(self, root, **kw):
+            pass
+
+        async def confirm(self, ds, qid, **kw):
+            raise EvalsetBusy(
+                "evalset is being modified for datasource 'demo'")
+
+    c = _patch_build(monkeypatch)
+    monkeypatch.setattr(c, "EvalsetService", FakeService)
+
+    assert main_evalset([
+        "confirm", "e-1", "--datasource", "demo",
+        "--project-root", str(tmp_path),
+    ]) == 1
+    err = capsys.readouterr().err
+    assert "error: EvalsetBusy:" in err
+    assert "evalset is being modified" in err
+    assert "Traceback" not in err
+
+
+def test_unexpected_exception_becomes_clean_error(tmp_path, monkeypatch, capsys):
+    """M3:配置/OS/LLM 等意外异常 → ``error: <Type>: <message>``,退出 1。"""
+    class FakeService:
+        def __init__(self, root, **kw):
+            pass
+
+        async def readiness(self, ds):
+            raise RuntimeError("config blew up")
+
+    c = _patch_build(monkeypatch)
+    monkeypatch.setattr(c, "EvalsetService", FakeService)
+
+    assert main_evalset([
+        "readiness", "--datasource", "demo",
+        "--project-root", str(tmp_path),
+    ]) == 1
+    err = capsys.readouterr().err.strip()
+    assert err == "error: RuntimeError: config blew up"
+    assert "Traceback" not in err
+
+
 def test_list_human_lines_and_json(tmp_path, monkeypatch, capsys):
     payload = {
         "datasource": "demo",
@@ -406,6 +500,132 @@ def test_readiness_none_values_render_unknown_not_zero(
     assert "asset_unreadable" in out
 
 
+def test_readiness_json_keeps_unknown_as_null_not_zero(
+    tmp_path, monkeypatch, capsys,
+):
+    """M4:``readiness --json`` 可解析;读不到的值是 null(unknown),不是 0。"""
+    class FakeService:
+        def __init__(self, root, **kw):
+            pass
+
+        async def readiness(self, ds):
+            return {
+                "datasource": ds,
+                "available": False,
+                "counts": None,
+                "by_tier": None,
+                "coverage": None,
+                "latest_runs": {
+                    "verified": None, "semantic": None, "synthetic": None,
+                },
+                "degraded": [{
+                    "code": "asset_unreadable", "message": "bad evalset.yml",
+                }],
+                "evalset_rev": None,
+            }
+
+    c = _patch_build(monkeypatch)
+    monkeypatch.setattr(c, "EvalsetService", FakeService)
+
+    assert main_evalset([
+        "readiness", "--datasource", "demo", "--json",
+        "--project-root", str(tmp_path),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["available"] is False
+    assert payload["counts"] is None
+    assert payload["by_tier"] is None
+    assert payload["coverage"] is None
+    assert payload["evalset_rev"] is None
+    assert payload["latest_runs"]["verified"] is None
+    assert payload["degraded"][0]["code"] == "asset_unreadable"
+
+
+# ── 用法错误:URL 数据源(R27)与闭集参数(M6)─────────────────────
+
+
+@pytest.mark.parametrize("argv", [
+    ["generate", "--datasource", "sqlite://:memory:"],
+    ["list", "--datasource", "postgres://u:p@127.0.0.1:5432/db"],
+    ["run", "--datasource", "duckdb:///tmp/x.duckdb"],
+    ["readiness", "--datasource", "mysql://u:p@127.0.0.1:3306/db"],
+    ["create", "--datasource", "snowflake://u:p@acct/db/schema",
+     "--question", "q?", "--sql", "SELECT 1"],
+])
+def test_scheme_url_datasource_is_usage_error_before_build(
+    tmp_path, monkeypatch, capsys, argv,
+):
+    """R27:每个子命令都在 ``build_runtime`` 之前以 2 拒绝 URL 数据源。"""
+    built = {"called": False}
+
+    async def fake_build(root, ds):
+        built["called"] = True
+        return _runtime()
+
+    from trove.cli.commands import evalset_cmds as c
+
+    monkeypatch.setattr(c, "build_runtime", fake_build)
+
+    assert main_evalset([*argv, "--project-root", str(tmp_path)]) == 2
+    assert built["called"] is False
+    err = capsys.readouterr().err
+    assert "registered name" in err
+    assert ".trove/datasources.yml" in err
+
+
+@pytest.mark.parametrize("argv,flag", [
+    (["generate", "--datasource", "demo", "--sources", "gold"], "--sources"),
+    (["generate", "--datasource", "demo", "--sources", "semantic,gold"],
+     "--sources"),
+    (["list", "--datasource", "demo", "--status", "nope"], "--status"),
+    (["list", "--datasource", "demo", "--tier", "all"], "--tier"),
+    (["run", "--datasource", "demo", "--tier", "nope"], "--tier"),
+])
+def test_closed_set_flags_reject_unknown_values_before_build(
+    tmp_path, monkeypatch, capsys, argv, flag,
+):
+    """M6:闭集参数拼错 → 用法错误 2,装配运行时之前收口。"""
+    built = {"called": False}
+
+    async def fake_build(root, ds):
+        built["called"] = True
+        return _runtime()
+
+    from trove.cli.commands import evalset_cmds as c
+
+    monkeypatch.setattr(c, "build_runtime", fake_build)
+
+    assert main_evalset([*argv, "--project-root", str(tmp_path)]) == 2
+    assert built["called"] is False
+    err = capsys.readouterr().err
+    assert flag in err
+    assert "expected one of" in err
+
+
+def test_list_accepts_closed_set_filters(tmp_path, monkeypatch, capsys):
+    """闭集校验放行合法值,过滤参数原样转给服务。"""
+    seen = {}
+
+    class FakeService:
+        def __init__(self, root, **kw):
+            pass
+
+        async def list_items(self, ds, **kw):
+            seen.update(kw)
+            return {"items": [], "issues": [], "counts": {}, "by_tier": {}}
+
+    c = _patch_build(monkeypatch)
+    monkeypatch.setattr(c, "EvalsetService", FakeService)
+
+    assert main_evalset([
+        "list", "--datasource", "demo", "--status", "pending",
+        "--tier", "verified", "--json", "--project-root", str(tmp_path),
+    ]) == 0
+    assert seen["status"] == "pending"
+    assert seen["tier"] == "verified"
+    assert json.loads(capsys.readouterr().out)["items"] == []
+
+
 # ── build_runtime 解析(R26)────────────────────────────────────
 
 
@@ -468,3 +688,32 @@ async def test_build_runtime_unknown_name_raises_datasource_error(
     )
     with pytest.raises(DatasourceError):
         await c.build_runtime(tmp_path, "no-such-datasource")
+
+
+# ── trove/main.py 分发(M4)────────────────────────────────────
+
+
+def test_main_dispatch_branch_prints_evalset_usage():
+    """M4:``trove evalset --help`` 走 ``main_repl`` 分发分支,退出 0、零网络。
+
+    brief 的示例写 ``from trove.main import main``,但仓库的 console 入口
+    (pyproject ``trove = "trove.main:main_repl"``)是 ``main_repl`` —— 子进程
+    直接调用它,断言仍是「分发可达 + usage 打印 + 退出 0」。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    proc = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import sys; sys.argv=['trove','evalset','--help']; "
+            "from trove.main import main_repl; main_repl()",
+        ],
+        cwd=str(repo_root),
+        capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0
+    assert "evalset" in proc.stdout
+    assert "Traceback" not in proc.stderr

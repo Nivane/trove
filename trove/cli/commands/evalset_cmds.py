@@ -11,9 +11,11 @@
 服务在 ``trove/services/evalset/``(生成/确认门)与 ``trove/eval/evalset_run.py``
 (运行器)——本模块只是入口(与 ``trove validate`` / ``trove preset`` 同一拆分)。
 
-Exit codes(R25):0 成功/成本干跑/ok·empty 的生成;1 ``EvalsetError`` 与生成
-失败状态(``invalid_asset | no_semantic_model | no_llm``);2 用法/解析错误
-(argparse 自身);``run`` 原样返回运行器的退出码,``--tier all`` 取三次的最大值。
+Exit codes(R25):0 成功/成本干跑/ok·empty 的生成;1 ``EvalsetError``、生成
+失败状态(``invalid_asset | no_semantic_model | no_llm``)、``EvalsetBusy``
+与意外异常(均打印干净的错误行,不漏 traceback);2 用法/解析错误(argparse
+自身、``scheme://`` 数据源、闭集参数);``run`` 原样返回运行器的退出码,
+``--tier all`` 取三次的最大值。
 
 成本护栏:``generate`` 含 ``synthetic`` 或 ``--rewrite`` 而没有 ``--yes`` 时,
 只打印将要消耗的模型与题数就返回 0 —— **绝不构造 ``LLMGateway``**(语义生成
@@ -43,10 +45,17 @@ from trove.services.datasource.demo_setup import setup_demo_datasource
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
 from trove.services.evalset.generate import (
+    GENERATE_SOURCES,
     GenerateRequest,
     generate_evalset,
 )
-from trove.services.evalset.models import EvalsetError
+from trove.services.evalset.lock import EvalsetBusy
+from trove.services.evalset.models import (
+    DEFAULT_GENERATE_LIMIT,
+    MAX_GENERATE_PER_RUN,
+    STATUSES,
+    EvalsetError,
+)
 from trove.services.evalset.service import EvalsetService
 from trove.services.kb.service import KbService
 
@@ -57,6 +66,12 @@ GENERATE_OK_STATUSES = frozenset({"ok", "empty"})
 
 #: ``--tier all`` 的固定顺序(分数永不跨 tier 合并,这里只决定跑的顺序)。
 RUN_TIERS = ("verified", "semantic", "synthetic")
+
+#: ``run --tier`` 闭集(``all`` 是 CLI 展开,不是运行器的 tier)。
+RUN_TIER_CHOICES = (*RUN_TIERS, "all")
+
+#: ``list --tier`` 闭集(空串 = 不筛;``benchmark``/``unknown`` 没有过滤入口)。
+LIST_TIER_CHOICES = RUN_TIERS
 
 
 # ── 参数解析 ─────────────────────────────────────────────
@@ -72,7 +87,10 @@ def _common_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--datasource", required=True,
-        help="目标数据源(demo / scheme:// URL / .trove/datasources.yml 中的名字)",
+        help=(
+            "目标数据源(demo 或 .trove/datasources.yml 中的注册名;"
+            "不接受 scheme:// URL)"
+        ),
     )
     common.add_argument(
         "--project-root", type=Path, default=Path.cwd(),
@@ -213,6 +231,67 @@ def _parse_tags(raw: str) -> dict[str, str]:
     return tags
 
 
+def _effective_generate_limit(limit: int) -> int:
+    """生成条数的**有效值** —— 与 Task 7 ``_effective_limit`` 同口径。
+
+    ``limit <= 0`` → :data:`DEFAULT_GENERATE_LIMIT`;其余封顶到
+    :data:`MAX_GENERATE_PER_RUN`。成本干跑必须报这个数,报原始 ``--limit``
+    会让 ``--limit 0``(全部)看起来比实际默认值更贵或更便宜。
+    """
+    value = int(limit)
+    if value <= 0:
+        value = DEFAULT_GENERATE_LIMIT
+    return min(value, MAX_GENERATE_PER_RUN)
+
+
+def _scheme_url_error(datasource: str) -> str | None:
+    """R27:evalset 以**注册名**为身份,``scheme://`` URL 一律用法错误。
+
+    不让 ``build_runtime`` 先连一次库再在写路径上撞 ``invalid_datasource``;
+    也不从 URL 派生名字 —— ``sqlite``/``duckdb`` 会派生出同一个名字,不同
+    数据库将共享一份 ``.trove/evalsets/<name>`` 资产(R9 身份规则)。
+    """
+    if "://" not in str(datasource or ""):
+        return None
+    return (
+        f"invalid --datasource {datasource!r}: evalset identifies a datasource "
+        "by its registered name. Register the datasource and pass the name "
+        "from .trove/datasources.yml."
+    )
+
+
+def _closed_set_error(args: argparse.Namespace) -> str | None:
+    """M6:闭集参数在**做任何工作之前**校验(装配运行时之前,退出码 2)。"""
+    if args.action == "generate":
+        unknown = [
+            name for name in _parse_sources(args.sources)
+            if name not in GENERATE_SOURCES
+        ]
+        if unknown:
+            return (
+                f"invalid --sources {', '.join(unknown)}; expected one of "
+                f"{', '.join(GENERATE_SOURCES)}"
+            )
+    elif args.action == "list":
+        if args.status and args.status not in STATUSES:
+            return (
+                f"invalid --status {args.status!r}; expected one of "
+                f"{', '.join(STATUSES)}"
+            )
+        if args.tier and args.tier not in LIST_TIER_CHOICES:
+            return (
+                f"invalid --tier {args.tier!r}; expected one of "
+                f"{', '.join(LIST_TIER_CHOICES)} (or empty = no filter)"
+            )
+    elif args.action == "run":
+        if args.tier not in RUN_TIER_CHOICES:
+            return (
+                f"invalid --tier {args.tier!r}; expected one of "
+                f"{', '.join(RUN_TIER_CHOICES)}"
+            )
+    return None
+
+
 # ── 运行时装配(R26)──────────────────────────────────────
 
 
@@ -334,7 +413,8 @@ async def _cmd_generate(args, root: Path, runtime: Any) -> int:
     if needs_llm and not args.yes:
         rewrite_note = "，含改写" if args.rewrite else ""
         print(
-            f"dry-run: 将使用模型 {draft_model} 处理最多 {args.limit} 条问题"
+            f"dry-run: 将使用模型 {draft_model} 处理最多 "
+            f"{_effective_generate_limit(args.limit)} 条问题"
             f"（生成源 {', '.join(sources) or '无'}{rewrite_note}）；"
             "加 --yes 才会调用 LLM。"
         )
@@ -568,6 +648,17 @@ def main_evalset(argv: list[str]) -> int:
         parser.print_help()
         return 2
 
+    # R27 + M6:用法错误在装配运行时**之前**收口(不连接、不构造 LLM)。
+    scheme_error = _scheme_url_error(args.datasource)
+    if scheme_error is not None:
+        print(f"error: {scheme_error}", file=sys.stderr)
+        return 2
+
+    closed_set_error = _closed_set_error(args)
+    if closed_set_error is not None:
+        print(f"error: {closed_set_error}", file=sys.stderr)
+        return 2
+
     if args.action == "create":
         try:
             args.tags = _parse_tags(args.tags)
@@ -585,6 +676,14 @@ def main_evalset(argv: list[str]) -> int:
         return 1
     except DatasourceError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except EvalsetBusy as exc:
+        # 非阻塞锁是**预期**结果,不是异常栈:一条干净的 stderr 行 + 1。
+        print(f"error: EvalsetBusy: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — 入口把意外异常折成退出码
+        # 配置/OS/LLM 构造失败都走这里:打印类型与消息,绝不漏 traceback。
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
 

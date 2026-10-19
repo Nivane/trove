@@ -28,7 +28,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--datasource", required=True,
-        help="目标数据源(demo / scheme:// URL / .trove/datasources.yml 中的名字)",
+        help=(
+            "目标数据源(demo 或 .trove/datasources.yml 中的注册名;"
+            "不接受 scheme:// URL)"
+        ),
     )
     parser.add_argument(
         "--project-root", type=Path, default=Path.cwd(),
