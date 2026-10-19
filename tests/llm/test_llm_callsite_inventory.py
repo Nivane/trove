@@ -88,6 +88,9 @@ CALL_SITES: dict[str, str] = {
     "trove/services/kb/semantic_draft.py::draft_semantic_annotations#1": "Av",
     "trove/services/kb/semantic_draft.py::draft_refusal_extension#1": "A",
     "trove/services/kb/synthetic.py::generate_synthetic_examples#1": "A",
+    # 验收集的模板问句改写:render 产物先存进变量,再作为 messages 内容送出
+    # (问句来自语义模型的已确认 KB 模板,不是外部输入)。
+    "trove/services/evalset/generate.py::rewrite_questions#1": "Av",
     # ── 记忆:内容来自同文件的 prompt 构造器 ──
     "trove/services/memory/preferences.py::extract_and_store#1": "Ab",
     "trove/services/memory/service.py::MemoryService._capture_failure_lesson#1": "Ab",

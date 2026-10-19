@@ -55,8 +55,8 @@ _SITES: dict[str, tuple[str, str]] = {
         "system", "KB Top-K 值剖析:管理员建模行为"),
     "trove/services/kb/live_lint.py": (
         "system", "KB 活体 lint:管理员建模行为"),
-    "trove/services/kb/synthetic.py": (
-        "system", "合成示例试跑:管理员建模行为"),
+    "trove/services/kb/sql_guard.py": (
+        "system", "合成示例试跑护栏(SQLGlot + 试执行):管理员建模行为"),
     "trove/services/semantic_layer/verify.py": (
         "system", "语义声明验证:管理端校验面"),
     # ── 基础设施 ────────────────────────────────────────────
