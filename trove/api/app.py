@@ -343,6 +343,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.routers import admin as admin_router
     from trove.api.routers import auth as auth_router
     from trove.api.routers import decisions as decisions_router
+    from trove.api.routers import evalset as evalset_router
     from trove.api.routers import jobs as jobs_router
     from trove.api.routers import presets as presets_router
     from trove.api.routers import quality as quality_router
@@ -379,6 +380,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(subscriptions_router.router, prefix="/v1")
         app.include_router(skills_router.router, prefix="/v1")
         app.include_router(decisions_router.router, prefix="/v1")
+        # 验收集(evalset)管理面:生成/试跑是后台任务,确认门与就绪视图
+        # 由服务层守 —— 全 require_admin 自持门禁(验收集决定「什么算对」)。
+        app.include_router(evalset_router.router, prefix="/v1")
         # 预设包(接入模板):套用**只落 pending 草稿**,确认门一条都不绕。
         app.include_router(presets_router.router, prefix="/v1")
         # 行动提案面(模板门 + 审批 + 外送回执):全 require_admin 自持门禁,

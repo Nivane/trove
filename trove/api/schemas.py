@@ -689,3 +689,88 @@ class PresetRollbackRequest(BaseModel):
 
     sha: str = Field(min_length=1)
     message: str = ""
+
+
+# ── evalset(验收集)管理面 ────────────────────────────────
+
+
+class EvalsetItemCreate(BaseModel):
+    """POST /v1/admin/datasources/{name}/evalset/items body —— 手工新增条目。
+
+    SQL 的语法校验、试执行、泄漏与重复检测都在服务层(``EvalsetError``
+    决定 HTTP 状态),这里只做形状;``force`` 与 CLI 的 ``--force`` 同义。
+    """
+
+    question: str = Field(min_length=1)
+    reference_sql: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    note: str = ""
+    force: bool = False
+
+
+class EvalsetItemPatch(BaseModel):
+    """PATCH /…/evalset/{qid} body —— 只改给出的字段(``None`` = 不动)。"""
+
+    question: str | None = None
+    reference_sql: str | None = None
+    tags: list[str] | None = None
+    note: str | None = None
+    force: bool = False
+
+
+class EvalsetConfirmRequest(BaseModel):
+    """POST /…/evalset/{qid}/confirm body。"""
+
+    force: bool = False
+
+
+class EvalsetConfirmBatch(BaseModel):
+    """POST /…/evalset/confirm body —— 批量确认,逐条独立。
+
+    ``qids`` 的上限由服务层 ``MAX_BATCH`` 拥有:超限由路由/服务报 400 并
+    写明允许条数,而不是让 pydantic 抢先抛 422。
+    """
+
+    qids: list[str]
+    force: bool = False
+
+
+class EvalsetReasonBody(BaseModel):
+    """POST /…/evalset/{qid}/reject、``/retire`` body(理由可空)。"""
+
+    reason: str = ""
+
+
+class EvalsetVouchBody(BaseModel):
+    """POST /…/evalset/{qid}/vouch body —— ``note`` 必填由服务层守住。"""
+
+    note: str = ""
+
+
+class EvalsetGenerateRequest(BaseModel):
+    """POST /…/evalset/generate body —— 后台生成任务。
+
+    ``sources`` 的合法集合由 ``services.evalset.generate.GENERATE_SOURCES``
+    拥有;非法值由路由报 400 并列出允许值(与 ``ActionBatchRequest.decision``
+    同一手法:不让 pydantic 的 422 抢走解释)。
+    """
+
+    sources: list[str] = Field(default_factory=lambda: ["semantic"])
+    limit: int = 30
+    lang: str = "zh"
+    since: str = ""
+    rewrite: bool = False
+
+
+class EvalsetRunRequest(BaseModel):
+    """POST /…/evalset/run body —— 后台试跑任务。
+
+    ``confirm`` 是**显式成本确认**:未给且非 ``compile_only`` 时直接 400,
+    detail 带 ``n_items/tier/model``(正式运行会调用 LLM,花多少要先看见)。
+    """
+
+    tier: str = "verified"
+    limit: int = 0
+    sample: int = 0
+    compile_only: bool = False
+    confirm: bool = False
