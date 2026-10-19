@@ -5018,7 +5018,10 @@ class TestSearchValues:
         self, sqlite_registry, monkeypatch,
     ):
         """扫描路径不得把列级错误谎报成'无匹配'——首错上抛。"""
-        async def fail(connectors, table, column, keyword, timeout_s, datasource=None):
+        async def fail(
+            connectors, table, column, keyword, timeout_s,
+            datasource=None, scope_sql=None,
+        ):
             return {"ok": False, "error": f"boom on {column}"}
         monkeypatch.setattr(
             "trove.workflow.nodes.gen_sql._search_one", fail,

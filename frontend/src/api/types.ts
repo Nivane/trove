@@ -458,6 +458,16 @@ export interface AdminUser {
   created_at?: string
   updated_at?: string
   datasources?: string[]
+  /** 读出来的事实:有绑定的 IdP 身份 → 'oidc',否则 'local'(只展示,不定权限)。 */
+  auth_source?: 'local' | 'oidc'
+  /** 绑定的 OIDC 身份(只读);本地账号为空数组。 */
+  identities?: UserIdentity[]
+}
+
+export interface UserIdentity {
+  issuer: string
+  subject: string
+  created_at?: string
 }
 
 // ── KB 管理页(W3-K)──────────────────────────────────────────

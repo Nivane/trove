@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 覆盖率体检：粘贴或上传一批真实问题，回放生成前段（意图 → 时间解析 → 语义锚定 → 快径 → 计划编译），逐题给出编译级判定与缺口清单；不执行 SQL、不判答案对错；缺口可一键生成待确认语义草稿，运行记录可对比上一轮。">
+<title>覆盖率体检 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>覆盖率体检
+      </div>
+      <h1>覆盖率体检</h1>
+      <p class="lede">
+        企业接入语义模型后最常问的一句话是：<strong>「我这批真实问题，系统现在能答多少？」</strong>
+        覆盖率体检把一批问题逐条送进生产链路的<strong>生成前段</strong>，给出编译级判定、覆盖率与缺口清单；
+        缺口可以一键生成<strong>待确认</strong>的语义草稿。它<strong>不执行 SQL、不读取业务数据、不判断答案对错</strong>——
+        测的是「语义模型能否承接这些问题」，不是「答案准不准」。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="what">它回答什么，不回答什么</h2>
+
+    <p>
+      管理台里已有两张与「覆盖」有关的报表，体检与它们的口径刻意分开：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>你想知道</th><th>用哪个</th><th>口径</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>表 / 字段有没有建模</td>
+            <td><code>GET /v1/admin/coverage</code>（治理覆盖）</td>
+            <td>资产视角：声明过没有</td>
+          </tr>
+          <tr>
+            <td>已经发生过的拒绝长什么样</td>
+            <td><a href="access.html#audit">审计日志 · 拒绝频率报表</a></td>
+            <td>事后视角：只统计问过的</td>
+          </tr>
+          <tr>
+            <td><strong>这批还没敢问的问题，现在能不能接住</strong></td>
+            <td><strong>覆盖率体检</strong></td>
+            <td>逐题视角：回放生成前段，按题判定</td>
+          </tr>
+          <tr>
+            <td>答案对不对</td>
+            <td>不在这页，也不在体检里</td>
+            <td>需要真实执行与金标准；体检不读业务行</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么不做执行评测</span>
+      <p>
+        执行评测要读业务数据、要金标准、要付费调用生成链；它回答的是另一个问题，
+        成本与隐私边界也完全不同。体检把范围钉在<strong>编译</strong>这一层：
+        语义模型能不能把问题编译成一条可交付的 SQL 骨架。这个边界让它可以安全地
+        跑一批真实问题——包括客户还不敢在对话里问的那些。
+      </p>
+    </div>
+
+    <h2 id="how">方法论：回放生成前段，绝不进入 gen_sql</h2>
+
+    <p>
+      每题的状态推进与生产查询图<strong>前段同构</strong>，顺序固定：
+    </p>
+
+    <ol>
+      <li><strong>确定性意图分类</strong>（<code>classify_intent</code>）——不是查询类问题（元数据 / 写入 /
+        闲聊 / 纠错 / 确认）直接记 <code>not_query</code>，<strong>零模型调用</strong>，后面的节点一个都不跑。</li>
+      <li><strong>时间解析</strong>（<code>parse_date</code>）——相对时间落成窗口；体检的「今天」固定为运行当天。</li>
+      <li><strong>语义锚定</strong>（<code>schema_linking</code>）——确定性语义门：没有语义模型 → <code>unmatched</code>；
+        问题与语义资产零命中 → <code>unmatched</code>。<strong>零模型调用</strong>。</li>
+      <li><strong>确定性快径</strong>（<code>fast_match</code>）——模板命中的问题直接记 <code>certified</code>，<strong>零模型调用</strong>。</li>
+      <li><strong>计划抽取与编译</strong>（<code>query_sketch</code>）——唯一会调用模型的环节：把自然语言翻成计划，
+        随后由确定性编译器编译。重规划至多 2 次，即每题<strong>至多 3 次节点调用</strong>。</li>
+    </ol>
+
+    <p>
+      回放<strong>到此为止</strong>：不进入 <code>gen_sql</code>、不进入执行面、不读取任何业务行。
+      生成前段所需的 schema 元数据一次取好，语义层 provider 与生产启动走<strong>同一个构造工厂</strong>——
+      「体检里能编译、生产里编译不了」这种两份构造漂移从一开始就不允许存在。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/engine.py#L319">engine.py:319 <span class="ref-line">check</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/engine.py#L187">engine.py:187 <span class="ref-line">CoverageEngine</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/query_sketch.py#L1727">query_sketch.py:1727 <span class="ref-line">resolve_sketch_model</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/factory.py#L22">factory.py:22 <span class="ref-line">build_provider</span></a>
+    </p>
+
+    <p>
+      一个诚实的差异：生产图的 <code>route_intent</code> 有一次小模型调用，会结合会话历史做纠错与改写；
+      体检手里没有历史，用的是<strong>确定性意图分类</strong>。代价是最坏情况下多一次计划调用，
+      或把一个本可改写的问题记成 <code>unplanned</code>——方向是<strong>不虚报覆盖</strong>。
+    </p>
+
+    <h2 id="outcomes">十种结局，没有第十一种</h2>
+
+    <p>
+      结局是一个闭集，分类优先级写在同一份纯函数里——报表、API 与前端都只消费它，
+      不各自发明口径。前六种计入覆盖率分母（<strong>evaluated</strong>），后四种单列：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>结局</th><th>含义</th><th>进分母</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>certified</code></td><td>确定性快径模板命中（零模型调用）</td><td>是</td></tr>
+          <tr><td><code>compiled</code></td><td>计划完整编译</td><td>是</td></tr>
+          <tr><td><code>partial</code></td><td>骨架存在，但仍有未覆盖组件（软 MISS 可保真交付）</td><td>是</td></tr>
+          <tr><td><code>soft_miss</code></td><td>软 MISS 且无拒绝：直通生成的未受保护缺口</td><td>是</td></tr>
+          <tr><td><code>refused</code></td><td>硬 MISS + 拒绝信号：语义模型的结构性缺口</td><td>是</td></tr>
+          <tr><td><code>unmatched</code></td><td>无语义模型 / 语义锚定零命中 / 无语义层</td><td>是</td></tr>
+          <tr><td><code>not_query</code></td><td>确定性意图不是查询（元数据/写入/闲聊/纠错/确认）</td><td>否</td></tr>
+          <tr><td><code>unplanned</code></td><td>计划校验丢弃 / 空计划 / 计划没表达可编译意图</td><td>否</td></tr>
+          <tr><td><code>error</code></td><td>超时 / 模型异常 / 节点吞异常 / 重规划不收敛</td><td>否</td></tr>
+          <tr><td><code>skipped</code></td><td>取消、运行超时或运行级失败而未处理</td><td>否</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>两个覆盖率的分母都只含前六种结局：</p>
+
+    <ul>
+      <li><strong>可确定性覆盖率</strong> =（<code>certified</code> + <code>compiled</code>）/ evaluated
+        ——不依赖生成兜底的覆盖；</li>
+      <li><strong>受治理覆盖率</strong> =（<code>certified</code> + <code>compiled</code> + <code>partial</code>）/ evaluated
+        ——骨架也计入（有未覆盖组件，但受执行前骨架保真校验保护）。</li>
+    </ul>
+
+    <p>
+      缺口率 =（<code>soft_miss</code> + <code>refused</code> + <code>unmatched</code>）/ evaluated；
+      拒答率、未锚定率、直通率各自单列。<code>soft_miss</code> <strong>不并进拒绝</strong>——
+      它仍可能由生成通道回答，算成缺口会虚低；<code>unplanned</code> / <code>error</code>
+      也<strong>不并进分母</strong>——它们不是「模型覆盖不了」，而是「这一问没判出来」。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">「无样本」不是 0%</span>
+      <p>
+        所有比率都是三键 <code>{num, den, rate}</code>；分母为 0 时 <code>rate</code> 是
+        <strong>null</strong>，页面显示「无样本 · 无法计算」而不是 0%。把无样本洗成 0%
+        是最容易被信以为真的假信号，这一条在纯函数、API 与页面三层都钉住。
+      </p>
+    </div>
+
+    <p>
+      未判出的比例超过总题数 20% 时，报告带 <code>high_unmeasured</code> 告警：
+      覆盖率只在可判定的题上有意义，先看「判不出来」的那一撮为什么判不出来。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L41">taxonomy.py:41 <span class="ref-line">OUTCOMES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L82">taxonomy.py:82 <span class="ref-line">classify</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L136">taxonomy.py:136 <span class="ref-line">ratio</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L153">taxonomy.py:153 <span class="ref-line">aggregate</span></a>
+    </p>
+
+    <h2 id="cost">成本前置：先看模型与调用量，再确认</h2>
+
+    <p>
+      体检的唯一付费环节是计划抽取。开始前页面会跑一次<strong>零模型调用</strong>的预检：
+      把确定性前段全部跑一遍，数出「哪些题不需要模型、哪些题需要计划抽取」，
+      再把模型名、模型来源与调用量估算摆出来——<strong>必须勾选确认成本</strong>才会创建运行。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>口径</th><th>数值</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>典型调用量</td><td><code>needs_plan</code></td><td>需要计划抽取的题数 × 1 次</td></tr>
+          <tr><td>硬上限</td><td><code>needs_plan × 6 + 10</code></td><td>覆盖 JSON 模式失败后的无格式重试与计划重规划；触顶 = 运行级失败</td></tr>
+          <tr><td>单题超时</td><td>60 秒</td><td>超时记一行 <code>error:timeout</code>，不拖垮整轮</td></tr>
+          <tr><td>整轮 deadline</td><td>30 分钟</td><td>到点保留已完成结果，剩余补 <code>skipped</code>（原因 <code>run_timeout</code>）</td></tr>
+          <tr><td>连续失败熔断</td><td>3 题</td><td>连续 3 题 <code>error</code> 视为运行环境坏了，整轮提前失败</td></tr>
+          <tr><td>输入上限</td><td>200 题 / 次</td><td>CSV 另有 1 MiB、扫描 2000 行的上限</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      模型解析与生产同一回落链：<code>node_models.query_sketch</code> →
+      <code>model_fast</code> → <code>target</code>，预检展示的模型名就是<strong>真正会被调用到的那个</strong>，
+      并标明来源。每个数据源<strong>同时只允许一个运行中的体检</strong>——进程内注册表 +
+      数据库活性唯一索引双闸，并发创建返回 409 并带上已有运行 id。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/service.py#L173">service.py:173 <span class="ref-line">preflight</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/service.py#L256">service.py:256 <span class="ref-line">create_run</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/engine.py#L72">engine.py:72 <span class="ref-line">CountingLLM</span></a>
+    </p>
+
+    <h2 id="run">一次体检的生命周期</h2>
+
+    <p>
+      输入有两种：<strong>粘贴</strong>（一行一题）与 <strong>CSV 上传</strong>。CSV 解析是纯解析、不落库，
+      并把「我们丢掉了什么」如实报出来：编码按 <code>utf-8-sig</code> → <code>gb18030</code> → 替换字符回退；
+      自动识别表头（<code>question</code> / <code>questions</code> / <code>question_text</code> / <code>query</code> /
+      <code>问题</code> 等），识别不到就取第一列并告警；空行、逐字重复、超长行、截断都单独计数并展示。
+      一次静默丢行会让覆盖率分母悄悄变小，因此<strong>截断永远是可见的</strong>
+      （<code>truncated=true</code> + 告警）。
+    </p>
+
+    <p>运行状态是一个闭集：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>状态</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>queued</code></td><td>已创建，后台任务尚未开始</td></tr>
+          <tr><td><code>running</code></td><td>逐题推进中；进度 = 已处理 / 总题数</td></tr>
+          <tr><td><code>done</code></td><td>全部题处理完（含单题 <code>error</code>）</td></tr>
+          <tr><td><code>error</code></td><td>运行级失败（超时 / 调用上限 / 连续失败 / 内部异常）；已完成结果保留</td></tr>
+          <tr><td><code>cancelled</code></td><td>用户取消；剩余题补 <code>skipped</code></td></tr>
+          <tr><td><code>interrupted</code></td><td>进程中断或心跳超时（stale）；剩余题补 <code>skipped</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      取消是<strong>协作式</strong>的：置取消标记，循环在下一题开始前退出，不会打断正在跑的那一题；
+      已完成的结果全部保留。进程崩溃或重启后，心跳超过 <strong>5 分钟</strong>的 queued/running 运行会被
+      懒对账标成 <code>interrupted</code>，并补齐 <code>skipped</code> 行——状态端点<strong>绝不把 stale 行报成 running</strong>。
+      每题完成即落库并更新心跳，所以中断损失最多是当前这一题。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/service.py#L349">service.py:349 <span class="ref-line">_run</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/store.py#L600">store.py:600 <span class="ref-line">reconcile_stale</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/csv_input.py#L24">csv_input.py:24 <span class="ref-line">MAX_CSV_BYTES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/store.py#L255">store.py:255 <span class="ref-line">CoverageStore</span></a>
+    </p>
+
+    <h2 id="gaps">缺口清单与草稿门</h2>
+
+    <p>
+      逐题判定只回答「落在哪个结局」；管理者真正要处理的是<strong>缺口</strong>。报告按
+      <code>(kind, reason, component)</code> 聚合：同一个没声明的指标被多少道题用到、哪两张表的关系没声明，
+      一次看清。分组顺序与输入顺序无关（count 降序 → kind → reason → component），
+      每组最多展示 3 条样例问题与 5 条候选规格。
+    </p>
+
+    <p>
+      缺口类别有七个：<code>metric</code> / <code>field</code> / <code>value</code> / <code>entity</code> /
+      <code>relation</code> / <code>dataset</code> / <code>other</code>。
+      <strong>「可草稿」不由本页发明</strong>：只有语义草稿的唯一候选权威
+      （<code>candidate_specs</code>）给得出规格的缺口才标 <code>draftable</code>；
+      关系与数据集类缺口<strong>只给深链</strong>，绝不合成一条「看起来能点」的假草稿。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>缺口类别</th><th>一键动作</th><th>落点</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>指标 / 字段 / 值 / 实体</td><td>生成为<strong>待确认</strong>语义草稿</td><td>本页勾选 → 语义工作台「待审批」</td></tr>
+          <tr><td>关系（扇出 / 基数 / join 二义 / 不可达表）</td><td>去语义工作台手工声明</td><td><code>/admin/semantic?ds=…&amp;tab=datasets&amp;q=…</code></td></tr>
+          <tr><td>数据集（无模型 / 未锚定）</td><td>去知识库初始化或补建模</td><td><code>/admin/kb?ds=…</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      草稿操作<strong>不信任运行时的预览</strong>：生成时用<strong>当前</strong>语义模型重新计算候选规格，
+      因此「运行时能草稿、现在已不可草稿」会如实落成 <code>stale</code> 或 <code>not_draftable</code>。
+      每条结果有五种状态：<code>created</code> / <code>exists</code>（按「种类 + 名称」幂等）/
+      <code>invalid</code>（校验不过，带错误明细）/ <code>not_draftable</code> / <code>stale</code>。
+      单次最多处理 50 条资产，超出的如实报 <code>truncated</code>，不静默截断。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">草稿永远是 pending</span>
+      <p>
+        体检<strong>从不确认草稿</strong>，也没有确认入口：产物只走既有写路径落成 pending，
+        仍需管理员在<a href="semantic.html">语义工作台</a>逐条确认才生效。
+        自动内容不绕过确认门，这一条与知识库、Skills、决策规则的纪律同源。
+      </p>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/service.py#L612">service.py:612 <span class="ref-line">draft_gaps</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/gaps.py#L74">gaps.py:74 <span class="ref-line">kind_for</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/gaps.py#L79">gaps.py:79 <span class="ref-line">workbench_link</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L258">candidates.py:258 <span class="ref-line">candidate_specs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L337">candidates.py:337 <span class="ref-line">create_specs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/miss_copy.py#L92">miss_copy.py:92 <span class="ref-line">miss_label</span></a>
+    </p>
+
+    <h2 id="diff">对比上一轮：方向，而不是分数幻觉</h2>
+
+    <p>
+      每次运行都持久化，默认对比<strong>同一数据源上一轮完成的运行</strong>（也可以显式指定基线）。
+      逐题匹配用「归一化问题 + 出现序号」：同一个问题重复出现时按顺序配对，不相近的两轮各自记为
+      <code>base_only</code> / <code>current_only</code>。变化方向按覆盖序判定：
+      <code>certified=6 &gt; compiled=5 &gt; partial=4 &gt; soft_miss=3 &gt; refused=2 &gt; unmatched=1</code>；
+      两侧任一端不在覆盖序里（<code>not_query</code> / <code>unplanned</code> / <code>error</code> / <code>skipped</code>）
+      记为<strong>不可比</strong>，绝不硬判成变好或变坏。
+    </p>
+
+    <p>
+      对比页会核对两轮的<strong>语义模型 digest</strong> 与<strong>口径版本</strong>：
+      任一侧变过就显式提示——「这两轮之间语义模型有改动，差异不能全部归因于建模」或
+      「两轮用了不同版本的结局口径」。即使 digest 相同也不做强结论：计划抽取是有采样波动的，
+      单题在两轮间跳一个结局是正常现象，看<strong>分布与缺口</strong>，别看单题的一格之差。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L248">taxonomy.py:248 <span class="ref-line">diff</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/question_coverage/taxonomy.py#L299">taxonomy.py:299 <span class="ref-line">summary_delta</span></a>
+    </p>
+
+    <h2 id="limits">边界、存储与隐私</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>项</th><th>边界</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>执行面</td><td><strong>零 SQL 执行</strong>；只读 schema 元数据、KB 与语义编译，绝不读业务行</td></tr>
+          <tr><td>判定对象</td><td>「能否编译」，不是「答案对不对」；不做结果抽样</td></tr>
+          <tr><td>问题原文</td><td>落在项目 <code>.trove/coverage/coverage.sqlite</code>（已 gitignore），仅管理员可读</td></tr>
+          <tr><td>模型上下文</td><td>问题原文与语义模型上下文会发送给模型；预检页明示这一点</td></tr>
+          <tr><td>审计</td><td>记录创建 / 取消 / 草稿请求的动作与计数，<strong>不含问题原文</strong></td></tr>
+          <tr><td>保留</td><td>按数据源只保留最近 50 条终态运行</td></tr>
+          <tr><td>范围</td><td>v1 仅管理员；不做定时体检、不做 BI / 查询日志导入、不做跨数据源汇总</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      存储与其它内部状态一样走统一的存储后端：默认 SQLite，设置 <code>TROVE_STORAGE_URL</code>
+      后为 PostgreSQL；迁移带版本、重跑幂等。服务在进程退出时显式 <code>dispose()</code>，
+      不留后台连接。
+    </p>
+
+    <h2 id="api">API 一览</h2>
+
+    <p>
+      全部挂在 <code>/v1/admin/question-coverage</code>，每条路由都要求管理员。
+      服务未装配时统一返回 <strong>503</strong>（<code>coverage_not_configured</code>），不静默降级。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">POST</td><td class="mono">/preflight</td><td>零模型调用：计数 / 模型 / 调用量 / blockers</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/parse-csv</td><td>multipart 上传解析预览；不落库</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/runs</td><td>确认成本后创建运行（202），单数据源单活动运行</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/runs</td><td>历史列表（摘要 + 上一轮指针）</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/runs/{id}/status</td><td>轻轮询：状态 / 进度 / 各结局计数 / 心跳</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/runs/{id}</td><td>完整报告：运行元数据 + 汇总 + 全部逐题结果 + 缺口组</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/runs/{id}/diff</td><td>与上一轮（或指定基线）的方向对比</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/runs/{id}/drafts</td><td>勾选缺口 → 待确认语义草稿（逐条结果）</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/runs/{id}/cancel</td><td>协作取消（202）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      错误用稳定的 <code>code</code> + 人话 <code>message</code>：
+      <code>no_questions</code>、<code>too_many_questions</code>、<code>question_too_long</code>、
+      <code>no_semantic_model</code>、<code>coverage_run_active</code>、<code>confirm_cost_required</code>、
+      <code>run_not_found</code>、<code>run_not_finished</code>、<code>run_not_active</code>、
+      <code>no_selection</code>、<code>too_many_seqs</code>、<code>unknown_seqs</code>、
+      <code>file_too_large</code>、<code>empty_file</code>、<code>invalid_csv</code>、
+      <code>question_column_not_found</code> 等。端点总表见
+      <a href="../reference/api.html#groups">API 参考 · 管理端</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/question_coverage.py#L106">question_coverage.py:106 <span class="ref-line">preflight</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/question_coverage.py#L149">question_coverage.py:149 <span class="ref-line">create_run</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/question_coverage.py#L234">question_coverage.py:234 <span class="ref-line">request_drafts</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/question_coverage.py#L261">question_coverage.py:261 <span class="ref-line">cancel_run</span></a>
+    </p>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>确认 / 驳回体检生成的草稿</td><td><a href="semantic.html#draft">语义层治理 · 待审批与草稿</a></td></tr>
+          <tr><td>补词表与指标口径（让更多问题可锚定）</td><td><a href="kb.html">知识库运营</a></td></tr>
+          <tr><td>理解编译档位与生成前段</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>看已经发生过的拒绝分布</td><td><a href="access.html#audit">用户·权限·安全 · 审计与拒绝报表</a></td></tr>
+          <tr><td>端点总表与鉴权约定</td><td><a href="../reference/api.html#groups">API 参考 · 端点分类</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: e139f72</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

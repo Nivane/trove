@@ -1,6 +1,8 @@
 """生成链归因纯核心的测试:L1 档位 / 事实抽取 / plan 解析 / 责任跳 / 报告。"""
 from __future__ import annotations
 
+import json
+
 from trove.eval.chain import Predicate, sql_facts
 
 
@@ -644,3 +646,326 @@ def test_loop_states():
     assert loop_state(_traj(retry_count=2, available=frozenset({"retry_count"}))) == "detected_but_unfixed"
     assert loop_state(_traj(rollback_target="gen_sql",
                             available=frozenset({"rollback_target"}))) == "detected_but_unfixed"
+
+
+# ── 逐行归因 + 报告组装/渲染(设计 §4 报告键 / §5 文本分节)─────────────
+# **行与题双计数**:97 行只有 24 题,行数偏袒重试题 —— 同一题的两行必须同时进
+# 行计数(行=样本量),而题计数是独立事件数。只报一个都读错。
+
+from trove.eval.attribution import FailureRow
+from trove.eval.chain import attribute_row, build_report, render_report
+
+
+def _row(q="q1", gold="SELECT a.x FROM aa a", pred="SELECT a.y FROM aa a", verdict="MISMATCH"):
+    return FailureRow(question=q, gold_sql=gold, pred_sql=pred, verdict=verdict)
+
+
+def test_attribute_row_without_traj():
+    f = attribute_row(_row(), None)
+    assert f.l1.bucket == "projection_diff"
+    assert f.l2 == "undecidable" and f.loop == "undecidable"
+
+
+def test_report_double_counting_and_shape():
+    rows = [_row(q="q1"), _row(q="q1"), _row(q="q2", pred="")]
+    rep = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    assert rep["counts"]["rows"] == 3
+    assert rep["counts"]["questions"] == 2
+    # 题 q1 有两行(同一题重试),行计数=2、题计数=1 —— 双计数的全部意义(R18)
+    assert rep["counts"]["l1"]["projection_diff"] == 2
+    assert rep["counts"]["l1"]["no_sql"] == 1
+    assert rep["counts"]["l1_by_question"]["projection_diff"] == 1
+    assert set(rep) >= {"meta", "counts", "coverage", "observations", "samples"}
+
+
+def test_report_deterministic():
+    rows = [_row(), _row(q="q2")]
+    a = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    b = build_report(rows, {}, dialect="mysql", meta={"failures": "x"})
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_render_sections():
+    rep = build_report([_row()], {}, dialect="mysql", meta={"failures": "x"})
+    text = render_report(rep)
+    for token in ("L1", "L2", "loop", "覆盖", "观察"):
+        assert token in text
+
+
+def test_empty_rows_report_zeros():
+    rep = build_report([], {}, dialect="mysql", meta={})
+    assert rep["counts"]["rows"] == 0
+    assert render_report(rep)
+
+
+def test_report_counts_truncated_plans():
+    """plan 被截断的行数进 coverage,并在文本里露出来(R20)。"""
+    t = Trajectory(question="q1", plan_truncated=True)
+    rep = build_report([_row()], {"q1": t}, dialect="mysql", meta={})
+    assert rep["coverage"]["plan_truncated_rows"] == 1
+    assert "plan 被截断行=1" in render_report(rep)
+
+
+def test_trajectory_lookup_strips_question_whitespace():
+    """失败行的问题串带空白时仍要对得上轨迹 —— 对不上时 plan_truncated 恒 0(R20 的死法)。"""
+    t = Trajectory(question="q1", plan_truncated=True)
+    rep = build_report([_row(q="  q1  ")], {"q1": t}, dialect="mysql", meta={})
+    assert rep["coverage"]["plan_truncated_rows"] == 1
+
+
+def test_report_bytes_stable_across_hash_seeds():
+    """同输入跨进程逐字节一致(PYTHONHASHSEED 三连子进程钉死,与 decompose 同款)。
+
+    报告要被当基线比对,前提就是它**不随集合/字典迭代序漂移**:``observations`` /
+    ``samples`` / ``loop_by_l2`` 都是聚合字典,``json.dumps`` 不带 ``sort_keys`` 时
+    插入序就是输出序 —— 这里同时钉住 JSON 与渲染文本(渲染自成一套排序,两处都要稳)。
+    fixture 覆盖四个观察码与全部计数块,空桶则完全不出现(逐字节比较才对得上)。
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    code = """
+import json
+from trove.eval.attribution import FailureRow
+from trove.eval.chain import (
+    Trajectory, build_report, plan_facts_from_json, render_report,
+)
+
+rows = [
+    FailureRow(question="q1", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q1", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q2", gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+               pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i"
+                        " JOIN cc c ON c.i = a.i", verdict="MISMATCH"),
+    FailureRow(question="q3", gold_sql="SELECT a.x FROM aa a WHERE a.gender = 'F'",
+               pred_sql="SELECT a.x FROM aa a WHERE a.gender = 'f'",
+               verdict="MISMATCH"),
+    FailureRow(question="q4", gold_sql="SELECT a.x FROM aa a ORDER BY a.x DESC LIMIT 1",
+               pred_sql="SELECT MAX(a.x) FROM aa a", verdict="MISMATCH"),
+    FailureRow(question="q5", gold_sql="SELECT a.x FROM aa a", pred_sql="",
+               verdict="REFUSED"),
+]
+trajs = {
+    "q1": Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i", "conditions": [],
+            "aggregation": "none", "answer_columns": ["x"],
+        }),
+        plan_text_state="present", plan_truncated=True,
+        validation_hits_raw='[{"rule": "f1_shape"}]',
+        available=frozenset({"matched_tables", "plan", "validation_hits"}),
+    ),
+}
+rep = build_report(rows, trajs, dialect="mysql",
+                   meta={"failures": "failures.jsonl", "dialect": "mysql"})
+print(json.dumps(rep, ensure_ascii=False))
+print(render_report(rep))
+"""
+    outs = set()
+    for seed in ("0", "1", "999"):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, env=env, cwd=str(root), timeout=120)
+        assert r.returncode == 0, r.stderr
+        outs.add(r.stdout)
+    assert len(outs) == 1, f"跨进程不一致: {outs}"
+
+
+def _aggregate_rows_and_trajs():
+    from trove.eval.chain import plan_facts_from_json
+    rows = [
+        FailureRow(question="q1",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q1",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.y FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q2",
+                   gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+                   pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i"
+                            " JOIN cc c ON c.i = a.i", verdict="MISMATCH"),
+        FailureRow(question="q3",
+                   gold_sql="SELECT a.x FROM aa a WHERE a.gender = 'F'",
+                   pred_sql="SELECT a.x FROM aa a WHERE a.gender = 'f'",
+                   verdict="MISMATCH"),
+        FailureRow(question="q4",
+                   gold_sql="SELECT a.x FROM aa a ORDER BY a.x DESC LIMIT 1",
+                   pred_sql="SELECT MAX(a.x) FROM aa a", verdict="MISMATCH"),
+        FailureRow(question="q5", gold_sql="SELECT a.x FROM aa a", pred_sql="",
+                   verdict="REFUSED"),
+    ]
+    trajs = {"q1": Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i",
+            "conditions": [], "aggregation": "none", "answer_columns": ["x"]}),
+        plan_text_state="present", plan_truncated=True,
+        validation_hits_raw='[{"rule": "f1_shape"}]',
+        available=frozenset({"matched_tables", "plan", "validation_hits"}))}
+    return rows, trajs
+
+
+def test_report_aggregate_blocks_positive():
+    rows, trajs = _aggregate_rows_and_trajs()
+    rep = build_report(rows, trajs, dialect="mysql", meta={"failures": "x"})
+    c = rep["counts"]
+    assert c["rows"] == 6 and c["questions"] == 5
+    assert c["l1"] == {"no_sql": 1, "table_set": 3, "filter_diff": 1, "agg_diff": 1}
+    assert c["l1_by_question"] == {"no_sql": 1, "table_set": 2,
+                                   "filter_diff": 1, "agg_diff": 1}
+    assert c["l2"] == {"linking_missed_table": 2, "undecidable": 4}
+    assert c["l2_by_question"] == {"linking_missed_table": 1, "undecidable": 4}
+    assert c["loop"] == {"detected_but_unfixed": 2, "undecidable": 4}
+    assert c["loop_by_l2"] == {
+        "linking_missed_table": {"detected_but_unfixed": 2},
+        "undecidable": {"undecidable": 4}}
+    cov = rep["coverage"]
+    assert cov["l1_judged_rows"] == 6
+    assert cov["l2_judged_rows"] == 2
+    assert cov["plan_truncated_rows"] == 2
+    assert cov["fidelity"] == {
+        "matched_tables": {"present": 2, "empty": 0, "absent": 4},
+        "plan": {"present": 2, "empty": 0, "absent": 4}}
+    assert rep["observations"] == {
+        "case_only_value_diff": 1, "extra_table_read": 1,
+        "extreme_style_mismatch": 1, "needed_table_never_read": 2}
+    l1s, l2s = rep["samples"]["l1"], rep["samples"]["l2"]
+    assert set(l1s) == {"table_set", "filter_diff", "agg_diff", "no_sql"}
+    assert {s["question"] for s in l1s["table_set"]} == {"q1", "q2"}
+    assert len(l1s["table_set"]) >= 2
+    assert set(l2s) == {"linking_missed_table", "undecidable"}
+    assert all(s["l2_reason"] for s in l2s["linking_missed_table"])
+    assert {s["question"] for s in l2s["undecidable"]} == {"q2", "q3", "q4"}
+    assert all({"question", "reason", "l2_reason"} <= set(s)
+               for bag in (l1s, l2s) for b in bag.values() for s in b)
+    text = render_report(rep)
+    assert "L1 可判行=6" in text
+    assert "L2 可判行=2" in text
+    assert "plan 被截断行=2" in text
+    assert "needed_table_never_read: 2" in text
+    assert "[l2:linking_missed_table]" in text
+
+
+def test_refused_row_does_not_use_residual_pred_for_link_attribution():
+    """REFUSED 行的 pred 是残留:拿它当「已读表」会把 linking_missed_table 压成 gen_ignored_plan。"""
+    from trove.eval.chain import plan_facts_from_json
+    row = FailureRow(
+        question="q1",
+        gold_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",
+        pred_sql="SELECT a.x FROM aa a JOIN bb b ON a.i = b.i",  # 上一轮残留
+        verdict="REFUSED")
+    traj = Trajectory(
+        question="q1", source="runlog", matched_tables=("aa",),
+        matched_tables_state="present",
+        plan_facts=plan_facts_from_json({
+            "tables": ["aa", "bb"], "joins": "aa.i = bb.i",
+            "conditions": [], "aggregation": "none", "answer_columns": ["x"]}),
+        plan_text_state="present")
+    f = attribute_row(row, traj)
+    assert f.l1.bucket == "no_sql"
+    assert f.l2 == "linking_missed_table", f.l2_reason
+
+
+# ── 末轮复审 I-2 / M-1..M-3:plan 侧归一化与报告口径 ─────────────────
+
+
+def test_plan_json_quoted_scalar_is_unquoted_before_comparison():
+    """I-2:plan prompt 的示例值写成 ``"'b'"``,引号是拼写 —— 与 SQL 侧去引号后比。"""
+    from trove.eval.chain import _diff_rungs, plan_facts_from_json
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"field": "aa.k", "op": "=", "value": "'b'"}],
+        "aggregation": "none", "answer_columns": ["x"]})
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "=", ("b",)),)
+    gold = _f("SELECT x FROM aa WHERE aa.k = 'b'")
+    assert _diff_rungs(gold, pf.facts, frozenset({"filter_diff"})) == []
+
+
+def test_plan_text_quoted_scalar_is_unquoted():
+    from trove.eval.chain import plan_facts_text
+    pf = plan_facts_text("Tables: aa\nJoins: none\n"
+                         "Conditions:\n  - aa.k = 'b'\n"
+                         "Aggregation: none\nAnswer columns: x")
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "=", ("b",)),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_json_in_value_with_outer_parens():
+    """I-2:JSON 的 in 值可能是带括号的字符串 ``"('B','D')"``,与列表形态同口径。"""
+    from trove.eval.chain import plan_facts_from_json
+    pf = plan_facts_from_json({
+        "tables": ["aa"], "joins": "none",
+        "conditions": [{"field": "aa.k", "op": "in", "value": "('B','D')"}],
+        "aggregation": "none", "answer_columns": ["x"]})
+    assert pf.facts.conds == (Predicate((("aa", "k"),), "in", ("B", "D")),)
+    assert "filter_diff" in pf.comparable
+
+
+def test_plan_neq_spellings_are_the_same_operator():
+    """I-2:``<>`` 与 ``!=`` 是同一个 NEQ(SQL 侧 sqlglot 两者都归 NEQ→``!=``)。"""
+    from trove.eval.chain import plan_facts_from_json, plan_facts_text
+    for op in ("<>", "!="):
+        pf = plan_facts_from_json({
+            "tables": ["aa"], "joins": "none",
+            "conditions": [{"field": "aa.k", "op": op, "value": "1"}],
+            "aggregation": "none", "answer_columns": ["x"]})
+        assert pf.facts.conds == (Predicate((("aa", "k"),), "!=", ("1",)),), op
+    text = plan_facts_text("Tables: aa\nJoins: none\n"
+                           "Conditions:\n  - aa.k <> 1\n"
+                           "Aggregation: none\nAnswer columns: x")
+    assert text.facts.conds == (Predicate((("aa", "k"),), "!=", ("1",)),)
+
+
+def test_plan_unsafe_ops_drop_filter_depth():
+    """I-2:is / not in / between / ilike 在 SQL 侧是 raw,计划侧也绝不当确定谓词。"""
+    from trove.eval.chain import plan_facts_from_json
+    for op, value in (("is", "null"), ("not in", "('a')"),
+                      ("between", "1 AND 2"), ("ilike", "'a%'")):
+        pf = plan_facts_from_json({
+            "tables": ["aa"], "joins": "none",
+            "conditions": [{"field": "aa.k", "op": op, "value": value}],
+            "aggregation": "none", "answer_columns": ["x"]})
+        assert "filter_diff" not in pf.comparable, op
+        assert any(p.op == "raw" for p in pf.facts.conds), op
+
+
+def test_report_samples_include_pred_sql_and_dedupe_by_stripped_question():
+    """M-1/M-2:样本带 pred_sql、同题只占一席;题数/样本用 strip 后的问句。"""
+    gold, pred = "SELECT a.x FROM aa a", "SELECT a.y FROM aa a"
+    rows = [FailureRow(question=" q1 ", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH"),
+            FailureRow(question="q1", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH"),
+            FailureRow(question="q2", gold_sql=gold, pred_sql=pred,
+                       verdict="MISMATCH")]
+    rep = build_report(rows, {}, dialect="mysql")
+    bag = rep["samples"]["l1"]["projection_diff"]
+    assert [s["question"] for s in bag] == ["q1", "q2"]
+    assert all(s["pred_sql"] == pred for s in bag)
+    assert rep["counts"]["questions"] == 2
+    assert rep["counts"]["l1_by_question"]["projection_diff"] == 2
+
+
+def test_render_l2_samples_use_l2_reason_and_show_pred():
+    """M-1:L2 样本此前打印的是 L1 原因;现在给责任跳理由并露出 pred SQL。"""
+    rows, trajs = _aggregate_rows_and_trajs()
+    text = render_report(build_report(rows, trajs, dialect="mysql", meta={}))
+    assert "[l2:linking_missed_table]" in text
+    assert "gold 需要的表未进 matched_tables" in text
+    assert "pred: SELECT" in text
+
+
+def test_attribute_row_none_pred_sql_is_no_sql_not_crash():
+    """M-3:不经 load_rows 的直接构造可以给 None —— 按无 SQL 处理,不许崩。"""
+    row = FailureRow(question="q", gold_sql="SELECT a.x FROM aa a",
+                     pred_sql=None, verdict="MISMATCH")
+    f = attribute_row(row, None)
+    assert f.l1.bucket == "no_sql"

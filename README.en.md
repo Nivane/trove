@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-8000%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-9000%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -37,6 +37,7 @@ Its promise is not "always right" but **never wrong without a fight**:
 - **The ontology makes the model speak business.** The same `semantics.yml` declares three more things: a dataset as an **object** (display name, natural keys, aliases), a table join as a **relationship** (with a business name), a dimension chain as a **hierarchy** (coarse → fine). Declare once and answer headers, refusal exits, which level an analysis rolls up to, and decision/action notifications all switch to business words; leave it undeclared and the physical column names stay — Trove never invents a plausible-looking label. It has no storage and no write path of its own: it *is* those three declarations, with a read-only graph view in the console (deterministic layout — the same model draws the same picture every time).
 - **Semantic change review.** For batch edits to the semantic model the change lands in a staging area first (never compiled, never retrieved), and three things are computed for it: a **model-level diff** (per dataset / metric / relationship / topic area / hierarchy), a **zero-LLM sandbox replay** (everything in the KB that declares a semantic query is compiled against the before and after models — regresses / improves / neutral / not-applicable are four distinct outcomes, plus "cannot tell" when the replay itself errors, never laundered into a pass), and the **impact set** (who references it structurally versus who merely mentions it in text). Merge is the single write funnel: a snapshot mismatch against mainline, a failed apply, or a blocking lint are all refused before the first byte is written; a warn-only drift gate runs just before the merge.
 - **Deterministic rails close the loop.** Generated SQL runs through a zero-LLM rule chain, an AST firewall, an execution-cost guard and a reflection cycle with SQL-version regression. Wrong answers are diagnosed, rolled back and corrected — and the fix is remembered.
+- **Identity and data boundaries live in code too.** OIDC single sign-on (authorization code + PKCE) issues the existing opaque token: IdP groups map to roles, first login auto-provisions an account with zero grants, and an unconfigured deployment gets no new routes and keeps local login unchanged. Row/column grants **narrow, never widen** — row predicates are rewritten as table-reference subqueries into every user-facing data path, and any reference to a blocked column is refused (column names stay visible; only values are protected); admins are exempt and scheduled jobs run as the job owner. What reaches the model is governed the same way: tool results are redacted against declared `mask` fields before entering context, and a provider allowlist gates the gateway.
 - **Decisions share the query's footing — and know how certain they are.** Threshold rules name metrics, windows and baselines in the semantic model's own vocabulary and are evaluated by a deterministic engine, zero LLM. Every trigger carries the SQL and the raw rows it was judged on, plus statistical honesty: a seasonal noise band, no confirmation from fewer than 8 blocks, and a confidence figure labelled for what it is — a *position score, not a probability*. "Cannot tell" is reported as such, never quietly read as "nothing wrong today".
 - **Analysis is statistics first, narrative second.** "Why did it drop?" recurses along the metric's definition; contributions, ratio attribution and residuals are shown as they are, and significance, confidence and seasonal baselines come from a pure-stdlib statistics kit — recomputable and seed-reproducible, so a conclusion can always be re-derived. Every number comes from the deterministic engine; only the narrative uses an LLM.
 - **An action is not done until it is measured.** Approval and dispatch are not the end: on the agreed cadence Trove comes back and compares the blocks before and after the action against the *same noise band* the verdict used — "outside the band" and "no identifiable change" are both honest outcomes. Measurement reuses the decision's own parsing and compilation, so nobody quietly swaps the ruler.
@@ -267,16 +268,18 @@ docker compose build frontend    # rebuild only the frontend image; build backen
 docker compose down
 ```
 
-Default local login is admin / `admin123` (production is controlled by `TROVE_ADMIN_PASSWORD`). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded; real conversations need LLM credentials — see the comment on the `~/.trove/conf` mount in `docker-compose.yml`.
+Default local login is admin / `admin123` (production is controlled by `TROVE_ADMIN_PASSWORD`; with OIDC configured the login page also offers "Sign in with SSO"). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded; real conversations need LLM credentials — see the comment on the `~/.trove/conf` mount in `docker-compose.yml`.
 
 ## Capabilities at a Glance
 
-Every row has a deeper version on the docs site, anchored to source:
+Every row has a deeper layer — a docs-site chapter:
 
 | Capability | In one line | Read more |
 |---|---|---|
 | Semantic layer | The answerable boundary is a readable, diffable, git-revertible file | [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) |
 | Topic areas | An optional narrowing inside the semantic model: queries anchor and converge within the area, out-of-area questions are refused outright; grants narrow users to areas in the console | [Semantic layer · topics](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
+| Row/column grants | Grants only narrow: row predicates are rewritten as subqueries across the main pipeline, the semantic query API, generation-time probes and attribution; referencing a blocked column is refused (names stay visible, values are protected), admins are exempt, scheduled jobs run as the job owner | [Security · row and column grants](https://nivane.github.io/trove/ops/security.html#rowcol) |
+| Identity and SSO | OIDC authorization-code + PKCE login, group-to-role mapping, auto-provisioned with zero grants; when disabled there are no new routes or buttons and local password login is unchanged | [Security · single sign-on](https://nivane.github.io/trove/ops/security.html#oidc) |
 | Ontology | Datasets as objects, joins with business names, dimension chains as hierarchies; declare once and the whole chain speaks business, undeclared stays physical | [Ontology](https://nivane.github.io/trove/capabilities/ontology.html) |
 | Semantic change review | Batch edits land in a staging area: model-level diff → zero-LLM sandbox replay → impact set; merge is the single write funnel, behind a warn-only drift gate | [Semantic layer governance · change review](https://nivane.github.io/trove/admin/semantic.html#changes) |
 | Self-checking loop | Rule chain / AST firewall / cost guard / reflection with version regression | [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
@@ -287,6 +290,7 @@ Every row has a deeper version on the docs site, anchored to source:
 | Subscriptions | Scheduled analysis is delivered to a notification channel as "every run / alerts only", failures on record; a job can be scoped to a topic area | [Automation & governance](https://nivane.github.io/trove/admin/automation.html) |
 | Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
+| LLM egress governance | Tool results are redacted against declared `mask` fields before reaching the model, and a failed redaction withholds the whole observation; a provider allowlist gates the gateway before any call; audit records field names, never values | [Security · model data egress](https://nivane.github.io/trove/ops/security.html#egress) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | Org-wide methodology in four tiers: `required` injected / `available` on demand / `validator` result assertions / guard SQL assertions; confirmation gate, individually disableable | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; significance, confidence and seasonal baselines come from a recomputable statistics kit; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) · [noise band](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
@@ -309,6 +313,8 @@ For a data agent to ship, the security boundary cannot be a request written in a
 | **Table allowlist** | Enforced **in the execution path itself** (`execute` and `explain` alike), so SQL arriving via MCP, the semantic query API or any bypass is bound by the same gate |
 | **Execution-cost guard** | EXPLAIN estimates the heaviest operator's row count first: over the soft limit (default 50M) the query goes back to generation to add `LIMIT`; over the hard limit it is refused outright, without burning an LLM regeneration round |
 | **Field-level redaction** | Declared per field as `partial` / `hash` / `null`, rewritten as the result leaves the database and before any model-facing node. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the query is refused rather than let through unredacted |
+| **Row/column authorization** | A principal's grants **narrow, never grant**: row predicates are rewritten as table-reference subqueries (a top-level WHERE would lift inner aliases across subqueries/UNIONs), and a blocked column is refused wherever it is referenced — `SELECT *` is refused while `COUNT(*)` is allowed; an alias or column that cannot be resolved means refusal. The main pipeline, `/v1/semantic/query`, generation-time probe/check/search, candidate voting and attribution all pass through the same scope engine; admins are exempt and scheduled jobs run as the job owner |
+| **Model egress governance** | Probe rows and value lookups fed back to the model are redacted against the semantic model's `mask` declarations before entering context — with `principal=None`, so even an admin cannot send declared field values to the model; a failed redaction withholds the whole observation, never falling back to the original. The provider allowlist is enforced before any gateway call, and a denial never reaches the network; audit records field names, not values |
 | **External-data isolation** | Content from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt; human-confirmed KB content is exempt by design |
 | **Rate limits, quotas and audit** | Per-user token bucket plus a daily quota, over the limit returns 429; every execution records question / SQL / verdict / row count / duration / error |
 | **Actions propose, never execute** | A decision trigger only freezes the action into a proposal (payload final the moment it is created, deduplicated by idempotency key); it is dispatched only after approval. The action layer **takes no datasource connectors at all** — Trove itself has no channel to write back to your database, and approval, dispatch and receipt are each recorded separately |
@@ -331,6 +337,9 @@ Every item above invites a follow-up: "and when it breaks?" The answer is unifor
 | Auth components missing | Refuse to start | Better not to boot than to run silently insecure |
 | HITL payload unrecognisable | Deny by default | Not executed; handed to a human |
 | Salt or semantic model unreadable for masking | Refuse the query | Never delivered unredacted |
+| Row/column scope cannot resolve a table or column | Refuse the query | No alias guessing, and no relaxing into no filter |
+| Tool-result redaction fails | Withhold the whole observation | The original never reaches the model |
+| OIDC state / signature / audience check fails | Refuse the login | No token issued; the failure code is surfaced via the frontend fragment |
 | No authorization basis (`None`) | Deny everything | "Forgot to grant" never degrades into access |
 | Read-only self-check cannot complete | Recorded "unverified" | Never rendered as "safe" |
 | KB drift check cannot read | Non-zero exit code | "Could not check" is not "nothing wrong" |
@@ -369,7 +378,7 @@ Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 8000+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 9000+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```

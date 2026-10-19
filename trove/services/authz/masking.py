@@ -90,7 +90,7 @@ from trove.core.logging import get_logger
 from trove.services.authz.policy import Policy, Principal, principal_from_wire
 from trove.services.semantic_layer.models import SemanticModel
 
-__all__ = ["Masker", "MaskingError", "build_masker", "resolve_salt_ref"]
+__all__ = ["Masker", "MaskingError", "build_masker", "mask_values", "resolve_salt_ref"]
 
 log = get_logger(__name__)
 
@@ -346,6 +346,7 @@ class Masker:
         principal: Principal | None,
         sql: str | None = None,
         contract: dict[str, Any] | None = None,
+        strict: bool = False,
     ) -> tuple[list[list[Any]], dict[str, Any]]:
         """结果集 → 脱敏后的**新**结果集 + 审计报告。
 
@@ -359,6 +360,12 @@ class Masker:
         ``principal`` 为 ``None`` 时**照常脱敏**:没有主体就没有可依据的 pii
         授权,安全方向是多脱敏而不是放行。``model`` 为 ``None`` = 没有声明面
         (没有字段可脱敏),不是"没有依据所以放行"。
+
+        ``strict``(**默认 False,交付面行为逐字节不变**):位置信息不可用而
+        确有 ``mask`` 声明时抛 :class:`MaskingError`,而不是退化为按列名匹配。
+        列名退化对交付面是可接受的边界(见模块 docstring 第 4 条),但**出口
+        (工具回喂模型)不接受**:``SELECT email AS phone`` 的别名会让按名匹配
+        漏掉真正的敏感列。egress 路径传 ``strict=True``,失败即整条扣留。
         """
         rows_in = [list(row) for row in (rows or [])]
 
@@ -376,7 +383,9 @@ class Masker:
             return rows_in, {"fields": {}, "bypass": False}
 
         names = [str(name) for name in (columns or ())]
-        targets = self._targets(declared, names, sql=sql, contract=contract)
+        targets = self._targets(
+            declared, names, sql=sql, contract=contract, strict=strict,
+        )
 
         salt = ""
         if any(mode == "hash" for mode, _ in targets.values()):
@@ -406,11 +415,15 @@ class Masker:
         *,
         sql: str | None,
         contract: dict[str, Any] | None,
+        strict: bool = False,
     ) -> dict[int, tuple[str, list[str]]]:
         """输出位置 → (模式, 命中的声明字段名)。
 
         位置信息可用时**只用位置匹配**(不回退列名):``SELECT email AS phone``
         的名字退化会拿 phone 的模式去改写 email。
+
+        ``strict=True``:位置信息不可用时**拒绝**(抛 :class:`MaskingError`),
+        不退化。egress 路径的失败方向。
         """
         targets: dict[int, tuple[str, list[str]]] = {}
         slots = _positions_from_contract(contract, len(columns))
@@ -425,6 +438,11 @@ class Masker:
                 if hit is not None:
                     targets[index] = hit
             return targets
+        if strict:
+            raise MaskingError(
+                "egress: 无法从 SQL/契约确定投影位置,而模型声明了脱敏字段;"
+                "按列名回退可能被别名绕过,拒绝发送该结果集"
+            )
         for index, name in enumerate(columns):
             hit = _match(declared, name, "")
             if hit is not None:
@@ -440,6 +458,46 @@ class Masker:
 
 
 # ── 构造点(唯一) ────────────────────────────────────────────────
+
+
+def mask_values(
+    model: SemanticModel | None,
+    table: str,
+    column: str,
+    values: list[Any],
+    *,
+    default_salt_ref: str = "",
+) -> tuple[list[Any], dict[str, Any]]:
+    """按 ``(table, column)`` 的 ``mask`` 声明脱敏一列标量值。
+
+    工具回喂的 ``search_values`` 形状(``values`` / ``hits``)用这个口:那里
+    没有结果集与 SQL 投影,只有"这一列的值"这一种身份。匹配复用
+    :func:`_match`(字段 ``name`` / ``expression`` 末段 + 表名收窄),脱敏
+    复用 :func:`_mask_value` —— 与结果集路径同一套声明与同一个 salt 解析,
+    两处不会漂移出两套掩码。
+
+    Returns:
+        ``(new_values, {"mode": str | None, "fields": [字段名]})``。
+        ``mode is None`` = 该列没有声明,值原样返回(仍是新列表)。
+    """
+    values_in = list(values or [])
+    if model is None:
+        return values_in, {"mode": None, "fields": []}
+    declared = _declared_fields(model)
+    hit = _match(declared, column, table)
+    if hit is None:
+        return values_in, {"mode": None, "fields": []}
+    mode, names = hit
+    salt = ""
+    if mode == "hash":
+        ref = str(getattr(model.masking, "hash_salt_ref", "") or "").strip() or str(
+            default_salt_ref or ""
+        ).strip()
+        salt = resolve_salt_ref(ref)
+    return (
+        [_mask_value(mode, value, salt) for value in values_in],
+        {"mode": mode, "fields": list(names)},
+    )
 
 
 def build_masker(

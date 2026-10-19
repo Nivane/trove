@@ -67,6 +67,18 @@ if _HAVE_CLIENT:
         ["provider", "model"],
         registry=_REGISTRY,
     )
+    LLM_EGRESS_DENIED = Counter(
+        "trove_llm_egress_denied_total",
+        "LLM calls refused by the egress provider allowlist.",
+        ["provider"],
+        registry=_REGISTRY,
+    )
+    EGRESS_REDACTED = Counter(
+        "trove_egress_redactions_total",
+        "Observations / prompt samples redacted before being sent to the model.",
+        ["channel", "tool"],
+        registry=_REGISTRY,
+    )
     SQL_QUERIES = Counter(
         "trove_sql_queries_total",
         "Datasource SQL executions, by datasource/status (success|error).",
@@ -260,6 +272,34 @@ def record_llm_call(model: str, status: str, duration_s: float) -> None:
         logger.debug("llm metric record failed: %s", e)
 
 
+def record_llm_egress_denied(provider: str) -> None:
+    """记一次 egress 白名单拒绝。provider 为空归 ``"unresolved"``。
+
+    标准与 ``record_authz_deny`` 相同:值来自模型标识前缀(基数有界),PII/
+    prompt 内容永不进标签。
+    """
+    if not _HAVE_CLIENT:
+        return
+    try:
+        LLM_EGRESS_DENIED.labels(provider=provider or "unresolved").inc()
+    except Exception as e:
+        logger.debug("llm egress-deny metric record failed: %s", e)
+
+
+#: 工具回喂脱敏的**通道值域**:行结果 / 值检索 / few-shot 样例。
+EGRESS_CHANNELS = frozenset({"tool_result", "search_values", "prompt_samples"})
+
+
+def record_egress_redaction(channel: str, tool: str) -> None:
+    """记一次工具回喂脱敏。域外的 channel 不记(同 ``record_authz_deny`` 的纪律)。"""
+    if not _HAVE_CLIENT or channel not in EGRESS_CHANNELS:
+        return
+    try:
+        EGRESS_REDACTED.labels(channel=channel, tool=tool or "unknown").inc()
+    except Exception as e:
+        logger.debug("egress redaction metric record failed: %s", e)
+
+
 def record_sql(datasource: str, status: str, duration_s: float) -> None:
     if not _HAVE_CLIENT:
         return
@@ -342,7 +382,8 @@ MASKING_MODES = frozenset({"partial", "hash", "null"})
 #: 与 ``MASKING_MODES`` 同一条纪律:不 import 那一份 —— ``core`` 不该依赖
 #: ``services``,而且这里要的是「计数器接受哪些标签值」这个**观测契约**:
 #: 服务层新增一种拒绝原因时,这里应该被有意识地改一次。
-AUTHZ_DENY_REASONS = frozenset({"no_principal", "datasource", "table", "unresolved"})
+AUTHZ_DENY_REASONS = frozenset({
+    "no_principal", "datasource", "table", "column", "unresolved"})
 
 
 #: 隔离通道的**值域**(设计稿 §5.2/§5.3):模板渲染 / 工具回喂 —— 值**进入模型

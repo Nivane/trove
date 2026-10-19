@@ -92,6 +92,13 @@ class WorkflowState(BaseModel):
     # 复用等于把判定变成一次性的。
     authz_decision: dict[str, Any] | None = None
 
+    # 行/列 scope 的证据(执行成功时由 execute_sql 写):
+    # ``{"row_filters": [被包裹的表名], "rewritten": bool, "column_policy": bool}``。
+    # 「已经按行级授权过滤过」是**结果的一部分** —— 收窄后的答案如果不带这个
+    # 注记,读者会把它读成全量统计。``None`` = 没走过 scope(没有主体),不是
+    # 「查了、没有过滤」。
+    data_scope: dict[str, Any] | None = None
+
     # 执行画像的成本轨快照(design §6.2 ``ExecutionEvidence`` 的 dict 形态):
     # 估算依据 / 阈值 / 是否降级 / 实际加上的 LIMIT。供输出渲染降级提示与
     # 事后校准估算器(I7)。
@@ -115,6 +122,15 @@ class WorkflowState(BaseModel):
     #
     # None = 这一步**没跑**(没有结果集 / 装配关掉),不是「跑了、什么都没改」。
     masking_applied: dict[str, Any] | None = None
+
+    # LLM 数据出境治理的 run 级汇总(services/authz/egress):
+    # ``{tool: {"fields": {字段名: 模式}, "rows": n, "values": n, "withheld": n}}``。
+    #
+    # **只记字段名与计数,不记值** —— 与 ``masking.applied`` 同一条纪律。
+    # None = 这一问没有发生任何出境脱敏(未声明 ``mask`` / 无工具回喂)。
+    # 汇总跨修正轮合并(每个注册表各记一轮),session 在 run 结束 best-effort
+    # 写一条 ``llm.egress`` 审计,受 ``config.egress.audit`` 门控。
+    egress_report: dict[str, Any] | None = None
 
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"

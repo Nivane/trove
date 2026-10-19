@@ -96,8 +96,11 @@ export async function apiFetch(
   { noAuth = false } = {},
 ): Promise<Response> {
   const auth = useAuthStore()
+  // multipart 由浏览器自己带 boundary —— 手动设 application/json 会让
+  // FastAPI 解析失败(且 boundary 无从补充)。FormData 时只留调用方的头。
+  const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isForm ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers as Record<string, string>),
   }
   if (!noAuth && auth.token) {
@@ -137,6 +140,16 @@ export async function apiPost<T = any>(
   if (!resp.ok) {
     throw await apiError(resp)
   }
+  return resp.json()
+}
+
+/** multipart 上传(CSV 导入等):FormData 由 apiFetch 负责不带 JSON 头。 */
+export async function apiPostForm<T = any>(
+  path: string,
+  form: FormData,
+): Promise<T> {
+  const resp = await apiFetch(path, { method: 'POST', body: form })
+  if (!resp.ok) throw await apiError(resp)
   return resp.json()
 }
 

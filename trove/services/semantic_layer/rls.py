@@ -75,12 +75,24 @@ def declared_tables(model: SemanticModel | None) -> set[str]:
 def render_row_filter(
     dataset: SemanticDataset | None, dialect: str, qualifier: str,
 ) -> str | None:
-    """数据集 row_filter → 注入用谓词(裸列限定到 ``qualifier``);无声明 → None。
+    """数据集 row_filter → 注入用谓词(裸列限定到 ``qualifier``);无声明 → None。"""
+    if dataset is None:
+        return None
+    return render_predicate(dataset.row_filter, dialect, qualifier)
+
+
+def render_predicate(
+    predicate: str | None, dialect: str, qualifier: str,
+) -> str | None:
+    """谓词文本 → 注入用谓词(裸列限定到 ``qualifier``);空 → None。
 
     解析失败**原样注入**而不静默丢弃:声明层 lint 已在写盘前拦截,这里若仍
     遇到坏谓词,宁可由执行期报语法错,也不能**少一个安全条件**。
+
+    声明 RLS(row_filter)与主体行授权(grant 谓词)共用这一份渲染 ——
+    两处各写一遍的后果是同一个谓词在两条路径上被限定成不同的表。
     """
-    rf = (dataset.row_filter if dataset is not None else "").strip()
+    rf = (predicate or "").strip()
     if not rf:
         return None
     d = dialect or DEFAULT_DIALECT

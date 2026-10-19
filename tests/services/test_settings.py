@@ -141,6 +141,52 @@ class TestSettingsService:
         values = effective_values(cfg)
         assert values["app.semantic_layer_path"] == ".trove/semantic"
 
+    def test_egress_strlist_accepts_list_and_comma_string(self):
+        """白名单从管理端来的两种形状都要收:JSON 数组 / 逗号分隔字符串。"""
+        coerced, errors = validate_values({
+            "egress.allow_providers": ["OpenAI", " anthropic/claude-3 "],
+        })
+        assert errors == []
+        assert coerced["egress.allow_providers"] == ["openai", "anthropic/claude-3"]
+
+        coerced, errors = validate_values({
+            "egress.allow_providers": " openai, ,DeepSeek ",
+        })
+        assert errors == []
+        assert coerced["egress.allow_providers"] == ["openai", "deepseek"]
+
+    def test_egress_strlist_dedupes_keeping_order(self):
+        """白名单语义是集合:重复条目折掉,输出稳定便于回显比对。"""
+        coerced, errors = validate_values({
+            "egress.allow_providers": "openai, deepseek, OPENAI",
+        })
+        assert errors == []
+        assert coerced["egress.allow_providers"] == ["openai", "deepseek"]
+
+    def test_egress_strlist_rejects_non_list(self):
+        _, errors = validate_values({"egress.allow_providers": {"openai": True}})
+        assert errors and "invalid value" in errors[0]
+
+    def test_egress_apply_overrides_mutates_live_config(self):
+        """热更新:管理端保存后网关的 ``lambda: config.egress`` 现读到新值。"""
+        cfg = AgentConfig()
+        apply_overrides(cfg, {
+            "egress.enabled": False,
+            "egress.redact_tool_results": False,
+            "egress.allow_providers": ["openai"],
+        })
+        assert cfg.egress.enabled is False
+        assert cfg.egress.redact_tool_results is False
+        assert cfg.egress.allow_providers == ["openai"]
+
+    def test_egress_effective_values_echoes_allowlist(self):
+        cfg = AgentConfig()
+        cfg.egress.allow_providers = ["openai", "anthropic/claude-3"]
+        values = effective_values(cfg)
+        assert values["egress.allow_providers"] == ["openai", "anthropic/claude-3"]
+        assert values["egress.enabled"] is True
+        assert values["egress.redact_tool_results"] is True
+
     def test_provider_mask_roundtrip(self):
         config = AgentConfig()
         config.providers = [__import__("trove.core.config", fromlist=["ProviderConfig"])

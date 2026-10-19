@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、四类产物的消费方式、退出码语义、回顾归因（历史失败 vs 声明层），以及检索/RRF 评测脚本。">
+<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、四类产物的消费方式、退出码语义、回顾归因（历史失败 vs 声明层）、生成链归因（L1 结构档位 / L2 责任跳），以及检索/RRF 评测脚本。">
 <title>评测与回归门 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -160,11 +160,11 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L169">gate.py:169 <span class="ref-line">metrics_from_entries</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L254">gate.py:254 <span class="ref-line">consensus_rate</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L69">gate.py:69 <span class="ref-line">n_judged</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L414">gate.py:414 <span class="ref-line">compare_metrics</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L539">gate.py:539 <span class="ref-line">render_report</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L163">gate.py:163 <span class="ref-line">metrics_from_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L248">gate.py:248 <span class="ref-line">consensus_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L71">gate.py:71 <span class="ref-line">n_judged</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L408">gate.py:408 <span class="ref-line">compare_metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L533">gate.py:533 <span class="ref-line">render_report</span></a>
     </p>
 
     <div class="callout note">
@@ -177,8 +177,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L52">gate.py:52 <span class="ref-line">HIGHER_BETTER</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L78">gate.py:78 <span class="ref-line">DEFAULT_TOLERANCE</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L54">gate.py:54 <span class="ref-line">HIGHER_BETTER</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L80">gate.py:80 <span class="ref-line">DEFAULT_TOLERANCE</span></a>
     </p>
 
     <h3>容差：绝对量或相对量</h3>
@@ -196,7 +196,7 @@ flowchart LR
     <h3>分母漂移会告警，但不会拦</h3>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L481">gate.py:481 <span class="ref-line">DENOMINATOR_DRIFT_WARN</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L475">gate.py:475 <span class="ref-line">DENOMINATOR_DRIFT_WARN</span></a>
     </p>
 
     <p>
@@ -238,8 +238,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L591">gate.py:591 <span class="ref-line">load_entries</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L118">eval_bird.py:118 <span class="ref-line">RESULTS_PATH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L585">gate.py:585 <span class="ref-line">load_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L114">eval_bird.py:114 <span class="ref-line">RESULTS_PATH</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L44">offline_eval.py:44 <span class="ref-line">--scorecard</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L138">cli/commands/validate_cmds.py:138 <span class="ref-line">顶层 metrics 接线</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/extensions/dryrun.py#L857">services/extensions/dryrun.py:857 <span class="ref-line">metrics 段</span></a>
@@ -550,7 +550,7 @@ uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L117">eval_bird.py:117 <span class="ref-line">FAILURES_PATH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L113">eval_bird.py:113 <span class="ref-line">FAILURES_PATH</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L27">offline_eval.py:27 <span class="ref-line">DEFAULT_OUTPUT</span></a>
     </p>
 
@@ -637,6 +637,110 @@ uv run python scripts/eval_attribution.py ... --json --out r.json</code></pre>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_attribution.py#L113">eval_attribution.py:113 <span class="ref-line">_kb_provenance</span></a>
     </p>
 
+    <h2 id="chain">生成链归因：错在生成链的哪一跳</h2>
+
+    <p>
+      回顾归因回答「是不是声明层」；下一个问题是<strong>错在生成链的哪一跳</strong>。
+      <code>scripts/eval_chain_attribution.py</code> 消费同一批 <code>failures.jsonl</code>，
+      叠加当时的运行轨迹（<code>~/.trove/runs/*.log</code> 文本日志、
+      <code>~/.trove/traces.jsonl</code> 结构事件，未来的 <code>results.jsonl</code>
+      结构化记录可选），<strong>零 LLM、零网络、不连库</strong>——连 pred SQL 都不重跑。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>问什么</th><th>产出</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>L1 结构档位</strong></td><td>pred 相对 gold 的<strong>首个结构分歧</strong>在哪一档</td><td>十一个桶，每行落一个（含「判不了」桶）</td></tr>
+          <tr><td><strong>L2 责任跳</strong></td><td>在那个分歧上，<strong>哪一跳</strong>做了这个选择</td><td>四个桶；需要轨迹，覆盖不到的题如实计 <code>undecidable</code></td></tr>
+          <tr><td><strong>loop 三态</strong></td><td>链路自己<strong>察觉过吗</strong>（与责任跳正交，单独计）</td><td><code>detected_but_unfixed</code> / <code>never_detected</code> / <code>undecidable</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>L1 档位（首个分歧即桶，互斥）</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>no_sql</code></td><td>没产出可判 SQL（REFUSED / EMPTY_SQL / GENERATION_ERROR）——先于一切判定</td></tr>
+          <tr><td><code>pred_unparseable</code></td><td>pred SQL 解析不了</td></tr>
+          <tr><td><code>exec_error</code></td><td>verdict 是 <code>EXECUTION_ERROR</code>——SQL 有形状但执行报错</td></tr>
+          <tr><td><code>table_set</code></td><td>读的表集合不同</td></tr>
+          <tr><td><code>join_shape</code></td><td>连接边不同（方向无关）</td></tr>
+          <tr><td><code>filter_diff</code></td><td>过滤条件不同（含子查询内的谓词）</td></tr>
+          <tr><td><code>agg_diff</code></td><td>聚合方式不同</td></tr>
+          <tr><td><code>order_limit_diff</code></td><td>排序 / 取值（LIMIT）不同</td></tr>
+          <tr><td><code>projection_diff</code></td><td>输出列不同</td></tr>
+          <tr><td><code>structure_equal</code></td><td>六个结构维度全同——不是这几个结构维度的事</td></tr>
+          <tr><td><code>undecidable</code></td><td>判不了（解析/复原失败等）——单独成桶，<strong>绝不混入 <code>structure_equal</code></strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      L2 的四个责任跳：<code>linking_missed_table</code>（表都没检索到）、
+      <code>planner_chose_differently</code>（计划本身就与 gold 的首个分歧不同）、
+      <code>gen_ignored_plan</code>（计划对、生成的 SQL 偏离了计划）、
+      <code>undecidable</code>（没有轨迹，或 plan 可比深度不足以判）。
+      报告对每个桶都按<strong>行数和题数双计数</strong>（97 行常只有 24 题，行数偏袒重试题），
+      并逐字段报轨迹保真度（<code>present</code> / <code>empty</code> / <code>absent</code>：
+      观察到 / 观察到但为空 / 未观察到）；plan 的截断不混进这三态，单列在
+      <code>coverage.plan_truncated_rows</code>。
+    </p>
+
+    <pre><code>uv run python scripts/eval_chain_attribution.py \
+  --failures .trove/eval/failures.jsonl --traces "" --runs-dir .trove/eval/runs --json
+uv run python scripts/eval_chain_attribution.py \
+  --failures .trove/eval/failures.jsonl --traces "" --runs-dir .trove/eval/runs \
+  --out .trove/eval/chain_report.txt</code></pre>
+
+    <p>
+      上面两条是本文数字的来源；<code>failures.jsonl</code> 与 <code>runs/</code> 是本地评测产物，
+      不在仓内，新 clone 需先跑自己的评测。退出码 0 正常 · 2 用法或输入错误。没有
+      <code>--strict</code>：「责任跳桶超阈值即失败」目前是拍脑袋的门，留到有基线再说。
+      <code>--traces ""</code> 关闭 traces 源。不带参数时默认读
+      <code>~/.trove/traces.jsonl</code>（本机运行期旁路记录，可能与语料不同纪元）与
+      <code>~/.trove/runs</code>——那只用于快速看形状，不要拿默认输出解释历史失败；
+      报告里的 <code>meta.traces_enabled</code> 与 <code>meta.pipeline_note</code> 跟着实际来源走。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">四条诚实边界</span>
+      <div>
+        <p><strong>管线纪元</strong>：8 月轨迹来自两段式管线（planner + 单体 gen_sql），三段式 gen 链是 2026-09-18 之后。L2 的责任跳按<strong>当时的节点边界</strong>算；L1 与节点边界无关，类别结论可迁移。报告的 <code>meta.pipeline_note</code> 按<strong>实际来源</strong>生成：<code>--traces ""</code> 时写历史 run 日志的纪元；traces 开启时如实说明它是本机运行期旁路记录、可能跨纪元。</p>
+        <p><strong>plan 保真度上限</strong>：8 月日志的 dict 值静默截断在 600 字符（<code>plan_json</code> 只剩前缀），<code>answer_columns</code> 拿不回来——输出列分歧只能从 L1 的 SQL 投影判。报告逐字段报 fidelity（<code>present</code> / <code>empty</code> / <code>absent</code>），截断行数单列在 <code>coverage.plan_truncated_rows</code>；截断会让某个结构档退出可比集，但<strong>不必然</strong>让整行判不了——判不了才进 <code>undecidable</code>，不猜。实测 33 条带截断标记的行里 28 条落 <code>undecidable</code>，5 条仍判出了 <code>planner_chose_differently</code>。</p>
+        <p><strong>描述不因果</strong>：档位是「首个结构分歧」，责任跳是「谁做了这个选择」。全篇不主张「所以失败」；虚高方向（等价改写 LIMIT ⟷ 聚合极值、字面量大小写）由观察块给出折扣尺。</p>
+        <p><strong>判不了 ≠ 通过</strong>：字段缺失、plan 可比深度不足，一律进 <code>undecidable</code> 或如实标注，绝不写成「没问题」。</p>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">一次真实归因（2026-10，financial）</span>
+      <div>
+        <p>97 条历史失败、24 道不同问题（轨迹覆盖 18 题）：L1 首个分歧最多的是 <code>table_set</code>
+        （37 行 / 15 题）与 <code>filter_diff</code>（27 行 / 11 题）；L2 判得出的 47 行里
+        <code>planner_chose_differently</code> 29 行、<code>gen_ignored_plan</code> 18 行。
+        <code>plan</code> 带 600 字符截断标记的行有 33 条，其中 28 条最终判不了、5 条仍判出了计划分歧；
+        50 条 <code>undecidable</code> 的构成是 28 条截断 + 17 条无轨迹 + 2 条 order_limit 档深度不足
+        + 1 条 agg 档深度不足 + 1 条 <code>structure_equal</code> + 1 条 plan 不可得（未截断）。
+        观察块里 22 行 gold 要的表 pred 根本没读、21 行多读了表——投入方向的两端大致对半。</p>
+        <p>它和回顾归因一起构成结论：<strong>不是声明层，也不是「模型不会写 SQL」一句话</strong>——
+        可判的责任跳里计划与生成是 29 : 18；50 条判不了里 28 条的直接原因是 plan 截断，
+        其余是轨迹覆盖与可比深度。</p>
+      </div>
+    </div>
+
+    <p>
+      实现：<code>trove/eval/chain.py</code>（纯核心：档位、责任跳、报告装配）、
+      <code>trove/eval/trajectory.py</code>（轨迹适配器：日志 / traces / 结构化记录）、
+      <code>scripts/eval_chain_attribution.py</code>（CLI 粘合）。
+      表 / 连接的口径与回顾归因共用 <code>attribution.parse_path</code>，两把尺子的衔接处只有这一份。
+    </p>
+
     <h2 id="next">继续读</h2>
 
     <div class="table-wrap">
@@ -657,7 +761,7 @@ uv run python scripts/eval_attribution.py ... --json --out r.json</code></pre>
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 59c8cd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: d2e887c</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

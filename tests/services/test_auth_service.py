@@ -353,6 +353,83 @@ async def test_topic_grants_malformed_storage_reads_as_deny_all(auth):
     assert await auth.get_topic_grants(u["id"]) == {}
 
 
+# ── 行/列授权(按数据源整体替换;无行 = 未声明收窄)────────────
+
+
+async def test_data_grants_roundtrip_and_none_when_empty(auth):
+    u = await auth.create_user("bob", "pw")
+    assert await auth.get_row_grants(u["id"]) is None      # 新用户 = 未声明
+    assert await auth.get_column_denials(u["id"]) is None
+
+    await auth.set_data_grants(
+        u["id"], "financial",
+        {"loans": "district_id = 1", "client": "region = 'Prague'"},
+        {"client": ["email", "phone"]},
+    )
+    assert await auth.get_row_grants(u["id"]) == {
+        "financial": {
+            "client": "region = 'Prague'",
+            "loans": "district_id = 1",
+        },
+    }
+    assert await auth.get_column_denials(u["id"]) == {
+        "financial": {"client": ["email", "phone"]},
+    }
+
+    # 整体替换:第二次写入只带一行一列 → 旧的其余条目消失
+    await auth.set_data_grants(
+        u["id"], "financial", {"loans": "amount > 0"}, {"client": ["email"]})
+    assert await auth.get_row_grants(u["id"]) == {
+        "financial": {"loans": "amount > 0"}}
+    assert await auth.get_column_denials(u["id"]) == {
+        "financial": {"client": ["email"]}}
+
+    # 空 = 取消该数据源的收窄;两个表一起清,没有半成品
+    await auth.set_data_grants(u["id"], "financial", {}, {})
+    assert await auth.get_row_grants(u["id"]) is None
+    assert await auth.get_column_denials(u["id"]) is None
+
+
+async def test_data_grants_are_per_datasource(auth):
+    """替换只作用于点名的那一个源 —— 保存 demo 不该清掉 financial。"""
+    u = await auth.create_user("bob", "pw")
+    await auth.set_data_grants(u["id"], "financial", {"loans": "a = 1"},
+                               {"client": ["email"]})
+    await auth.set_data_grants(u["id"], "demo", {"borrower": "b = 2"},
+                               {"borrower": ["phone"]})
+    assert await auth.get_row_grants(u["id"]) == {
+        "demo": {"borrower": "b = 2"},
+        "financial": {"loans": "a = 1"},
+    }
+    assert await auth.get_column_denials(u["id"]) == {
+        "demo": {"borrower": ["phone"]},
+        "financial": {"client": ["email"]},
+    }
+
+    await auth.set_data_grants(u["id"], "demo", {}, {})
+    assert await auth.get_row_grants(u["id"]) == {
+        "financial": {"loans": "a = 1"}}
+
+
+async def test_data_grants_normalize_and_reject_empty_predicate(auth):
+    u = await auth.create_user("bob", "pw")
+    await auth.set_data_grants(
+        u["id"], " financial ",
+        {" loans ": " district_id = 1 "},
+        {" client ": [" phone ", "email", "email", "  "]},
+    )
+    assert await auth.get_row_grants(u["id"]) == {
+        "financial": {"loans": "district_id = 1"}}
+    assert await auth.get_column_denials(u["id"]) == {
+        "financial": {"client": ["email", "phone"]}}
+
+    # 空谓词不是「不过滤」:静默丢掉一条想收窄的声明 = 放宽
+    with pytest.raises(ValueError):
+        await auth.set_data_grants(u["id"], "financial", {"loans": "   "}, {})
+    with pytest.raises(ValueError):
+        await auth.set_data_grants(u["id"], "financial", {" ": "x = 1"}, {})
+
+
 # ── Audit ─────────────────────────────────────────────────
 
 

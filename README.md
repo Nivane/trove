@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-8000%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-9000%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[文档站](https://nivane.github.io/trove/)** —— 47 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[文档站](https://nivane.github.io/trove/)** —— 48 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -37,6 +37,7 @@ Trove 是一个**自学习型数据决策智能体**:用自然语言提问,得�
 - **本体让模型说业务的词。** 同一份 `semantics.yml` 里还能声明三样东西:数据集是**对象**(业务名、自然键、别名)、表间连接是**关系**(带业务名)、维度链是**层级**(粗→细)。声明一次,答案表头、拒绝出口、分析取哪一级、判定与行动通知全部改说业务的话;没声明就保持物理列名,绝不编一个像样的名字出来。它没有自己的存储与写入口——就是语义模型里的三段声明,管理台有一页只读的图视图(确定性布局,同一份模型每次画出来一样)。
 - **语义变更评审。** 成批改语义模型时,改动先进隔离区(不参与编译、不被检索),再为它算三样东西:**模型级 diff**(逐数据集/指标/关系/主题域/层级)、**零 LLM 的沙箱回放**(把 KB 里一切以语义查询声明的东西在改前改后各编译一遍,回归 / 改善 / 无变化 / 不适用四态,外加回放本身出错时的「判不了」,绝不洗成通过)、**影响面**(谁结构化引用了它、谁只是文本里提过它)。合入是唯一写入口——快照对不上主线、应用失败或有阻断级 lint 都在第一个字节落盘前拒绝;合入前还有一道只警告不阻断的漂移门。
 - **确定性护栏闭环。** 生成的 SQL 要过零 LLM 规则链、AST 防火墙、执行代价守卫,以及带 SQL 版本回归的反思循环。错的答案会被诊断、回滚、纠正,修正本身也被记住。
+- **身份与数据边界也在代码里。** OIDC 单点登录(授权码 + PKCE)只签发既有令牌:组映射角色、首登自动建号但零授权,未配置时没有新路由、本地登录不变。行/列授权**只收窄、不授予**——行谓词以表引用子查询重写进每一条用户取数路径,被禁列引用即拒(列名仍可见,只保护值),管理员豁免,定时任务按任务所有者身份运行。发给模型的数据同样受管:工具回喂在进上下文前按语义层 `mask` 声明脱敏,provider 白名单在网关前置拦截。
 - **决策与问数同源,且知道自己有多确定。** 阈值规则用语义模型自己的词汇声明指标、窗口与基期,由确定性引擎求值,零 LLM;每次触发都带着它据以判定的 SQL 与原始行。判定还带一层统计诚实:季节基线做噪声带,样本不足 8 块不予确认,置信度明标「位置分数,非概率」——测不出就说测不出,绝不把「判不了」读成「今天没事」。
 - **分析先统计,后叙事。** 「为什么跌了?」沿指标定义逐层拆解:贡献分解、比率归因与残差如实呈现;显著性、置信与季节基线出自一套纯 stdlib 的统计器械——可复算、可种子重放,结论永远能被重新算出来。数字全部来自确定性引擎,只有叙事用 LLM。
 - **行动之后有效果验收。** 提案批准、外送不是终点:系统按约定窗口回来测量,把行动前后的数据与判定用的**同一套噪声带**比对,给出「超出噪声带 / 无可辨识变化」的三态结局——没有变化也是诚实的结论;测量与判定复用同一份解析口径,谁也无法悄悄换尺子。
@@ -266,16 +267,18 @@ docker compose build frontend    # 只重建前端镜像;build backend 只重建
 docker compose down
 ```
 
-本地默认登录 admin / `admin123`(生产由 `TROVE_ADMIN_PASSWORD` 控制)。compose 栈默认 PostgreSQL,已预载 BIRD demo 数据;真实对话需要 LLM 凭证,见 `docker-compose.yml` 里 `~/.trove/conf` 挂载那一行的注释。
+本地默认登录 admin / `admin123`(生产由 `TROVE_ADMIN_PASSWORD` 控制;配置 OIDC 后登录页另出现「使用 SSO 登录」)。compose 栈默认 PostgreSQL,已预载 BIRD demo 数据;真实对话需要 LLM 凭证,见 `docker-compose.yml` 里 `~/.trove/conf` 挂载那一行的注释。
 
 ## 能力速览
 
-每一行的深入版本都在文档站,带源码锚点:
+每一行都有更深的一层——文档站章节:
 
 | 能力 | 一句话 | 深入 |
 |---|---|---|
 | 语义层 | 可答边界是一份可读、可 diff、可 git 回滚的文件 | [语义层](https://nivane.github.io/trove/capabilities/semantic.html) |
 | 主题域 | 语义模型里的可选收窄:域内收敛锚定、超域显式拒绝;管理台可按用户授权到域 | [语义层 · 主题域](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
+| 行/列授权 | 授权只收窄:行谓词以子查询重写进主链、语义查询 API、生成期探测与归因;被禁列引用即拒(列名仍可见,只保护值),管理员豁免,定时任务按所有者身份运行 | [安全 · 行级与列级授权](https://nivane.github.io/trove/ops/security.html#rowcol) |
+| 身份与 SSO | OIDC 授权码 + PKCE 登录,组映射角色,首登自动建号零授权;关闭时无新路由、无新按钮,本地密码登录不变 | [安全 · 单点登录](https://nivane.github.io/trove/ops/security.html#oidc) |
 | 本体 | 数据集声明成对象、关系声明业务名、维度链声明成层级;声明一次全链改说业务的词,未声明保持物理列名 | [本体](https://nivane.github.io/trove/capabilities/ontology.html) |
 | 语义变更评审 | 成批改动先进隔离区:模型级 diff → 零 LLM 沙箱回放 → 影响面;合入是唯一写入口,带漂移警告门 | [语义层治理 · 变更评审](https://nivane.github.io/trove/admin/semantic.html#changes) |
 | 自校验闭环 | 规则链 / AST 防火墙 / 代价守卫 / 带版本回归的反思回滚 | [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
@@ -286,6 +289,7 @@ docker compose down
 | 订阅 | 定时分析的结果按「每期 / 仅告警」投递到通知通道,失败留痕;任务可限定主题域 | [自动化与治理](https://nivane.github.io/trove/admin/automation.html) |
 | 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
+| LLM 数据出境治理 | 工具回喂在进模型前按 `mask` 声明脱敏,失败整条扣留;provider 白名单在网关前置拦截;审计只记字段名不记值 | [安全 · 模型数据出境治理](https://nivane.github.io/trove/ops/security.html#egress) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | 组织级方法论:四档——`required` 注入 / `available` 按需 / `validator` 断结果 / guard 断 SQL;确认门禁,可颗粒停用 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
 | 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;显著性、置信与季节基线出自可复算的统计器械;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [噪声带](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
@@ -312,6 +316,8 @@ docker compose down
 | **表级 allowlist** | 闸设在**执行路径本身**(`execute` / `explain` 都过),所以从 MCP、语义查询 API 或任何旁路进来的 SQL 同样受限 |
 | **执行代价护栏** | 执行前用 EXPLAIN 估算最重算子行数,超软限(默认 5000 万)打回生成节点补 `LIMIT`,超硬限直接拒绝,不烧一轮 LLM 重生成 |
 | **字段级脱敏** | 按字段声明 `partial` / `hash` / `null`,在结果出库、任何面向模型的节点之前改写;失败方向取严——该脱敏而读不出 salt 或语义模型,拒绝这次查询,不降级放行 |
+| **行/列级授权** | 主体 grant **只收窄、不授予**:行谓词以表引用子查询重写(顶层 WHERE 在子查询/UNION 里会把内层别名提到外层),被禁列在任何位置被引用即拒——`SELECT *` 拒绝、`COUNT(*)` 放行;解析不出别名或列就拒绝执行。主链、`/v1/semantic/query`、生成期 probe/check/search、候选投票与归因共用同一个 scope 引擎;管理员豁免,定时任务按任务所有者身份运行 |
+| **模型出境治理** | 工具回喂给模型的探测行与查值结果,在进上下文前按语义层 `mask` 声明脱敏——以 `principal=None` 运行,管理员也不能把声明字段原文发给模型;脱敏失败整条观测作废,绝不回落原文。provider 白名单在网关调用前判定,拒绝不触网;审计只记字段名,不记值 |
 | **不可信内容隔离** | 数据库单元格内容(以及检索、探测结果)先过注入扫描,命中即替换为隔离占位符再进提示;人确认过的 KB 内容不在此列 |
 | **限流、配额与审计** | 按用户令牌桶与每日配额,超限 429;每次执行记录 question / SQL / verdict / 行数 / 耗时 / 错误 |
 | **行动只提案,不执行** | 判定触发只把行动冻结成提案(载荷创建即定稿、幂等键去重),批准后才外送;行动层**不接数据源连接器**——系统自身没有写回业务库的通道,批准、外送与回执各自独立留痕 |
@@ -334,6 +340,9 @@ docker compose down
 | 认证组件缺失 | 拒绝启动 | 宁可起不来,也不静默地不安全 |
 | 人在环的载荷认不出 | 默认拒绝 | 不执行,交给人 |
 | 脱敏读不出 salt 或语义模型 | 拒绝执行 | 不降级为明文交付 |
+| 行/列 scope 解析不出表或列 | 拒绝执行 | 不猜别名,也不放宽成不过滤 |
+| 工具回喂脱敏失败 | 整条观测作废 | 绝不把原文交给模型 |
+| OIDC state / 签名 / 受众校验不通过 | 拒绝登录 | 不签发令牌;失败码经前端 fragment 提示 |
 | 拿不到授权依据(`None`) | 拒绝一切 | 「忘了授权」不退化成放行 |
 | 只读自检查不成 | 记「未验证」 | 绝不渲染成「安全」 |
 | KB 漂移检查读不出来 | 非零退出码 | 不把「没查成」当「没问题」 |
@@ -344,7 +353,7 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 47 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 48 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
 
 | | |
 |---|---|
@@ -372,7 +381,7 @@ uv run python scripts/eval_bird.py --db-id financial \
 ## 开发
 
 ```bash
-uv run pytest                     # 全量 8000+ 测试,mocked LLM,零网络 / 零 key
+uv run pytest                     # 全量 9000+ 测试,mocked LLM,零网络 / 零 key
 uv run pytest tests/workflow/     # 只跑 LangGraph 图与节点
 uv run pytest -m "not slow"       # 跳过慢测试
 ```

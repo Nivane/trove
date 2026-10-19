@@ -41,7 +41,7 @@ class FakeSessionManager:
     def __init__(self):
         self.asked: list[str] = []
 
-    async def start_session(self):
+    async def start_session(self, **kw):
         return object()
 
     async def ask(self, session, question, workflow, datasource=None, topic=""):

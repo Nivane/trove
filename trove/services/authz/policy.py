@@ -187,6 +187,14 @@ class Principal:
     on_behalf_of: str | None = None
     #: None = 未配置收窄;见类 docstring 的第二张表
     topic_grants: dict[str, frozenset[str]] | None = None
+    #: 行级授权:``{数据源: {物理表名: 谓词}}``。None = **未声明收窄**
+    #: (存量行为:该数据源内不受限)。声明后是 AND 过滤,只会更窄。
+    #: 表名/列名一律是物理表/列(SQL 的引用面),与 ``rls.physical_table`` 对齐。
+    row_grants: dict[str, dict[str, str]] | None = None
+    #: 列级禁止:``{数据源: {物理表名: frozenset(列名)}}``。None = 未声明。
+    #: 决策 3:列**名**仍可见(schema/提示词/目录/血缘),被禁的是**值** ——
+    #: SQL 引用被禁列即拒绝,值不返回、不回喂。
+    column_denials: dict[str, dict[str, frozenset[str]]] | None = None
 
     def __hash__(self) -> int:
         """冻结类的自动 ``__hash__`` 在 ``topic_grants`` 是 dict 时会 ``TypeError``。
@@ -201,6 +209,16 @@ class Principal:
             self.on_behalf_of,
             None if self.topic_grants is None
             else frozenset(self.topic_grants.items()),
+            None if self.row_grants is None
+            else frozenset(
+                (ds, frozenset(tables.items()))
+                for ds, tables in self.row_grants.items()
+            ),
+            None if self.column_denials is None
+            else frozenset(
+                (ds, frozenset((t, frozenset(cols)) for t, cols in tables.items()))
+                for ds, tables in self.column_denials.items()
+            ),
         ))
 
     @property
@@ -254,7 +272,7 @@ class Principal:
             ValueError: 试图把 ``role`` 抬到 ``user`` 之上,或传入未知字段。
         """
         allowed = {"role", "scopes", "grants", "topic_grants", "on_behalf_of",
-                   "subject"}
+                   "subject", "row_grants", "column_denials"}
         unknown = set(overrides) - allowed
         if unknown:
             raise ValueError(f"narrow() 不认识的字段: {sorted(unknown)}")
@@ -303,10 +321,109 @@ class Principal:
                         if both:
                             merged[ds] = both
                     changes["topic_grants"] = merged
+        if "row_grants" in overrides:
+            asked = overrides["row_grants"]
+            if asked is None:
+                # None 是**最宽**取值(未声明收窄),同 topic_grants:不往这边走
+                if self.row_grants is not None:
+                    raise ValueError(
+                        "narrow() 不能把 row_grants 从受限放宽为不限制")
+            else:
+                norm = _row_grants_normalized(asked)
+                if self.row_grants is None:
+                    changes["row_grants"] = norm
+                else:
+                    changes["row_grants"] = _row_grants_and(
+                        self.row_grants, norm)
+        if "column_denials" in overrides:
+            asked = overrides["column_denials"]
+            if asked is None:
+                if self.column_denials is not None:
+                    raise ValueError(
+                        "narrow() 不能把 column_denials 从受限放宽为不限制")
+            else:
+                norm = _column_denials_normalized(asked)
+                if self.column_denials is None:
+                    changes["column_denials"] = norm
+                else:
+                    changes["column_denials"] = _column_denials_union(
+                        self.column_denials, norm)
         for key in ("on_behalf_of", "subject"):
             if key in overrides:
                 changes[key] = overrides[key]
         return replace(self, **changes)
+
+
+def _row_grants_normalized(
+    value: Any,
+) -> dict[str, dict[str, str]]:
+    """``{ds: {table: predicate}}`` → 规范副本(键/值转 str)。
+
+    形状错误直接 ``TypeError``/``AttributeError`` —— ``narrow`` 是内部调用,
+    传错类型是编程错误,不是运行时输入(运行时输入在 ``principal_from_wire``
+    已经过形状门)。
+    """
+    out: dict[str, dict[str, str]] = {}
+    for ds, tables in dict(value).items():
+        out[str(ds)] = {str(t): str(p) for t, p in dict(tables).items()}
+    return out
+
+
+def _row_grants_and(
+    left: dict[str, dict[str, str]], right: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """两份行谓词按表 AND 合并 —— 「只更窄」的代数。
+
+    「表不在字典里」= 该表**没有过滤**(最宽),所以合并后的表集取并,
+    共同表的谓词 AND 起来;任一侧没有该表 → 取另一侧(它本来就比空条件窄)。
+    """
+    merged: dict[str, dict[str, str]] = {}
+    for ds in sorted(set(left) | set(right)):
+        a = left.get(ds, {})
+        b = right.get(ds, {})
+        tables: dict[str, str] = {}
+        for table in sorted(set(a) | set(b)):
+            pa, pb = a.get(table), b.get(table)
+            if pa is None:
+                tables[table] = pb
+            elif pb is None:
+                tables[table] = pa
+            else:
+                tables[table] = f"({pa}) AND ({pb})"
+        if tables:
+            merged[ds] = tables
+    return merged
+
+
+def _column_denials_normalized(
+    value: Any,
+) -> dict[str, dict[str, frozenset[str]]]:
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    for ds, tables in dict(value).items():
+        out[str(ds)] = {
+            str(t): frozenset(str(c) for c in cols)
+            for t, cols in dict(tables).items()
+        }
+    return out
+
+
+def _column_denials_union(
+    left: dict[str, dict[str, frozenset[str]]],
+    right: dict[str, dict[str, frozenset[str]]],
+) -> dict[str, dict[str, frozenset[str]]]:
+    """被禁列取并集 —— 禁止是做加法(同 ``grants`` 的交集方向,更严)。"""
+    merged: dict[str, dict[str, frozenset[str]]] = {}
+    for ds in sorted(set(left) | set(right)):
+        a = left.get(ds, {})
+        b = right.get(ds, {})
+        tables: dict[str, frozenset[str]] = {}
+        for table in sorted(set(a) | set(b)):
+            cols = a.get(table, frozenset()) | b.get(table, frozenset())
+            if cols:
+                tables[table] = cols
+        if tables:
+            merged[ds] = tables
+    return merged
 
 
 def principal_to_wire(principal: "Principal | None") -> dict[str, Any] | None:
@@ -335,6 +452,18 @@ def principal_to_wire(principal: "Principal | None") -> dict[str, Any] | None:
         "topic_grants": None if principal.topic_grants is None else {
             str(ds): sorted(ts)
             for ds, ts in sorted(principal.topic_grants.items())
+        },
+        # 行/列 grant 同一条纪律:None 原样保留(它不是「空」,是「未收窄」);
+        # 内层键排序 → 同一份授权在任意进程里 wire 逐字节相同(缓存键可比)
+        "row_grants": None if principal.row_grants is None else {
+            str(ds): {str(t): str(p) for t, p in sorted(tables.items())}
+            for ds, tables in sorted(principal.row_grants.items())
+        },
+        "column_denials": None if principal.column_denials is None else {
+            str(ds): {
+                str(t): sorted(cols) for t, cols in sorted(tables.items())
+            }
+            for ds, tables in sorted(principal.column_denials.items())
         },
     }
 
@@ -378,6 +507,22 @@ def principal_from_wire(data: Any) -> "Principal | None":
         topic_grants = _topic_grants_from_wire(raw_topic_grants)
         if topic_grants is None:
             return None
+    # 缺键 = 写下 checkpoint 时功能还不存在 → 未声明收窄(与 topic_grants 同解)。
+    # 注意方向:行/列 grant 的上线让存量主体**保持原行为**,而不是凭空被限。
+    raw_row_grants = data.get("row_grants")
+    if raw_row_grants is None:
+        row_grants: dict[str, dict[str, str]] | None = None
+    else:
+        row_grants = _row_grants_from_wire(raw_row_grants)
+        if row_grants is None:
+            return None
+    raw_column_denials = data.get("column_denials")
+    if raw_column_denials is None:
+        column_denials: dict[str, dict[str, frozenset[str]]] | None = None
+    else:
+        column_denials = _column_denials_from_wire(raw_column_denials)
+        if column_denials is None:
+            return None
     # 未知键忽略:旧代码读新 checkpoint 不该因为多一个字段而整个作废
     return Principal(
         subject=subject,
@@ -386,7 +531,53 @@ def principal_from_wire(data: Any) -> "Principal | None":
         grants=grants,
         on_behalf_of=on_behalf_of,
         topic_grants=topic_grants,
+        row_grants=row_grants,
+        column_denials=column_denials,
     )
+
+
+def _row_grants_from_wire(value: Any) -> dict[str, dict[str, str]] | None:
+    """``{ds: {table: predicate}}`` → 字典;形状不对 → ``None``(主体作废)。
+
+    空字典合法(显式「没有行过滤」,行为等同 None —— 保留形状是为了 wire
+    往返逐字节一致,不是两套语义)。
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, dict[str, str]] = {}
+    for ds, tables in value.items():
+        if not isinstance(ds, str) or not ds or not isinstance(tables, dict):
+            return None
+        bag: dict[str, str] = {}
+        for table, predicate in tables.items():
+            if (not isinstance(table, str) or not table
+                    or not isinstance(predicate, str)):
+                return None
+            bag[table] = predicate
+        out[ds] = bag
+    return out
+
+
+def _column_denials_from_wire(
+    value: Any,
+) -> dict[str, dict[str, frozenset[str]]] | None:
+    """``{ds: {table: [column, ...]}}`` → 字典;形状不对 → ``None``。"""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    for ds, tables in value.items():
+        if not isinstance(ds, str) or not ds or not isinstance(tables, dict):
+            return None
+        bag: dict[str, frozenset[str]] = {}
+        for table, columns in tables.items():
+            if not isinstance(table, str) or not table:
+                return None
+            cols = _str_frozenset(columns)
+            if cols is None:
+                return None
+            bag[table] = cols
+        out[ds] = bag
+    return out
 
 
 def _topic_grants_from_wire(value: Any) -> dict[str, frozenset[str]] | None:
@@ -451,6 +642,8 @@ class Policy:
         scopes = frozenset(user.get("scopes") or ())
         grants: frozenset[str] | None = None
         topic_grants: dict[str, frozenset[str]] | None = None
+        row_grants: dict[str, dict[str, str]] | None = None
+        column_denials: dict[str, dict[str, frozenset[str]]] | None = None
         if role != "admin":
             if self._auth is not None:
                 grants = frozenset(await self._auth.get_datasources(user.get("id")) or ())
@@ -460,8 +653,27 @@ class Policy:
                         str(ds): frozenset(str(t) for t in topics or ())
                         for ds, topics in dict(raw).items()
                     }
+                # 行/列 grant:存储无行 → None(未声明收窄)。读取异常照旧上抛
+                # (基础设施故障 ≠ 无权限,更 ≠ 放行)。
+                raw_rows = await self._auth.get_row_grants(user.get("id"))
+                if raw_rows is not None:
+                    row_grants = {
+                        str(ds): {str(t): str(p) for t, p in dict(tables).items()}
+                        for ds, tables in dict(raw_rows).items()
+                    }
+                raw_cols = await self._auth.get_column_denials(user.get("id"))
+                if raw_cols is not None:
+                    column_denials = {
+                        str(ds): {
+                            str(t): frozenset(str(c) for c in cols or ())
+                            for t, cols in dict(tables).items()
+                        }
+                        for ds, tables in dict(raw_cols).items()
+                    }
             # auth 缺失 → grants 保持 None = 无依据 → 拒绝一切源;域层保持
             # None(未配置收窄)—— 没有源可见时域判定根本到不了
+        # admin 保持四个 None:决策 4 的管理员豁免在这里一次落地(scope 引擎
+        # 看到 None 直接原样返回),不在引擎里再写一份 role 判定
         return Principal(
             subject=str(user.get("id")),
             role=role,
@@ -469,6 +681,8 @@ class Policy:
             grants=grants,
             on_behalf_of=on_behalf_of,
             topic_grants=topic_grants,
+            row_grants=row_grants,
+            column_denials=column_denials,
         )
 
     @staticmethod

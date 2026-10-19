@@ -113,8 +113,29 @@ interface TopicOverrides {
   topicGrantsFail?: boolean
 }
 
+/** 行/列授权：GET 的嵌套形状 + PUT 的按源整体替换读回。 */
+interface DataGrantOverrides {
+  /** user id → { ds → { rows: {table: predicate}, cols: {table: [column]} } }. */
+  dataGrants?: Record<number, Record<string, {
+    rows?: Record<string, string>
+    cols?: Record<string, string[]>
+  }>>
+  dataGrantsFail?: boolean
+}
+
+function dataGrantsWire(overrides: DataGrantOverrides, userId: number) {
+  const byDs = overrides.dataGrants?.[userId] ?? {}
+  const row_filters: Record<string, Record<string, string>> = {}
+  const blocked_columns: Record<string, Record<string, string[]>> = {}
+  for (const [ds, spec] of Object.entries(byDs)) {
+    if (spec.rows && Object.keys(spec.rows).length) row_filters[ds] = { ...spec.rows }
+    if (spec.cols && Object.keys(spec.cols).length) blocked_columns[ds] = { ...spec.cols }
+  }
+  return { row_filters, blocked_columns }
+}
+
 function mockApi(
-  overrides: { list?: (path: string) => unknown } & TopicOverrides = {},
+  overrides: { list?: (path: string) => unknown } & TopicOverrides & DataGrantOverrides = {},
 ) {
   ;(apiGet as any).mockImplementation(async (path: string) => {
     if (path.startsWith('/v1/admin/users?')) {
@@ -130,6 +151,17 @@ function mockApi(
       if (overrides.topicGrantsFail) throw new ApiError(500, 'boom')
       return { topic_grants: overrides.topicGrants?.[Number(tg[1])] ?? null }
     }
+    const dg = path.match(/^\/v1\/admin\/users\/(\d+)\/data-grants$/)
+    if (dg) {
+      if (overrides.dataGrantsFail) throw new ApiError(500, 'boom')
+      const id = Number(dg[1])
+      const user = USERS.find((u) => u.id === id)
+      return {
+        ...dataGrantsWire(overrides, id),
+        // 管理员豁免是读出来的事实：UI 据此只显示说明、不渲染编辑器
+        admin_exempt: user?.role === 'admin',
+      }
+    }
     const tp = path.match(/^\/v1\/semantic\/topics\?datasource=(.+)$/)
     if (tp) {
       const names = overrides.topicLists?.[decodeURIComponent(tp[1])]
@@ -141,6 +173,22 @@ function mockApi(
     }
     return {}
   })
+  // PUT /data-grants 回显读回值（服务端归一化形态），保存后应回到干净态。
+  ;(apiPut as any).mockImplementation(
+    async (path: string, body: any) => {
+      const dg = path.match(/^\/v1\/admin\/users\/(\d+)\/data-grants$/)
+      if (!dg) return {}
+      const rows: Record<string, string> = {}
+      for (const r of body.row_filters ?? []) {
+        if (r.table) rows[r.table] = r.predicate
+      }
+      const cols: Record<string, string[]> = {}
+      for (const c of body.blocked_columns ?? []) {
+        if (c.table) cols[c.table] = [...(c.columns ?? [])].sort()
+      }
+      return { datasource: body.datasource, row_filters: rows, blocked_columns: cols }
+    },
+  )
 }
 
 let pinia: Pinia
@@ -487,6 +535,130 @@ describe('UsersView', () => {
     await flushPromises()
     expect(apiPatch).toHaveBeenCalledWith('/v1/admin/users/2', { display_name: 'Renamed' })
     expect(topicPutCalls()).toHaveLength(0)
+  })
+
+  /* ── row / column access: the third narrowing layer (own Save) ── */
+
+  function dataGroups(): HTMLElement[] {
+    return Array.from(drawerPanel().querySelectorAll<HTMLElement>('.dg-group'))
+  }
+
+  function dataGrantPuts(): { datasource: string; row_filters: unknown; blocked_columns: unknown }[] {
+    return (apiPut as any).mock.calls
+      .filter((c: unknown[]) => String(c[0]).endsWith('/data-grants'))
+      .map((c: unknown[]) => c[1] as any)
+  }
+
+  it('shows existing row filters and blocked columns without staging anything', async () => {
+    mockApi({
+      dataGrants: {
+        2: { demo: { rows: { loans: 'district_id = 1' }, cols: { client: ['email', 'phone'] } } },
+      },
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('Row & column access')
+    const [rows, blocked] = dataGroups()
+    const rowInputs = rows.querySelectorAll<HTMLInputElement>('.dg-row input')
+    expect(rowInputs[0].value).toBe('loans')
+    expect(rowInputs[1].value).toBe('district_id = 1')
+    const blockedInputs = blocked.querySelectorAll<HTMLInputElement>('.dg-row input')
+    expect(blockedInputs[0].value).toBe('client')
+    expect(blockedInputs[1].value).toBe('email, phone')
+    // 打开抽屉不改任何东西
+    expect(dataGrantPuts()).toHaveLength(0)
+    expect(bodyText()).not.toContain('Unsaved changes')
+  })
+
+  it('saves one datasource atomically and re-anchors from the read-back value', async () => {
+    mockApi({
+      dataGrants: { 2: { demo: { rows: { loans: 'district_id = 1' } } } },
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    const saveBtn = () => findButton(drawerPanel(), 'Save row/column access')
+    expect(saveBtn().hasAttribute('disabled')).toBe(true)
+
+    findButton(drawerPanel(), 'Add blocked column').click()
+    await flushPromises()
+    const newRow = dataGroups()[1].querySelectorAll('.dg-row')[0]
+    const [table, cols] = newRow.querySelectorAll<HTMLInputElement>('input')
+    table.value = 'client'
+    table.dispatchEvent(new Event('input', { bubbles: true }))
+    cols.value = 'phone, email'
+    cols.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    expect(bodyText()).toContain('Unsaved changes')
+    saveBtn().click()
+    await flushPromises()
+
+    expect(dataGrantPuts()).toEqual([
+      {
+        datasource: 'demo',
+        row_filters: [{ table: 'loans', predicate: 'district_id = 1' }],
+        // 提交前归一化：去空白、去重、排序
+        blocked_columns: [{ table: 'client', columns: ['email', 'phone'] }],
+      },
+    ])
+    expect(bodyText()).not.toContain('Unsaved changes')
+  })
+
+  it('renders the server 400 reason inline and keeps the draft dirty', async () => {
+    mockApi({ dataGrants: { 2: { demo: { rows: { loans: 'district_id = 1' } } } } })
+    ;(apiPut as any).mockImplementation(async (path: string) => {
+      if (String(path).endsWith('/data-grants')) {
+        throw new ApiError(400, 'unknown column client.nope')
+      }
+      return {}
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    findButton(drawerPanel(), 'Add blocked column').click()
+    await flushPromises()
+    const newRow = dataGroups()[1].querySelectorAll('.dg-row')[0]
+    const [table, cols] = newRow.querySelectorAll<HTMLInputElement>('input')
+    table.value = 'client'
+    table.dispatchEvent(new Event('input', { bubbles: true }))
+    cols.value = 'nope'
+    cols.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    findButton(drawerPanel(), 'Save row/column access').click()
+    await flushPromises()
+
+    const alert = drawerPanel().querySelector('.dg-save-error')
+    expect(alert).not.toBeNull()
+    expect(alert!.getAttribute('role')).toBe('alert')
+    expect(alert!.textContent).toContain('unknown column client.nope')
+    // 失败不重锚：草稿仍然脏，用户可以改对再存
+    expect(bodyText()).toContain('Unsaved changes')
+  })
+
+  it('admin accounts see the exemption, not an editor', async () => {
+    mockApi()
+    const view = await mountView()
+    await view.findAll('.dt-row')[0].trigger('click') // admin
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('exempt from row/column access')
+    expect(drawerPanel().querySelector('.dg-ds-row')).toBeNull()
+  })
+
+  it('says so when the user has no datasource grants yet', async () => {
+    mockApi()
+    const view = await mountView()
+    await view.findAll('.dt-row')[2].trigger('click') // bob: 无数据源授权
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('no datasource grants yet')
+    expect(drawerPanel().querySelector('.dg-ds-row')).toBeNull()
   })
 
   it('guards the drawer close while a draft is unsaved', async () => {

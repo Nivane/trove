@@ -15,11 +15,23 @@ export interface UserInfo {
 
 const TOKEN_KEY = 'trove_auth_token'
 
+/** Server-sanitized relative path from the SSO fragment; client re-checks. */
+function safeNext(raw: string | null): string {
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return ''
+  // 登录页本身不是登录后的去处,否则守卫会把它当成目标再跳回来。
+  if (raw === '/login' || raw.startsWith('/login?') || raw.startsWith('/login#')) return ''
+  return raw
+}
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem(TOKEN_KEY) || '',
     user: null as UserInfo | null,
     bootPromise: null as Promise<boolean> | null,
+    /** Closed error code from a failed SSO callback (`#error=...`). */
+    ssoError: '',
+    /** Post-login target delivered with `#token=...&next=...` (one-shot). */
+    ssoNext: '',
   }),
   getters: {
     isAuthed: (s) => !!s.token && !!s.user,
@@ -28,6 +40,36 @@ export const useAuthStore = defineStore('auth', {
     isAnalyst: (s) => s.user?.role === 'analyst',
   },
   actions: {
+    /** Consume `#token=...&next=...` / `#error=<code>` left by the OIDC
+     *  callback redirect. Returns true when a fragment was handled.
+     *
+     *  The fragment is cleared **first** (history.replaceState): a token in
+     *  the URL survives in browser history, screenshots and copied links.
+     *  `next` is re-sanitized here — the backend already did, but a crafted
+     *  fragment must never become an open redirect. */
+    consumeSsoFragment(): boolean {
+      const hash = typeof window !== 'undefined' ? window.location.hash : ''
+      if (!hash || hash.length < 2) return false
+      const params = new URLSearchParams(hash.slice(1))
+      if (!params.has('token') && !params.has('error')) return false
+      const { pathname, search } = window.location
+      window.history.replaceState(window.history.state, '', pathname + search)
+      const token = params.get('token') || ''
+      if (token) {
+        this.token = token
+        localStorage.setItem(TOKEN_KEY, token)
+      }
+      const error = params.get('error') || ''
+      if (error) this.ssoError = error
+      this.ssoNext = safeNext(params.get('next'))
+      return true
+    },
+    /** Take the one-shot post-login target (cleared after use). */
+    takeSsoNext(): string {
+      const next = this.ssoNext
+      this.ssoNext = ''
+      return next
+    },
     async login(username: string, password: string) {
       const body = await apiPost(
         '/v1/auth/login',
@@ -47,6 +89,8 @@ export const useAuthStore = defineStore('auth', {
      * when a session remains active. 401 inside apiGet triggers onUnauthorized.
      * Cached so concurrent callers (App.vue + router guard) share one attempt. */
     bootstrap(): Promise<boolean> {
+      // SSO 回调落在任何页面(默认 `/`)——先收 fragment 再决定有没有会话。
+      this.consumeSsoFragment()
       if (this.bootPromise) return this.bootPromise
       if (!this.token) {
         this.user = null

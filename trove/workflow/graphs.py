@@ -44,6 +44,7 @@ from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.kb.service import KbService
+from trove.services.authz.egress import egress_entry, merge_egress_reports
 from trove.llm.agent_loop import run_agent_loop
 from trove.llm.untrusted import screen_derived
 from trove.workflow.context_budget import (
@@ -191,6 +192,27 @@ class GraphServices:
     lineage: Any | None = None  # optional data lineage service (metadata + execute recording)
     memory: Any | None = None  # optional unified memory facade (episodes/prefs/profile)
     skills: Any | None = None  # optional org skill assets (methodology, admin-managed)
+    # optional LLM-egress redactor (services/authz/egress.EgressRedactor);
+    # None → built lazily from semantic_layer + config by ``_egress_redactor``.
+    egress: Any | None = None
+
+
+def _egress_redactor(services: GraphServices):
+    """GraphServices → 出境脱敏口(缺失时按语义层 + 活配置构造一次)。
+
+    每轮注册表/每次装配共享同一个 redactor;它本身无状态,配置经 callable
+    现读(管理端热改 ``egress`` 在下一问生效)。
+    """
+    redactor = services.egress
+    if redactor is None:
+        from trove.services.authz.egress import EgressRedactor
+
+        redactor = EgressRedactor(
+            semantic_provider=services.semantic_layer,
+            config=lambda: services.config or AgentConfig(),
+        )
+        services.egress = redactor
+    return redactor
 
 
 def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
@@ -274,12 +296,18 @@ async def _run_candidate_subagent(
     probe_cache: dict | None = None,
     budget: Any = None,
     profiles: Any = None,
+    egress: Any = None,
+    egress_sink: dict[str, dict[str, Any]] | None = None,
 ) -> str | None:
     """独立 subagent 并行打磨单个备选候选("主 agent 规划 + subagent 执行")。
 
     每个备选 = 一个独立的 ReAct loop(自建工具注册表、自定终止),以去相关
     温度 + few-shot 轮换 + 风格提示生成候选 SQL,供 select 共识投票。
     失败/空手/护栏降级返回 None——静默跳过,保持经典候选路径的容错语义。
+
+    ``egress`` 是出境脱敏口(候选的 probe 观测同样要脱敏);``egress_sink``
+    由调用方持有,本函数的注册表汇总并入其中 —— 候选各有自己的注册表,
+    不汇入就只审计到主候选的出境。
     """
     from trove.workflow.nodes.gen_sql import build_sql_registry, extract_sql
 
@@ -296,6 +324,11 @@ async def _run_candidate_subagent(
         budget=budget,
         profiles=profiles,
         semantic_provider=services.semantic_layer,
+        egress=egress,
+        # 候选的 probe/check/search 也是用户可见取数路径:同一道执行门与
+        # 同一份行/列 scope(与主 agent 注册表同参,不吃"候选更宽松"的亏)。
+        authorizer=_build_authorizer(services),
+        principal=state.principal,
     )
     prompt = build_sql_prompt_from_state(rotated)
     # ① Prompt caching:与主路径同策略——前缀校验在 agent_loop 内部,
@@ -343,7 +376,15 @@ async def _run_candidate_subagent(
             temperature=temperature,
         )
     except Exception:
+        if egress_sink is not None and registry.egress_report:
+            egress_sink.update(
+                merge_egress_reports(egress_sink, registry.egress_report)
+            )
         return None
+    if egress_sink is not None and registry.egress_report:
+        egress_sink.update(
+            merge_egress_reports(egress_sink, registry.egress_report)
+        )
     sql = _payload_sql(
         extract_sql(result.get("content", "")) if result.get("content") else "",
         dialect,
@@ -714,6 +755,10 @@ def make_gen_assemble(services: GraphServices):
         dialect = ctx["dialect"]
         complexity = ctx["complexity"]
         few_shots: list[dict[str, Any]] = ctx["few_shots"] or []
+        # 出境治理:few-shot 的样例值在进入预算装配与 prompt 渲染**之前**
+        # 脱敏。render_shots(token 估算)与 Jinja 模板读的是同一份列表 ——
+        # 在这里替换一次,两处天然同源(分别脱敏会让估算与真实提示词不一致)。
+        few_shots, shots_egress = _egress_redactor(services).redact_shots(few_shots)
         term_notes: list[dict[str, Any]] = ctx["term_notes"] or []
         lessons: list[dict[str, Any]] = ctx["lessons"] or []
         rules: list[str] = ctx["rules"] or []
@@ -956,13 +1001,20 @@ def make_gen_assemble(services: GraphServices):
         # 字符估算会系统性低估多字节语言),前缀文本同时复用为缓存断点。
         cache_prefix_text = render_cache_prefix(dialect, schema_for_gen)
         cache_prefix_tokens = count_tokens(cache_prefix_text)
-        return {
+        update: dict[str, Any] = {
             "gen_sub_state": sub_state.model_dump(),
             "context_usage": context_usage,
             "cache_prefix_tokens": cache_prefix_tokens,
             # 装配 dump 的 blocks 节(gen_generate 再追加 skill_injections)
             "assembly_blocks": assembly_blocks,
         }
+        if shots_egress:
+            # 样例值脱敏的汇总是 run 级累积的一部分(gen_generate 再并入
+            # 工具观测的报告)。只写非空,避免给未声明部署塞一个空键。
+            update["egress_report"] = merge_egress_reports(
+                state.egress_report, egress_entry(shots_egress),
+            )
+        return update
 
     return gen_assemble
 
@@ -1070,6 +1122,11 @@ def make_gen_generate(
                 budget=budget,
                 profiles=profiles,
                 semantic_provider=services.semantic_layer,
+                egress=_egress_redactor(services),
+                # 生成工具的真实执行(probe/check/search)是取数路径:授权门
+                # 与 execute_sql 同源,主体 wire 原样传 —— 两次解析会漂移。
+                authorizer=_build_authorizer(services),
+                principal=state.principal,
             )
             # 懒工具名快照:装配 dump 要靠"跑之前的懒集合 + 跑之后还剩谁在
             # 懒集合里"才能判出 lazy/activated(解锁过的会移出 _lazy_specs,
@@ -1156,6 +1213,12 @@ def make_gen_generate(
                 registry, lazy_names=lazy_names,
                 tool_history=(result or {}).get("tool_history") or [],
             )
+            if registry.egress_report:
+                # 出境脱敏汇总(字段名 + 计数,不含值):与装配阶段的样例值
+                # 脱敏合并,run 结束由 session best-effort 写 llm.egress 审计。
+                update["egress_report"] = merge_egress_reports(
+                    state.egress_report, registry.egress_report,
+                )
 
             async def _classic_fallback() -> None:
                 """经典单发子图生成(异常 / agent loop 空手而归 / 护栏降级兜底)。"""
@@ -1296,6 +1359,7 @@ def make_gen_generate(
                 # 温度 + few-shot 轮换 + 风格提示并行打磨,产出候选供 select
                 # 共识投票。asyncio.gather 把 N 个 subagent 压到单次耗时;
                 # 容错:返回 None/异常即静默跳过。
+                egress_sink: dict[str, dict[str, Any]] = {}
                 outs = await asyncio.gather(
                     *(
                         _run_candidate_subagent(
@@ -1303,11 +1367,18 @@ def make_gen_generate(
                             dialect, temperature=t, mode=m, rotation=idx + 1,
                             probe_cache=probe_cache,
                             budget=budget, profiles=profiles,
+                            egress=_egress_redactor(services),
+                            egress_sink=egress_sink,
                         )
                         for idx, (t, m) in enumerate(schedule)
                     ),
                     return_exceptions=True,
                 )
+                if egress_sink:
+                    update["egress_report"] = merge_egress_reports(
+                        update.get("egress_report") or state.egress_report,
+                        egress_sink,
+                    )
                 for out_alt in outs:
                     if isinstance(out_alt, BaseException):
                         continue
@@ -1928,46 +1999,14 @@ def _route_semantic_gate_after_linking_gen_sql(
 def _build_authorizer(services: "GraphServices"):
     """执行层强制点(设计 §5.3 / G2)。``None`` = 未装配,不判。
 
-    A3 的基准取自语义模型声明过的表名(``rls.declared_tables``)——仓库的
-    grants 只到数据源级,没有数据集级授权源,所以 A3 挡的是**声明之外的表**,
-    即绕开语义层直摸物理表。编译路径与快径产出的 SQL 只引用声明过的表,不会
-    被误伤。
-
-    取模型失败(提供方不可用/类型错误)一律降级为「无基准」→ A3 跳过,**并打
-    warning**:P2 实施时踩过「宽 except 把编程错误吞成静默 miss」的坑(设计
-    §14 P2 记录),A3 的基准缺失必须是看得见的。A1/A2 不受影响,仍然生效。
+    构造本体在 ``authz.enforcer.build_authorizer``:直执行路由
+    (``/v1/semantic/query``)用同一份工厂,两处口径(A3 基准 / warn 兜底)
+    因此只有一处实现。
     """
-    from trove.services.authz.enforcer import Authorizer
-    from trove.services.semantic_layer import rls
+    from trove.services.authz.enforcer import build_authorizer
 
-    config = services.config or AgentConfig()
-    authz_config = getattr(config, "authz", None)
-    if authz_config is not None and not authz_config.require_principal:
-        return None
-    provider = services.semantic_layer
-
-    def _declared(datasource: str | None) -> set[str] | None:
-        if provider is None:
-            return None  # 未接语义层 → 无基准,A3 跳过
-        try:
-            return rls.declared_tables(provider.model())
-        except Exception as e:
-            logger.warning(
-                "authz A3 basis unavailable (semantic model unreadable) for "
-                "datasource %r: %s — table-level check skipped, datasource-level "
-                "authorization still enforced",
-                datasource, e,
-            )
-            return None
-
-    # 兜底档与 ``AuthzConfig.table_enforcement`` 的 dataclass 默认**逐字一致**
-    # (三处默认值同源:dataclass / ConfigLoader / 这里)。兜底的用途是
-    # authz_config 为 None(未提供 config)时仍装到安全档 —— 若兜成 warn,
-    # 「忘了传 config」这条路径会静默把表级判定变成观察档。
-    return Authorizer(
-        declared_tables=_declared,
-        mode=getattr(authz_config, "table_enforcement", "enforce"),
-    )
+    return build_authorizer(
+        services.config or AgentConfig(), services.semantic_layer)
 
 
 def _build_guards(services: "GraphServices"):
@@ -2136,7 +2175,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services), semantic_layer=services.semantic_layer))
     # 语义层/配置一并传入:共识失败的反馈文本里带结果值,而那条路走的是
     # analyze_error(validate 的成功分支才到 masking,这条路不经过)。预览值
     # 在 join 前脱敏 —— 见 nodes/select.py 模块注释与 nodes/masking.py 的
@@ -2353,7 +2392,7 @@ def _build_fixed(
         services, subgraph, agentic=agentic, budget=budget, profiles=profile))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services), guards=_build_guards(services), semantic_layer=services.semantic_layer))
     g.add_node("validate", make_validate_rules(
         max_retries=MAX_REFLECT_RETRIES, skills=services.skills,
         semantic_layer=services.semantic_layer))

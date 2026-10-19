@@ -25,6 +25,11 @@ from trove.core.metrics import (
 )
 from trove.services.authz.enforcer import Authorizer, referenced_tables
 from trove.services.authz.policy import principal_from_wire
+from trove.services.authz.scope import (
+    ScopeError,
+    apply_scope,
+    has_column_denials,
+)
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
@@ -72,6 +77,7 @@ def make_execute_sql(
     profiles: Any = None,
     terminator: Any = None,
     guards: GuardRunner | None = None,
+    semantic_layer: Any = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -110,6 +116,10 @@ def make_execute_sql(
             带守卫的 reason/hint 打回生成方,预算耗尽才降级。``None`` = **未
             装配强制点**(没有 SkillService 的嵌入场景),不判——与
             ``authorizer`` 同一条纪律:无守卫路径逐字节不变。
+        semantic_layer: 语义模型提供方(声明层 ``row_filter`` 的来源)。行/列
+            scope 用它在**生成路径**上补注声明 RLS(编译/快径已注入,不再重复)。
+            ``None`` = 只套主体 grant —— grant 与 SQL 都是物理表名,不需要语义
+            层;读不出模型时同样退回这一档(见 ``_semantic_model``)。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -217,9 +227,13 @@ def make_execute_sql(
         # 拒绝**不可修正** —— 与只读门同理,不喂回 gen_sql 重生成:让模型重写
         # 十遍也改不掉「这个用户没有这张表的权限」,只会烧掉共享修正预算。
         authz_extra: dict[str, Any] = {}
+        # 主体**只解析一次** —— 同一份既给 Authorizer(A1–A3)也给行/列 scope。
+        # 两处各解析一次会出现「表级判定读到的是一份、列级判定读到的是另一份」
+        # 的窗口,而安全判定只该有一个输入。
+        principal = principal_from_wire(state.principal)
         if authorizer is not None:
             decision = authorizer.check(
-                principal_from_wire(state.principal),
+                principal,
                 datasource=state.datasource or "",
                 sql=state.sql,
                 default=connectors.default_name,
@@ -260,6 +274,61 @@ def make_execute_sql(
                 record_authz_table_warn(
                     state.datasource or getattr(connectors, "default_name", "") or ""
                 )
+
+        # 行/列 scope(设计 §2.3)—— 授权门的**后半段**:A1–A3 答「能不能碰这个
+        # 源/这张表」,行/列 grant 答「这张表里哪些行、哪些列」。只收窄:未声明
+        # 时 ``apply_scope`` **不解析** SQL、原样返回(逐字节)。
+        #
+        # 主体缺席的两种情形刻意分开:
+        #   - authorizer 装了而主体没有/坏了 → 上面 A1 已按 ``no_principal`` 拒绝;
+        #   - authorizer 没装(嵌入部署没有鉴权面)→ 这里也没有主体,scope 跳过
+        #     —— 与「未装配强制点 = 不判」同一条纪律,不是「判过了、放行」。
+        #
+        # 拒绝**不可修正**(列权限与表权限一样改不掉),不喂回 gen_sql:重写十遍
+        # 也换不来一列本来就不能读的值,只会烧掉共享修正预算。
+        scoped_sql = state.sql
+        data_scope: dict[str, Any] | None = None
+        if principal is not None:
+            scope_datasource = (
+                state.datasource or getattr(connectors, "default_name", "") or "")
+            # 声明 RLS 的注入状态由这里**声明**:编译器产出/快径已注入(契约在
+            # state 里或 fast_path 置位)→ False,只叠加主体 grant;生成路径此前
+            # 从未注入过 → True,本次一并补上。
+            include_declared = state.contract is None and not state.fast_path
+            try:
+                scoped = apply_scope(
+                    state.sql,
+                    model=_semantic_model(semantic_layer, include_declared),
+                    principal=principal,
+                    datasource=scope_datasource,
+                    dialect=state.dialect or "",
+                    include_declared_rls=include_declared,
+                )
+            except ScopeError as exc:
+                logger.warning(
+                    "row/column authz denied %r: %s (datasource=%r)",
+                    state.question[:80], exc.reason, scope_datasource,
+                )
+                # 与 A1–A3 同样的记账口径:拒绝只在这里记(节点 = 真要执行的
+                # 那一次),服务层还要服务「只判定不执行」的调用。
+                record_authz_deny(exc.reason)
+                authz_extra["authz_decision"] = {
+                    **(authz_extra.get("authz_decision") or {}),
+                    "allowed": False,
+                    "reason": exc.reason,
+                    "datasource": scope_datasource,
+                }
+                return {"error": exc.render(), **authz_extra}
+            if scoped.rewritten:
+                scoped_sql = scoped.sql
+            # 「这答案是按行级授权收窄过的」是结果的一部分:不带这份证据,
+            # 读者会把收窄后的统计读成全量。语义层不可读时不声称补注过声明
+            # RLS —— ``row_filters`` 只列真正被包裹的表。
+            data_scope = {
+                "row_filters": list(scoped.row_filters),
+                "rewritten": scoped.rewritten,
+                "column_policy": has_column_denials(principal, scope_datasource),
+            }
 
         # guard 门(组织守卫,设计 §3a / guard 档)—— 授权门之后、执行之前。
         #
@@ -313,10 +382,15 @@ def make_execute_sql(
         # 与权限轨**方向相反**且刻意如此(§8.1):权限轨有下层兜底(DB 只读角色),
         # 误拒会阻断正常业务 → fail-open;成本轨没有下层兜底(只读角色不阻止一条
         # 扫 10TB 的 SELECT),误放行的代价是打爆生产库 → fail-closed。
-        executed_sql = state.sql
+        # 成本轨判的是**真正要执行的那条** —— scope 重写会改表引用(派生表),
+        # 用它估算才与落库的那条一致。降级时 ``force_limit`` 也作用在
+        # ``executed_sql`` 上:对原串加 LIMIT 会把 scope 的过滤整段丢掉。
+        executed_sql = scoped_sql
         budget_extra: dict[str, Any] = {}
         if budget is not None:
-            est, decision, effective_budget = await _judge_budget(budget, state)
+            est, decision, effective_budget = await _judge_budget(
+                budget, state, executed_sql,
+            )
             # 成本判定落账(设计 §9.2 / R1)。记录点**在节点、不在 BudgetService**:
             # 同一套 ``estimate``/``decide`` 在 ``describe_cost``(生成前问价)里也
             # 会跑一遍,在服务层记会把「问价的」和「真跑了的」混成一个数 —— 问价
@@ -393,7 +467,7 @@ def make_execute_sql(
                 # 路径 3(无法估算)是本方案改的**唯一**一处行为:存量在这里
                 # 放行,现在改为「加 LIMIT 执行 + 留痕」(§5.2 / I2 / I6)。
                 limited = force_limit(
-                    state.sql, state.dialect or "", effective_budget.max_rows,
+                    executed_sql, state.dialect or "", effective_budget.max_rows,
                 )
                 if limited is not None:
                     executed_sql, limit_applied = limited.sql, limited.limit
@@ -498,7 +572,8 @@ def make_execute_sql(
             )
 
         result_limits = get_result_limits()
-        return {
+        update: dict[str, Any] = {
+            "data_scope": data_scope,
             "columns": result.columns,
             # 查询结果上限(管理台可配,默认 1000 行):防止超大结果集撑爆
             # 内存/传输;row_count 保留真实总数用于展示与提示。
@@ -510,6 +585,13 @@ def make_execute_sql(
             **budget_extra,
             **guard_extra,
         }
+        if principal is not None:
+            # 授权面在场时才回写 SQL:用户看到的 SQL 与授权后的执行面一致
+            # (scope 重写是这里唯一一次改写)。未装配授权面的嵌入部署不新增
+            # 这个键 —— 预算降级加的 LIMIT 仍是 ``execution_evidence`` 里的
+            # 执行策略,不改 ``state.sql``(既有测试的契约)。
+            update["sql"] = scoped_sql
+        return update
 
     return execute_sql
 
@@ -554,8 +636,32 @@ async def _terminate(
         return _KILL_FAILED
 
 
+def _semantic_model(provider: Any, include_declared_rls: bool) -> Any:
+    """声明层 RLS 的来源模型;未装/读不出 → ``None``(只套主体 grant)。
+
+    读不出模型时**不拒绝**:声明 RLS 在编译路径与快径已经注入,生成路径在本次
+    改造前从未注入过 —— 读不出模型只是回到改造前的覆盖面,而主体 grant(用户
+    可见的授权面)照常生效,不会因为语义层故障而放宽。但**必须看得见**:与
+    ``graphs._build_authorizer`` 的 A3 基准缺失同一条纪律,P2 踩过「宽 except
+    把编程错误吞成静默 miss」,这里至少留下 warning。
+
+    ``include_declared_rls=False``(编译/快径已注入)时**不读模型** —— 那条路径
+    上它在这里没有用途,多读一次只是给每一问加一次 YAML 解析。
+    """
+    if provider is None or not include_declared_rls:
+        return None
+    try:
+        return provider.model()
+    except Exception as e:
+        logger.warning(
+            "declared RLS skipped (semantic model unreadable): %s — "
+            "principal row grants are still applied", e,
+        )
+        return None
+
+
 async def _judge_budget(
-    budget: BudgetService, state: WorkflowState,
+    budget: BudgetService, state: WorkflowState, sql: str,
 ) -> tuple[CostEstimate, BudgetDecision, ExecutionBudget]:
     """估算 + 判定;护栏自身故障 → 保守降级,不 raise(设计 §4 I6)。
 
@@ -569,7 +675,7 @@ async def _judge_budget(
     """
     try:
         est = await budget.estimate(
-            state.datasource or "", state.sql, state.dialect or "",
+            state.datasource or "", sql, state.dialect or "",
             # 表名是元数据画像档的**入口**:画像按表行数求和,不知道表名就无从
             # 查起。解不出表名(``None``)或解析失败都不是问题 —— 那一档本来就
             # 会跳过,后面还有保守预算接着。
@@ -578,7 +684,7 @@ async def _judge_budget(
             # 了哪些表」的判断必须一致,不一致的那天会出现「授权认为查了 A 表、
             # 成本估算认为没查」这种谁也说不清的账。代价是二次 sqlglot 解析,
             # 毫秒级。
-            referenced_tables(state.sql, state.dialect or ""),
+            referenced_tables(sql, state.dialect or ""),
         )
         return est, budget.decide(est), budget.budget
     except Exception as e:

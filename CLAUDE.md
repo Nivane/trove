@@ -201,8 +201,8 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 | validator 断言 | 结果域闭集 `decision/expr.py:92`（`VALIDATOR_VARIABLES`）+ `skills/validators.py:42`（只跑 validate 节点） | 新变量 1–2 处 | 内容开放 |
 | 决策规则 | `decision/rules.py` schema + `.trove/kb/<ds>/decisions.yml`；表达式闭集、无 eval、Kleene 三值；总开关停用 → 报「已停用」错误（`decision/service.py:282/506`） | 内容 0 处；新函数 3 处 | admin（内容） |
 | 数据源适配器 | `datasource/registry.py:42/45`：`register_adapter()` 唯一注册路径，内置方言模块尾自注册；ABC 在 `adapters/base.py:39` | 新方言 2 处（实现 + 注册）；走 CLI URL 再 +2 | 仅核心（外插件可调） |
-| 工具 | `build_sql_registry`（`workflow/nodes/gen_sql.py:1038`）每轮现建闭包；lazy + role 门控 | 4 处 | 仅核心 |
-| 图节点 | `workflow/graphs.py` `build_graphs:1400` / `_build_reflection:2082` + `state.py` 字段 | 4–5 处 | 仅核心 |
+| 工具 | `build_sql_registry`（`workflow/nodes/gen_sql.py:1051`）每轮现建闭包；lazy + role 门控 | 4 处 | 仅核心 |
+| 图节点 | `workflow/graphs.py` `build_graphs:1402` / `_build_reflection:2109` + `state.py` 字段 | 4–5 处 | 仅核心 |
 | 管理域（前后端） | `api/app.py` 硬编码块 + `router/index.ts` + `AdminLayout.vue` + i18n 双字典 | 7–8 处 | 仅核心 |
 | 存储 | `StorageBackend` ABC（`storage/backends/base.py:72`）+ `build_backend` scheme 分支；迁移清单每 store 自带 | 新 store 1 处；新后端 3 处 | 仅核心 |
 | 配置 | `AgentConfig`（`core/config.py:386`）+ 管理端白名单 `SETTINGS_SCHEMA`（`admin_settings/service.py:25`，双写纪律；`extensions.org_extensions_enabled` 即经此落库 + 热改活 config） | 2–3 处 | 仅核心 |

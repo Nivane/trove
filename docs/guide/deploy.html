@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 安装部署：docker compose 拓扑（PostgreSQL + 后端 + 前端）、两套镜像的独立重建、本地开发态、依赖 extras 与环境变量清单。">
+<meta name="description" content="Trove 安装部署：docker compose 拓扑（PostgreSQL + 后端 + 前端）、两套镜像的独立重建、登录与 OIDC 单点登录配置、本地开发态、依赖 extras 与环境变量清单。">
 <title>安装部署 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -193,6 +193,58 @@ docker compose restart backend   # 只重启后端，前端容器不受影响</c
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L71">docker-compose.yml:71 <span class="ref-line">.trove</span></a>
     </p>
 
+    <h3 id="sso">配置 OIDC 单点登录</h3>
+
+    <p>
+      SSO 是<strong>部署级配置</strong>，不在管理端表单里（那里不接纳、也不回显客户端密钥）。
+      两步：
+    </p>
+
+    <ol>
+      <li>在 IdP 注册一个应用，回调地址填
+      <code>https://&lt;你的域名&gt;/v1/auth/oidc/callback</code>
+      （本地联调可用 <code>http://localhost:8000/…</code>），授权类型选
+      <strong>authorization code + PKCE</strong>，scope 至少 <code>openid email profile</code>。</li>
+      <li>在 <code>conf/agent.yml</code>（或挂载的 <code>~/.trove/conf/agent.yml</code>）里写
+      <code>oidc:</code> 段；客户端密钥只以环境变量注入：</li>
+    </ol>
+
+    <pre><code>oidc:
+  enabled: true
+  issuer: https://idp.example.com
+  client_id: trove
+  client_secret_ref: env:TROVE_OIDC_SECRET
+  post_login_redirect: /
+  role_map:
+    trove-admins: admin
+    data-analysts: analyst
+  default_role: user</code></pre>
+
+    <pre><code>export TROVE_OIDC_SECRET=…        # compose 里经 environment 传给后端容器
+docker compose restart backend</code></pre>
+
+    <p>
+      重启后登录页出现「使用 SSO 登录」。<code>client_secret_ref</code>
+      <strong>只接受 <code>env:NAME</code></strong>——密钥不进 YAML、不进 git。
+      <code>issuer</code> 与显式 <code>redirect_uri</code> 必须 https（loopback 例外）；
+      回调地址留空时按请求 base URL 推导，随附的 nginx 已转发 Host 与
+      <code>X-Forwarded-Proto</code>，若前面还有一层代理，建议显式写死
+      <code>redirect_uri</code>。
+    </p>
+
+    <p>
+      配置写了 <code>enabled: true</code> 但自洽性检查不过时，SSO 会<strong>保持关闭</strong>
+      （路由 404）并在启动日志写明原因——不会挂一个必然失败的登录入口。
+      首次登录可自动建号，但<strong>零授权</strong>：数据源 grants 与行/列授权仍要管理员在
+      用户页补。角色按 IdP group 映射，每次登录重算。
+      完整流程见<a href="../ops/security.html#oidc">安全 · 单点登录</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L161">config.py:161 <span class="ref-line">OidcConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L149">auth.py:149 <span class="ref-line">oidc_callback</span></a>
+    </p>
+
     <h2 id="dev">本地开发态</h2>
 
     <p>
@@ -204,9 +256,9 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
 
     <p>
       <code>serve</code> 的参数可以改绑定地址，默认是本机回环：
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L752">main.py:752 <span class="ref-line">--host</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L753">main.py:753 <span class="ref-line">--port</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L768">main.py:768 <span class="ref-line">async_main_serve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L793">main.py:793 <span class="ref-line">--host</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L794">main.py:794 <span class="ref-line">--port</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L809">main.py:809 <span class="ref-line">async_main_serve</span></a>
     </p>
 
     <div class="callout warn">
@@ -241,8 +293,8 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <pre><code>uv sync --extra mysql --extra doris</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L47">pyproject.toml:47 <span class="ref-line">postgres</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L55">pyproject.toml:55 <span class="ref-line">doris</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L52">pyproject.toml:52 <span class="ref-line">postgres</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L60">pyproject.toml:60 <span class="ref-line">doris</span></a>
     </p>
 
     <h2 id="storage">存储后端怎么选</h2>
@@ -278,7 +330,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/config_store.py#L26">config_store.py:26 <span class="ref-line">DEFAULT_PATH</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L171">main.py:171 <span class="ref-line">boot_register</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L210">main.py:210 <span class="ref-line">boot_register</span></a>
     </p>
 
     <h2 id="env">环境变量速查</h2>
@@ -306,7 +358,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L580">config.py:580 <span class="ref-line">resolve_env_vars</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L649">config.py:649 <span class="ref-line">resolve_env_vars</span></a>
     </p>
 
     <p>
@@ -334,7 +386,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e139f72</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

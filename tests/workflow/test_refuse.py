@@ -1408,3 +1408,83 @@ class TestRefusalStateHygiene:
         assert out["question"] == "counties of students?"
         assert out["refusal"] is None
         assert SemanticManager(kb).drafts("test_db")["pending"] == []
+
+
+class TestAutoConfirmScope:
+    """自动确认试跑的执行门(设计 §2.3)。
+
+    B 档会**真实执行**编译器产出的 SQL 来验证 shape —— 这是用户触发的
+    取数路径,必须套提问者的行/列授权。试跑越权 ≠ 自动确认失败之外的另一
+    件事:它只是让自动确认**不发生**(退回 pending 人工),绝不执行越权 SQL。
+    """
+
+    METRIC = """\
+draft:
+  kind: metric
+  name: avg_grade
+  expression: AVG(students.grade)
+  synonyms: [平均成绩, average grade]
+  definition: students average grade
+  datasets: [students]
+"""
+
+    @staticmethod
+    def _principal(*, row: dict | None = None, deny: dict | None = None):
+        from trove.services.authz.policy import Principal, principal_to_wire
+
+        return principal_to_wire(Principal(
+            subject="7", role="user", grants=frozenset({"test_db"}),
+            row_grants=None if row is None else {"test_db": row},
+            column_denials=(
+                None if deny is None
+                else {"test_db": {t: frozenset(c) for t, c in deny.items()}}
+            ),
+        ))
+
+    async def test_blocked_column_trial_falls_back_to_pending(
+        self, kb, sqlite_registry,
+    ):
+        """被禁列(grade)→ 试跑拒绝 → 草稿退回 pending,不自动入库。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        seed = TestAutoConfirmPhysicalColumn()
+        seed._seed_students_semantics(kb)
+        node = make_refuse(
+            ScriptedLLM([self.METRIC]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(seed._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            principal=self._principal(deny={"students": ["grade"]}),
+            refusal={"reason": "uncovered", "question": "average grade?",
+                     "plan": {"aggregation": "AVG(students.grade)",
+                              "answer_columns": ["AVG(students.grade)"]}},
+        ))
+        assert out["auto_confirmed"] is False
+        pending = SemanticManager(kb).drafts("test_db")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["name"] == "avg_grade"
+
+    async def test_row_grant_does_not_block_the_trial(self, kb, sqlite_registry):
+        """行 grant 只收窄行、不改 shape —— 自动确认照常发生。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        seed = TestAutoConfirmPhysicalColumn()
+        seed._seed_students_semantics(kb)
+        node = make_refuse(
+            ScriptedLLM([self.METRIC]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(seed._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            principal=self._principal(row={"students": "county = 'Alameda'"}),
+            refusal={"reason": "uncovered", "question": "average grade?",
+                     "plan": {"aggregation": "AVG(students.grade)",
+                              "answer_columns": ["AVG(students.grade)"]}},
+        ))
+        assert out["auto_confirmed"] is True
+        assert SemanticManager(kb).drafts("test_db")["pending"] == []

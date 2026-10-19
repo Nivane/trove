@@ -1,7 +1,7 @@
 /**
  * navModel — 控制台信息架构（IA）的单一来源（设计稿 P6 §4.1）。
  *
- * 四组 17 项：`group` 的声明顺序即渲染顺序；侧栏、⌘K 面板与路由契约
+ * 四组 18 项：`group` 的声明顺序即渲染顺序；侧栏、⌘K 面板与路由契约
  * 测试读的都是这一份。这是个零渲染、零请求的纯数据 + 纯函数模块：
  * 角标只声明「来源键」（badgeKey），取值在 useNavBadges 里完成，
  * 取不到就不显示 —— 绝不在导航层编造数字。
@@ -19,6 +19,7 @@ import {
   Clock,
   Cpu,
   Database,
+  Gauge,
   Gavel,
   History,
   LayoutDashboard,
@@ -166,6 +167,15 @@ export const NAV_ITEMS: NavItem[] = [
     path: '/admin/ontology',
     labelKey: 'ontology',
     icon: Share2,
+    group: 'modeling',
+  },
+  {
+    // 覆盖率体检：拿一批真实问题回放生产前段，量「语义模型现在能答多少」。
+    // 它是**只读测量**，不产生待办资产（草稿也走语义工作台），故无角标。
+    key: 'question-coverage',
+    path: '/admin/question-coverage',
+    labelKey: 'qcNav',
+    icon: Gauge,
     group: 'modeling',
   },
   {

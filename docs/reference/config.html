@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 配置参考：conf/agent.yml 全部 key、代码默认值、环境变量清单，以及一个常见误区——检索参数配在数据源而不是 agent.yml 里。">
+<meta name="description" content="Trove 配置参考：conf/agent.yml 全部 key、代码默认值、环境变量清单——含 OIDC 单点登录与 LLM 数据出境治理（egress）——以及一个常见误区：检索参数配在数据源而不是 agent.yml 里。">
 <title>配置参考 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -141,9 +141,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L408">config.py:408 <span class="ref-line">AgentConfig</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L428">config.py:428 <span class="ref-line">model_draft</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L451">config.py:451 <span class="ref-line">confidence_score</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L473">config.py:473 <span class="ref-line">AgentConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L493">config.py:493 <span class="ref-line">model_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L516">config.py:516 <span class="ref-line">confidence_score</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L56">config.py:56 <span class="ref-line">TracingConfig</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L91">conf/agent.yml:91 <span class="ref-line">reflect_skip</span></a>
     </p>
@@ -201,7 +201,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L233">conf/agent.yml:233 <span class="ref-line">gate_enabled</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L177">config.py:177 <span class="ref-line">gate_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L242">config.py:242 <span class="ref-line">gate_enabled</span></a>
     </p>
 
     <p>
@@ -238,9 +238,10 @@ flowchart LR
     <p>
       这个开关只影响<strong>表级</strong>判定。数据源级判定（A2，「这个用户能不能用这个源」）
       与「必须有主体」（A1）不受它影响，恒为拒绝——读错这个开关只会让 A3 变宽，
-      不会把鉴权关掉。默认 <code>warn</code> 也不是心软：存量 grants 只到数据源级，
-      直接 <code>enforce</code> 会把正常查询大面积 403，先跑一段收集「哪些表会被拒」。
-      细节见<a href="../ops/security.html#enforce">安全</a>。
+      不会把鉴权关掉。默认 <code>enforce</code> 是静态核验后的决定：用 A3 同源基准对三份 KB
+      的 650 条快径示例 SQL 逐条比对，违规 0 条——按语义模型走的查询本来就在声明内。
+      <code>warn</code> 是给「确有声明外查询」的存量部署的回退阀：放行但记下被挡的表，
+      先观察一段时间再切回 <code>enforce</code>。细节见<a href="../ops/security.html#enforce">安全</a>。
     </p>
 
     <p>
@@ -281,6 +282,113 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L113">config.py:113 <span class="ref-line">MaskingConfig</span></a>
+    </p>
+
+    <h2 id="egress-cfg">egress 段：模型数据出境治理</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">enabled</td>
+            <td class="mono">true</td>
+            <td>整层开关。只作用于语义模型已声明 <code>mask</code> 的字段——没有声明的部署在工具回喂口逐字节不变</td>
+          </tr>
+          <tr>
+            <td class="mono">redact_tool_results</td>
+            <td class="mono">true</td>
+            <td>是否在工具结果回喂模型前，按 <code>mask</code> 声明脱敏</td>
+          </tr>
+          <tr>
+            <td class="mono">allow_providers</td>
+            <td><em>空</em></td>
+            <td>模型 provider 白名单。空 = 全部允许；含 <code>/</code> = 精确模型名；不含 <code>/</code> = provider 前缀；<code>*</code> = 全部允许</td>
+          </tr>
+          <tr>
+            <td class="mono">audit</td>
+            <td class="mono">true</td>
+            <td>每轮汇总写一条 <code>llm.egress</code> 审计（字段名与计数，不含值）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>egress:
+  enabled: true
+  redact_tool_results: true
+  allow_providers: [openai, anthropic, deepseek]
+  audit: true</code></pre>
+
+    <p>
+      这一组也可以写在 <code>agent:</code> 段内，两种写法等价；<code>allow_providers</code>
+      接受 YAML 数组或逗号分隔字符串（手写 YAML 两种都常见），条目小写去空白。
+      管理端设置页可以热改前三个键（<code>egress.enabled</code> /
+      <code>egress.redact_tool_results</code> / <code>egress.allow_providers</code>），
+      下一次模型调用生效；<code>audit</code> 只在配置文件里。
+    </p>
+
+    <p>
+      它与 <code>masking</code> 是两个接收方：<code>masking</code> 管交付给用户的结果，
+      <code>egress</code> 管发给模型的观测。所以<strong>关掉 <code>masking.enabled</code>
+      不会打开工具回喂的脱敏</strong>，两个开关各自独立。细节见
+      <a href="../ops/security.html#egress">安全 · 模型数据出境治理</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L132">config.py:132 <span class="ref-line">EgressConfig</span></a>
+    </p>
+
+    <h2 id="oidc-cfg">oidc 段：单点登录</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">enabled</td><td class="mono">false</td><td>总体开关；关闭时无新路由、无登录按钮、无网络调用</td></tr>
+          <tr><td class="mono">issuer</td><td><em>空</em></td><td>OIDC issuer，必须 https（loopback http 例外）；discovery 从它拼出</td></tr>
+          <tr><td class="mono">client_id</td><td><em>空</em></td><td>OAuth 客户端 id</td></tr>
+          <tr><td class="mono">client_secret_ref</td><td><em>空</em></td><td><strong>只接受 <code>env:NAME</code></strong>；这是引用不是值，密钥不进 YAML / git</td></tr>
+          <tr><td class="mono">redirect_uri</td><td><em>空</em></td><td>留空按请求 base URL 推导 <code>/v1/auth/oidc/callback</code>；显式配置必须 https</td></tr>
+          <tr><td class="mono">post_login_redirect</td><td class="mono">/</td><td>前端地址；token 与失败码都放在它的 fragment 里</td></tr>
+          <tr><td class="mono">scopes</td><td class="mono">openid email profile</td><td>请求的 scope 串</td></tr>
+          <tr><td class="mono">groups_claim</td><td class="mono">groups</td><td>从 ID token 的哪个 claim 读组列表</td></tr>
+          <tr><td class="mono">role_map</td><td><em>空</em></td><td>IdP group → <code>admin</code> / <code>analyst</code> / <code>user</code>；多个命中取最高权限</td></tr>
+          <tr><td class="mono">default_role</td><td class="mono">user</td><td>没有命中任何映射时的角色</td></tr>
+          <tr><td class="mono">auto_provision</td><td class="mono">true</td><td>首登自动建号（零授权）；关闭时未绑定身份一律 <code>not_provisioned</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>oidc:
+  enabled: true
+  issuer: https://idp.example.com
+  client_id: trove
+  client_secret_ref: env:TROVE_OIDC_SECRET
+  redirect_uri: https://trove.example.com/v1/auth/oidc/callback
+  post_login_redirect: /
+  groups_claim: groups
+  role_map:
+    trove-admins: admin
+    data-analysts: analyst
+  default_role: user</code></pre>
+
+    <p>
+      同样可以写在 <code>agent:</code> 段内。这一组<strong>不在</strong>管理端设置白名单里：
+      它是部署级安全配置，管理端可热改 / 可回显的面不接纳密钥。配置写了
+      <code>enabled: true</code> 但自洽性检查不过（缺 issuer / client_id、issuer 非 https、
+      <code>client_secret_ref</code> 不是 <code>env:</code> 引用、角色名未知）时，
+      <strong>SSO 保持关闭</strong>（路由 404）并在启动日志说明原因。
+      默认关闭的部署与「没有 oidc 段」逐字段一致。流程与角色映射细节见
+      <a href="../ops/security.html#oidc">安全 · 单点登录</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L161">config.py:161 <span class="ref-line">OidcConfig</span></a>
     </p>
 
     <h2 id="retention-cfg">retention 段</h2>
@@ -327,7 +435,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/secrets.py#L123">secrets.py:123 <span class="ref-line">TROVE_SECRET_KEY</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L111">service.py:111 <span class="ref-line">TROVE_TOKEN_TTL_HOURS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L141">service.py:141 <span class="ref-line">TROVE_TOKEN_TTL_HOURS</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/git_versioning.py#L95">git_versioning.py:95 <span class="ref-line">TROVE_GIT_KB_AUTHOR</span></a>
     </p>
 
@@ -337,7 +445,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L580">config.py:580 <span class="ref-line">resolve_env_vars</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L649">config.py:649 <span class="ref-line">resolve_env_vars</span></a>
     </p>
 
     <h2 id="next">继续读</h2>
@@ -359,7 +467,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 86ca61e</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

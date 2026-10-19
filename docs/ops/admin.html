@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 运维管理：用户与 grant 授权、数据源与 KB 初始化、定时任务（内嵌 tick 与 daemon 二选一）、记忆运维、保留策略与周期维护。">
+<meta name="description" content="Trove 运维管理：用户、数据源 grant 与行/列授权、数据源与 KB 初始化、定时任务（内嵌 tick 与 daemon 二选一、按所有者身份运行）、记忆运维、保留策略与周期维护。">
 <title>运维管理 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -45,7 +45,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L157">main.py:157 <span class="ref-line">TROVE_ADMIN_PASSWORD</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L141">service.py:141 <span class="ref-line">token_urlsafe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L171">service.py:171 <span class="ref-line">token_urlsafe</span></a>
     </p>
 
     <p>
@@ -55,11 +55,11 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L165">admin.py:165 <span class="ref-line">users</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L270">service.py:270 <span class="ref-line">token_urlsafe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L168">admin.py:168 <span class="ref-line">users</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L308">service.py:308 <span class="ref-line">token_urlsafe</span></a>
     </p>
 
-    <h3>三个层次，别混</h3>
+    <h3>四个层次，别混</h3>
 
     <div class="table-wrap">
       <table>
@@ -69,6 +69,7 @@
         <tbody>
           <tr><td><strong>账号角色</strong></td><td>admin / 非 admin，决定能否进管理端</td><td>用户页面</td></tr>
           <tr><td><strong>数据源授权（grants）</strong></td><td>这个用户能问哪些源</td><td>用户页面</td></tr>
+          <tr><td><strong>行 / 列授权（data grants）</strong></td><td>同一个源内能看到哪些行、哪些列；<strong>只收窄、不授予</strong></td><td>用户详情抽屉</td></tr>
           <tr><td><strong>工具 ACL</strong></td><td>analyst 角色，决定 catalog 工具可见性</td><td>运行时角色解析</td></tr>
         </tbody>
       </table>
@@ -119,7 +120,60 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L187">deps.py:187 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L197">deps.py:197 <span class="ref-line">require_datasource</span></a>
+    </p>
+
+    <h3 id="data-grants">行 / 列授权：第四层收窄</h3>
+
+    <p>
+      先把语义说清：<strong>未设置 = 不限制；设置后只收窄</strong>。它不是白名单，
+      不会把一个用户原本看不到的数据源打开。行谓词与该数据源在语义模型里声明的 RLS
+      叠加（AND）；被禁列在 SQL 的任何位置被引用都会<strong>拒绝执行</strong>，
+      而列名仍出现在目录与提示词里——这一层保护值，不保护名字。
+    </p>
+
+    <p>
+      在用户详情抽屉里操作：
+    </p>
+
+    <ol>
+      <li>打开「用户」，点目标用户进入详情；</li>
+      <li>在「行/列授权」里按数据源分别配置：行过滤填 <code>table</code> + <code>predicate</code>，
+      被禁列填 <code>table</code> + 列名；</li>
+      <li>保存即<strong>整体替换</strong>该数据源的配置（先读后改请走一次 GET）。</li>
+    </ol>
+
+    <pre><code>PUT /v1/admin/users/{id}/data-grants
+{
+  "datasource": "demo",
+  "row_filters": [{"table": "loans", "predicate": "district_id = 1"}],
+  "blocked_columns": [{"table": "client", "columns": ["email", "phone"]}]
+}</code></pre>
+
+    <p>
+      写入前逐项校验：谓词能解析且为单语句、不含子查询、不引用其他表；列属于该表；
+      错误以 400 带原因返回。表名与列名一律用<strong>物理名</strong>。每次保存写审计
+      <code>admin.data_grant.set</code>（数据源、表名、列名与谓词；不记业务数据值）。
+    </p>
+
+    <p>
+      管理员角色<strong>豁免</strong>，所以管理端也不允许给 admin 配行/列授权
+      （PUT 返回 400，提示应给 analyst / user 角色）。需要收窄的身份应当是
+      <code>analyst</code> 或 <code>user</code>。
+    </p>
+
+    <p>
+      生效范围：该用户在主链、<code>/v1/semantic/query</code>、生成期
+      probe / check / search、候选投票、归因分析与草稿试跑里都受同一份 scope 约束；
+      定时任务按任务所有者身份运行时自动套用。授权变更会让该用户的回复缓存键分化，
+      不会在 TTL 内复用旧范围的结果。机制细节见
+      <a href="security.html#rowcol">安全 · 行级与列级授权</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L469">admin.py:469 <span class="ref-line">get_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L487">admin.py:487 <span class="ref-line">set_data_grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/store.py#L734">store.py:734 <span class="ref-line">set_data_grants</span></a>
     </p>
 
     <h2 id="datasources">数据源与 KB</h2>
@@ -155,9 +209,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L824">admin.py:824 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1097">admin.py:1097 <span class="ref-line">kb</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1039">admin.py:1039 <span class="ref-line">test-connection</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1014">admin.py:1014 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1287">admin.py:1287 <span class="ref-line">kb</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1229">admin.py:1229 <span class="ref-line">test-connection</span></a>
     </p>
 
     <p>
@@ -169,7 +223,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1189">admin.py:1189 <span class="ref-line">kb/reload</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1379">admin.py:1379 <span class="ref-line">kb/reload</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L962">service.py:962 <span class="ref-line">force_sync</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L111">pg_hybrid.py:111 <span class="ref-line">index_file</span></a>
     </p>
@@ -213,9 +267,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L421">main.py:421 <span class="ref-line">内置调度</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L458">main.py:458 <span class="ref-line">内置调度</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L177">app.py:177 <span class="ref-line">_job_tick</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L523">config.py:523 <span class="ref-line">scheduler_poll_seconds</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L592">config.py:592 <span class="ref-line">scheduler_poll_seconds</span></a>
     </p>
 
     <div class="callout note">
@@ -229,7 +283,30 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L92">runner.py:92 <span class="ref-line">approve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L101">runner.py:101 <span class="ref-line">approve</span></a>
+    </p>
+
+    <p>
+      定时任务按<strong>任务所有者</strong>的身份运行，不再隐式使用本地 admin。owner 在创建时
+      记为当前管理员，编辑不改 owner：owner 是 admin → 行/列豁免；owner 是普通用户 →
+      自动套用他的数据源 grants 与行/列授权。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">③ 启用认证后，owner 为空的旧任务会显式失败</span>
+      <div>
+        <p>升级前创建的任务没有 owner。启用认证的部署里，这类任务会以 <code>error</code>
+        状态失败，并提示「任务缺少所有者，请由管理员编辑并重新保存」——这是刻意的：
+        静默按本地 admin 运行正是这条链路此前最宽的洞。管理端重新保存一次即可补上 owner。
+        未启用认证的嵌入部署仍走本机可信身份，行为不变。</p>
+        <p>判定 / 扫描这类系统任务要求 admin owner：它们不是用户对话管线，
+        不套用个人行 / 列授权。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L90">runner.py:90 <span class="ref-line">owner_id</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/store.py#L141">store.py:141 <span class="ref-line">owner_id</span></a>
     </p>
 
     <p>
@@ -256,8 +333,8 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1585">admin.py:1585 <span class="ref-line">profile</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1608">admin.py:1608 <span class="ref-line">preferences</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1775">admin.py:1775 <span class="ref-line">profile</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1798">admin.py:1798 <span class="ref-line">preferences</span></a>
     </p>
 
     <p>
@@ -322,7 +399,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e139f72</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

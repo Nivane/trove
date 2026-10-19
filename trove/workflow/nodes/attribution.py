@@ -50,6 +50,8 @@ from trove.services.analysis.render import (
     ratio_waterfall_chart as _ratio_waterfall_chart,
     waterfall_chart as _waterfall_chart,
 )
+from trove.services.authz.policy import principal_from_wire
+from trove.services.authz.scope import apply_scope
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -247,8 +249,34 @@ def make_attribution(
             time_context=state.time_context,
         )
 
+        # 行/列 scope(设计 §2.3):归因 hop 是**用户可见取数路径** —— 分析
+        # 卡展示的就是这些查询的结果。引擎的 SQL 出自语义编译器
+        # (``compile_hop`` → ``compile_detailed``),声明层 RLS 已在编译期注入
+        # (``contract.row_filters`` 同源),所以这里 ``include_declared_rls=
+        # False``,只叠加主体 grant。``ScopeError`` 刻意不在这层吞:抛给
+        # ``AnalysisEngine`` → 整段分析记 ``degraded``(partial),主答案照常
+        # 交付 —— 分析是**增强**不是主产物。
+        principal = principal_from_wire(state.principal)
+        scope_model = None
+        if principal is not None:
+            try:
+                scope_model = semantic_layer.model()
+            except Exception:  # noqa: BLE001 —— 声明读不出时仍套主体 grant
+                scope_model = None
+
+        def _hop_sql(sql: str, datasource: str) -> str:
+            if principal is None:
+                return sql
+            return apply_scope(
+                sql, model=scope_model, principal=principal,
+                datasource=(datasource or state.datasource
+                            or getattr(connectors, "default_name", "") or ""),
+                dialect=state.dialect or "",
+                include_declared_rls=False,
+            ).sql
+
         async def _runner(sql: str, datasource: str) -> tuple[list[str], list[list[Any]]]:
-            return await _run_hop(connectors, sql, datasource)
+            return await _run_hop(connectors, _hop_sql(sql, datasource), datasource)
 
         engine = AnalysisEngine(semantic_layer, _runner, _limits_from_config(config))
         outcome = await engine.run(request)

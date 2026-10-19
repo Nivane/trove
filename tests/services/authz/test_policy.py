@@ -28,15 +28,21 @@ TROVE_ROOT = Path(trove.__file__).parent
 
 
 class _FakeAuth:
-    """最小 AuthService 替身,记录被查过哪些 user id(数据源与域各记一列)。"""
+    """最小 AuthService 替身,记录被查过哪些 user id(每类授权各记一列)。"""
 
     def __init__(self, grants_by_user: dict | None = None, boom: bool = False,
-                 topic_grants_by_user: dict | None = None):
+                 topic_grants_by_user: dict | None = None,
+                 row_grants_by_user: dict | None = None,
+                 column_denials_by_user: dict | None = None):
         self._grants = grants_by_user or {}
         self._topic_grants = topic_grants_by_user or {}
+        self._row_grants = row_grants_by_user or {}
+        self._column_denials = column_denials_by_user or {}
         self._boom = boom
         self.asked: list = []
         self.asked_topics: list = []
+        self.asked_rows: list = []
+        self.asked_columns: list = []
 
     async def get_datasources(self, user_id):
         self.asked.append(user_id)
@@ -50,6 +56,25 @@ class _FakeAuth:
             raise RuntimeError("app.db is unreachable")
         raw = self._topic_grants.get(user_id)
         return None if raw is None else {k: list(v) for k, v in raw.items()}
+
+    async def get_row_grants(self, user_id):
+        self.asked_rows.append(user_id)
+        if self._boom:
+            raise RuntimeError("app.db is unreachable")
+        raw = self._row_grants.get(user_id)
+        if raw is None:
+            return None
+        return {ds: dict(tables) for ds, tables in raw.items()}
+
+    async def get_column_denials(self, user_id):
+        self.asked_columns.append(user_id)
+        if self._boom:
+            raise RuntimeError("app.db is unreachable")
+        raw = self._column_denials.get(user_id)
+        if raw is None:
+            return None
+        return {ds: {t: list(cols) for t, cols in tables.items()}
+                for ds, tables in raw.items()}
 
 
 # ── grants 三种取值(I7 的核心)────────────────────────────────────
@@ -390,6 +415,39 @@ class TestPrincipalFor:
         assert p.topic_grants is None
         assert p.allows_datasource("fin", "fin") is False
 
+    async def test_user_row_and_column_grants_are_fetched(self):
+        auth = _FakeAuth(
+            grants_by_user={7: ["fin"]},
+            row_grants_by_user={7: {"fin": {"loans": "district_id = 1"}}},
+            column_denials_by_user={7: {"fin": {"client": ["email"]}}},
+        )
+        p = await Policy(auth).principal_for({"id": 7, "role": "user"})
+        assert p.row_grants == {"fin": {"loans": "district_id = 1"}}
+        assert p.column_denials == {
+            "fin": {"client": frozenset({"email"})}}
+
+    async def test_missing_row_and_column_grants_are_unrestricted(self):
+        """存储无行 → None(未声明收窄),不是「什么都不允许」。"""
+        p = await Policy(_FakeAuth()).principal_for({"id": 7, "role": "user"})
+        assert p.row_grants is None
+        assert p.column_denials is None
+
+    async def test_admin_does_not_read_row_or_column_grants(self):
+        """决策 4 的豁免在唯一读取点落地:admin 连查都不查。"""
+        auth = _FakeAuth(
+            row_grants_by_user={7: {"fin": {"loans": "district_id = 1"}}},
+            column_denials_by_user={7: {"fin": {"client": ["email"]}}},
+        )
+        p = await Policy(auth).principal_for({"id": 7, "role": "admin"})
+        assert p.row_grants is None
+        assert p.column_denials is None
+        assert auth.asked_rows == [] and auth.asked_columns == []
+
+    async def test_data_grant_store_failure_propagates(self):
+        with pytest.raises(RuntimeError, match="unreachable"):
+            await Policy(_FakeAuth(boom=True)).principal_for(
+                {"id": 7, "role": "user"})
+
 
 # ── I6:只能收窄 ──────────────────────────────────────────────────
 
@@ -451,6 +509,50 @@ class TestNarrow:
     def test_topic_none_over_unrestricted_is_a_noop(self):
         p = Principal(subject="1")
         assert p.narrow(topic_grants=None).topic_grants is None
+
+    def test_row_grants_and_merge_per_table(self):
+        """两张表各自有谓词:共同表 AND 起来,独有表取那一侧 —— 只会更窄。"""
+        p = Principal(subject="1", row_grants={
+            "fin": {"loans": "district_id = 1", "client": "region = 'X'"}})
+        narrowed = p.narrow(row_grants={
+            "fin": {"loans": "status = 'ok'", "card": "type = 'gold'"}})
+        assert narrowed.row_grants == {"fin": {
+            "card": "type = 'gold'",
+            "client": "region = 'X'",
+            "loans": "(district_id = 1) AND (status = 'ok')",
+        }}
+
+    def test_row_grants_never_widen(self):
+        """一侧没有该表 = 那边不过滤 → 取另一侧,而不是丢掉过滤。"""
+        p = Principal(subject="1", row_grants={"fin": {"loans": "a = 1"}})
+        narrowed = p.narrow(row_grants={"fin": {}})
+        assert narrowed.row_grants == {"fin": {"loans": "a = 1"}}
+
+    def test_unrestricted_principal_takes_given_row_grants(self):
+        p = Principal(subject="1", role="admin")
+        narrowed = p.narrow(role="user", row_grants={"fin": {"loans": "a = 1"}})
+        assert narrowed.row_grants == {"fin": {"loans": "a = 1"}}
+
+    def test_row_none_over_restricted_is_rejected(self):
+        p = Principal(subject="1", row_grants={"fin": {"loans": "a = 1"}})
+        with pytest.raises(ValueError, match="不能把 row_grants"):
+            p.narrow(row_grants=None)
+
+    def test_column_denials_union(self):
+        p = Principal(subject="1", column_denials={
+            "fin": {"client": frozenset({"email"})}})
+        narrowed = p.narrow(column_denials={
+            "fin": {"client": ["phone"], "loans": ["note"]}})
+        assert narrowed.column_denials == {"fin": {
+            "client": frozenset({"email", "phone"}),
+            "loans": frozenset({"note"}),
+        }}
+
+    def test_column_none_over_restricted_is_rejected(self):
+        p = Principal(subject="1", column_denials={
+            "fin": {"client": frozenset({"email"})}})
+        with pytest.raises(ValueError, match="不能把 column_denials"):
+            p.narrow(column_denials=None)
 
     def test_role_cannot_be_raised(self):
         p = Principal(subject="1", role="user")
@@ -566,6 +668,49 @@ class TestPrincipalWire:
             assert principal_from_wire(
                 {"subject": "1", "topic_grants": bad}) is None, bad
 
+    @pytest.mark.parametrize(
+        "row_grants",
+        [None, {}, {"fin": {"loans": "district_id = 1", "client": "a = 1"}}],
+        ids=["unconfigured", "empty", "filters"],
+    )
+    def test_round_trip_preserves_row_grants(self, row_grants):
+        p = Principal(subject="7", row_grants=row_grants)
+        wire = principal_to_wire(p)
+        back = principal_from_wire(wire)
+        assert back == p
+        assert (back.row_grants is None) is (row_grants is None)
+
+    def test_round_trip_preserves_column_denials(self):
+        p = Principal(subject="7", column_denials={
+            "fin": {"client": frozenset({"email", "phone"})}})
+        wire = principal_to_wire(p)
+        assert wire["column_denials"] == {
+            "fin": {"client": ["email", "phone"]}}     # 排序后的纯 JSON
+        back = principal_from_wire(wire)
+        assert back == p
+
+    def test_missing_data_grant_keys_read_as_unrestricted(self):
+        """本功能之前的 checkpoint 没有这两个键 —— 还原为「未收窄」。"""
+        p = principal_from_wire({"subject": "1", "role": "user"})
+        assert p is not None
+        assert p.row_grants is None and p.column_denials is None
+
+    def test_malformed_data_grants_void_the_whole_principal(self):
+        for bad in (
+            ["fin"],                                    # 整体不是 dict
+            {"fin": "loans = 1"},                       # 值不是 dict
+            {"fin": {"loans": 3}},                      # 谓词不是字符串
+            {"": {"loans": "a = 1"}},                   # 空数据源名
+        ):
+            assert principal_from_wire(
+                {"subject": "1", "row_grants": bad}) is None, bad
+        for bad in (
+            {"fin": {"client": "email"}},               # 列集合不是列表
+            {"fin": {"client": [1]}},                   # 非字符串列
+        ):
+            assert principal_from_wire(
+                {"subject": "1", "column_denials": bad}) is None, bad
+
     def test_admin_round_trips(self):
         p = Principal(subject="1", role="admin")
         assert principal_from_wire(principal_to_wire(p)) == p
@@ -573,11 +718,13 @@ class TestPrincipalWire:
     def test_wire_is_json_safe(self):
         """wire 里不得留下 frozenset / tuple —— 那正是跨不过边界的形状。"""
         wire = principal_to_wire(
-            Principal(subject="1", scopes=frozenset({"a"}), grants=frozenset({"b"}))
+            Principal(subject="1", scopes=frozenset({"a"}), grants=frozenset({"b"}),
+                      column_denials={"fin": {"c": frozenset({"e"})}})
         )
         json.dumps(wire)  # 不抛 = 纯 JSON
         assert isinstance(wire["scopes"], list)
         assert isinstance(wire["grants"], list)
+        assert isinstance(wire["column_denials"]["fin"]["c"], list)
 
     def test_wire_never_serializes_the_dataclass_itself(self):
         """回归门:别再把 dataclass 塞进 state。"""
@@ -619,11 +766,23 @@ class TestPrincipalWire:
         for grants in (None, frozenset(), frozenset({"a"})):
             p = Principal(
                 subject="7", scopes=frozenset({"pii"}), grants=grants,
-                topic_grants={"fin": frozenset({"loans"})})
+                topic_grants={"fin": frozenset({"loans"})},
+                row_grants={"fin": {"loans": "district_id = 1"}},
+                column_denials={"fin": {"client": frozenset({"email"})}})
             wire = principal_to_wire(p)
             back = serde.loads_typed(serde.dumps_typed(wire))
             assert type(back) is dict, f"被降级成了 {type(back)}"
             assert principal_from_wire(back) == p
+
+    def test_hashable_with_data_grants(self):
+        """dict 字段会破坏自动 ``__hash__`` —— 配了授权的用户不能是另一个群体。"""
+        a = Principal(subject="7", row_grants={"fin": {"loans": "a = 1"}},
+                      column_denials={"fin": {"c": frozenset({"e"})}})
+        b = Principal(subject="7", row_grants={"fin": {"loans": "a = 1"}},
+                      column_denials={"fin": {"c": frozenset({"e"})}})
+        assert hash(a) == hash(b)
+        {a, b}  # 可放进集合
+        assert a == b
 
 
 # ── I1:策略只有一个实现 ───────────────────────────────────────────

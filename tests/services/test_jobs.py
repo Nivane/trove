@@ -177,7 +177,7 @@ class TestCooldown:
         from trove.services.jobs.runner import SchedulerRunner
 
         class _M:
-            async def start_session(self):
+            async def start_session(self, **kw):
                 return object()
 
             async def ask(self, session, question, workflow, datasource=None,
@@ -227,7 +227,7 @@ class FakeSessionManager:
         self.asked_datasources = []
         self.asked_topics = []
 
-    async def start_session(self):
+    async def start_session(self, **kw):
         return object()
 
     async def ask(self, session, question, workflow, datasource=None, topic=""):
@@ -314,6 +314,130 @@ class TestRunner:
         results = await runner.tick()
         assert len(results) == 1
         assert results[0]["status"] == "ok"
+
+
+# ── runner: 任务所有者身份(§2.4)────────────────────────
+
+
+_USERS = {
+    1: {"id": 1, "username": "admin", "role": "admin", "disabled": False},
+    2: {"id": 2, "username": "bob", "role": "user", "disabled": False},
+    3: {"id": 3, "username": "gone", "role": "user", "disabled": True},
+}
+
+
+class _AuthStore:
+    def __init__(self, users):
+        self._users = users
+
+    async def get_user_by_id(self, user_id):
+        return self._users.get(int(user_id))
+
+
+class _Auth:
+    """最小 AuthService 形状:runner 只用到 ``.store.get_user_by_id``。"""
+
+    def __init__(self, users=_USERS):
+        self.store = _AuthStore(users)
+
+
+class _OwnerManager(FakeSessionManager):
+    """记录每次运行以哪个 user_id 起会话;可选挂 auth 服务。"""
+
+    def __init__(self, finals, auth=None):
+        super().__init__(finals)
+        if auth is not None:
+            self._auth = auth
+        self.user_ids = []
+
+    async def start_session(self, user_id="local", **kw):
+        self.user_ids.append(user_id)
+        return object()
+
+
+class TestRunnerOwner:
+    async def test_owner_identity_reaches_the_session(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval", owner_id="2")
+        manager = _OwnerManager([_final_state()], auth=_Auth())
+        summary = await SchedulerRunner(manager, svc).run_job(job)
+        assert summary["status"] == "ok"
+        # 非 admin owner 也是原样传入 —— 行/列 grant 由
+        # SessionManager._principal_wire → Policy.principal_for 现读，
+        # runner 不自己拼主体。
+        assert manager.user_ids == ["2"]
+
+    async def test_missing_owner_fails_loudly_with_auth(self, tmp_path):
+        """启用多用户的部署里，存量空 owner 必须响亮失败 —— 静默按本地
+        admin 运行正是本次要关的洞。"""
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        manager = _OwnerManager([_final_state()], auth=_Auth())
+        summary = await SchedulerRunner(manager, svc).run_job(job)
+        assert summary["status"] == "error"
+        assert "缺少所有者" in summary["error"]
+        assert manager.asked == [] and manager.user_ids == []
+        run = await svc.store.recent_run(job.id)
+        assert run["status"] == "error"
+
+    async def test_missing_owner_runs_locally_without_auth(self, tmp_path):
+        """未启用 AuthService 的嵌入部署：本机可信身份，老路径不变。"""
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        manager = _OwnerManager([_final_state()])
+        summary = await SchedulerRunner(manager, svc).run_job(job)
+        assert summary["status"] == "ok"
+        assert manager.user_ids == ["local"]
+
+    async def test_deleted_or_disabled_owner_fails(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        for owner, needle in (("9", "不存在"), ("3", "已被禁用")):
+            job = await svc.create_job("q", "5", "interval", owner_id=owner)
+            manager = _OwnerManager([_final_state()], auth=_Auth())
+            summary = await SchedulerRunner(manager, svc).run_job(job)
+            assert summary["status"] == "error"
+            assert needle in summary["error"]
+            assert manager.asked == []
+
+    async def test_non_numeric_owner_fails(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval", owner_id="local")
+        manager = _OwnerManager([_final_state()], auth=_Auth())
+        summary = await SchedulerRunner(manager, svc).run_job(job)
+        assert summary["status"] == "error"
+        assert "不是有效用户 id" in summary["error"]
+
+    async def test_decision_job_requires_an_admin_owner(self, tmp_path):
+        """系统任务不接个人 scope → 只接受 admin 所有者；非 admin 在碰
+        decision 服务之前就被拦下。"""
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job(
+            "label", "5", "interval", decision_rule="r1", owner_id="2")
+        runner = SchedulerRunner(_OwnerManager([_final_state()], auth=_Auth()), svc)
+        summary = await runner.run_job(job)
+        assert summary["status"] == "error"
+        assert "不是管理员" in summary["error"]
+
+    async def test_decision_job_admin_owner_passes_the_owner_gate(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job(
+            "label", "5", "interval", decision_rule="r1", owner_id="1")
+        runner = SchedulerRunner(_OwnerManager([_final_state()], auth=_Auth()), svc)
+        summary = await runner.run_job(job)
+        # 越过 owner 门后撞上的下一道:没有注入 decision 服务。断言它
+        # **不是** owner 错误 —— 证明 admin owner 被放行。
+        assert summary["status"] == "error"
+        assert "所有者" not in summary["error"]
+
+    async def test_scan_job_requires_an_admin_owner(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job(
+            "label", "5", "interval",
+            scan_spec='{"metrics": ["revenue"]}', owner_id="2")
+        runner = SchedulerRunner(_OwnerManager([_final_state()], auth=_Auth()), svc)
+        summary = await runner.run_job(job)
+        assert summary["status"] == "error"
+        assert "不是管理员" in summary["error"]
 
 
 class TestStoreE2E:

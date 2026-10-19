@@ -283,6 +283,12 @@
                 <span class="tag-dot" />
                 {{ draft.disabled ? t('statusDisabled', ui.lang) : t('statusActive', ui.lang) }}
               </span>
+              <!-- 认证来源是读出来的事实(有没有绑定 IdP → 有) — 只展示,不定权限 -->
+              <span v-if="drawerUser" class="tag-pill">
+                {{ drawerUser.auth_source === 'oidc'
+                  ? t('usersAuthSourceOidc', ui.lang)
+                  : t('usersAuthSourceLocal', ui.lang) }}
+              </span>
             </div>
           </div>
         </div>
@@ -322,6 +328,15 @@
             />
           </el-form-item>
         </el-form>
+        <!-- 绑定的 IdP 身份（只读）：账号→身份是登录时建立的，管理端不解绑 -->
+        <p v-if="drawerUser?.identities?.length" class="dsec-note">
+          {{ t('usersIdentities', ui.lang) }}:
+          <span
+            v-for="id in drawerUser.identities"
+            :key="`${id.issuer}\u0000${id.subject}`"
+            class="identity-item"
+          >{{ id.issuer }} · {{ id.subject }}</span>
+        </p>
       </section>
 
       <!-- datasource grants (staged — nothing is written until Save) -->
@@ -386,6 +401,88 @@
               </template>
             </div>
             <p class="dsec-note">{{ t('usersTopicLimitedHint', ui.lang) }}</p>
+          </template>
+        </template>
+      </section>
+
+      <!-- row / column grants: the third narrowing layer. Own Save: the PUT
+           replaces one datasource's whole grant, and its 400s (unparseable
+           predicate / unknown column) belong next to the inputs, not in the
+           profile Save's toast. -->
+      <section class="dsec">
+        <h4>
+          {{ t('dataGrants', ui.lang) }}
+          <span v-if="dataGrantsDirty" class="dirty-badge">{{ t('usersDirty', ui.lang) }}</span>
+        </h4>
+        <p v-if="dataGrantsError" class="dsec-note">{{ t('dataGrantsLoadFailed', ui.lang) }}</p>
+        <p v-else-if="dataGrantsAdminExempt" class="dsec-note">{{ t('dataGrantsAdminExempt', ui.lang) }}</p>
+        <template v-else>
+          <p class="dsec-note">{{ t('dataGrantsIntro', ui.lang) }}</p>
+          <p v-if="dataGrantsLoading" class="dsec-note">{{ t('dataGrantsLoading', ui.lang) }}</p>
+          <template v-else-if="!dataGrantDsOptions.length">
+            <p class="dsec-note">{{ t('dataGrantsNoDatasource', ui.lang) }}</p>
+          </template>
+          <template v-else>
+            <div class="dg-ds-row">
+              <span class="dg-ds-label">{{ t('dataGrantsDsLabel', ui.lang) }}</span>
+              <el-select v-model="dataDs" size="small" class="dg-ds-select">
+                <el-option v-for="d in dataGrantDsOptions" :key="d" :label="d" :value="d" />
+              </el-select>
+            </div>
+
+            <div class="dg-group">
+              <div class="dg-group-head">{{ t('dataGrantsRowFilters', ui.lang) }}</div>
+              <div v-for="(row, i) in currentDataDraft.rows" :key="`row-${i}`" class="dg-row">
+                <el-input v-model="row.table" size="small" class="dg-table" :placeholder="t('dataGrantsTable', ui.lang)" />
+                <el-input v-model="row.predicate" size="small" class="dg-value" :placeholder="t('dataGrantsPredicate', ui.lang)" />
+                <button
+                  type="button"
+                  class="icon-btn"
+                  :aria-label="t('delete', ui.lang)"
+                  :title="t('delete', ui.lang)"
+                  @click="removeRowFilter(i)"
+                >
+                  <Trash2 :size="14" />
+                </button>
+              </div>
+              <el-button size="small" text @click="addRowFilter">
+                {{ t('dataGrantsAddRow', ui.lang) }}
+              </el-button>
+            </div>
+
+            <div class="dg-group">
+              <div class="dg-group-head">{{ t('dataGrantsBlockedColumns', ui.lang) }}</div>
+              <div v-for="(entry, i) in currentDataDraft.blocked" :key="`blk-${i}`" class="dg-row">
+                <el-input v-model="entry.table" size="small" class="dg-table" :placeholder="t('dataGrantsTable', ui.lang)" />
+                <el-input v-model="entry.columns" size="small" class="dg-value" :placeholder="t('dataGrantsColumnsPlaceholder', ui.lang)" />
+                <button
+                  type="button"
+                  class="icon-btn"
+                  :aria-label="t('delete', ui.lang)"
+                  :title="t('delete', ui.lang)"
+                  @click="removeBlockedColumns(i)"
+                >
+                  <Trash2 :size="14" />
+                </button>
+              </div>
+              <el-button size="small" text @click="addBlockedColumns">
+                {{ t('dataGrantsAddBlocked', ui.lang) }}
+              </el-button>
+              <p class="dsec-note">{{ t('dataGrantsColumnsHint', ui.lang) }}</p>
+            </div>
+
+            <p v-if="dataGrantsSaveError" class="login-error dg-save-error" role="alert">
+              {{ dataGrantsSaveError }}
+            </p>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="dataGrantsSaving"
+              :disabled="!dataGrantsDirty || dataGrantsSaving"
+              @click="saveDataGrants"
+            >
+              {{ t('dataGrantsSave', ui.lang) }}
+            </el-button>
           </template>
         </template>
       </section>
@@ -1197,6 +1294,7 @@ function openDrawer(row: unknown, focus: 'top' | 'tokens' = 'top') {
   void loadTokens(user.id)
   void loadActivity(user.id)
   void loadTopicGrants(user.id)
+  void loadDataGrants(user.id)
   if (focus === 'tokens') {
     void Promise.resolve().then(() =>
       tokensSectionEl.value?.scrollIntoView?.({ block: 'start' }),
@@ -1210,7 +1308,9 @@ function closeDrawerNow() {
 }
 
 function beforeDrawerClose(): boolean {
-  if (!dirty.value) return true
+  // 行/列授权是独立保存面(按源整体替换),但同样是未保存的改动作 ——
+  // 关抽屉前一起问。
+  if (!dirty.value && !dataGrantsDirty.value) return true
   askDiscard('drawer')
   return false
 }
@@ -1357,6 +1457,7 @@ function discardDraft() {
   draft.password = ''
   draft.datasources = [...base.datasources]
   resetTopicDraft(originalTopic.value)
+  resetDataGrantsDraft()
 }
 
 async function saveDraft() {
@@ -1408,6 +1509,206 @@ async function saveDraft() {
     toastError(e)
   } finally {
     saving.value = false
+  }
+}
+
+/* ── row / column grants: third narrowing layer (own Save) ────────────────
+ *
+ * 语义与后端一一对应:未声明 = 不限制;声明后只会更窄。PUT 按数据源整体
+ * 替换,所以这一节有自己的保存按钮(与资料/主题域的合并保存分开),错误
+ * (谓词解析失败/未知列)就地展示。管理员角色豁免 —— 不渲染编辑器。
+ */
+
+interface RowFilterDraft { table: string; predicate: string }
+interface BlockedColumnsDraft { table: string; columns: string }
+interface DataGrantsEntry { rows: RowFilterDraft[]; blocked: BlockedColumnsDraft[] }
+
+const EMPTY_DATA_GRANTS: DataGrantsEntry = { rows: [], blocked: [] }
+
+const dataGrantsLoading = ref(false)
+const dataGrantsError = ref(false)
+const dataGrantsAdminExempt = ref(false)
+const dataGrantsSaving = ref(false)
+const dataGrantsSaveError = ref('')
+const dataDs = ref('')
+/** ds → 服务端读回值(保存时只整体替换被改动的源)。 */
+const dataOriginal = reactive<Record<string, DataGrantsEntry>>({})
+const dataDraft = reactive<Record<string, DataGrantsEntry>>({})
+
+const dataGrantDsOptions = computed(() => {
+  const set = new Set<string>([
+    ...draft.datasources,
+    ...Object.keys(dataOriginal),
+    ...Object.keys(dataDraft),
+  ])
+  if (dataDs.value) set.add(dataDs.value)
+  return Array.from(set).sort()
+})
+
+const currentDataDraft = computed<DataGrantsEntry>(
+  () => dataDraft[dataDs.value] ?? EMPTY_DATA_GRANTS,
+)
+
+function cloneEntry(entry: DataGrantsEntry): DataGrantsEntry {
+  return {
+    rows: entry.rows.map((r) => ({ ...r })),
+    blocked: entry.blocked.map((b) => ({ ...b })),
+  }
+}
+
+function ensuredDataDraft(ds: string): DataGrantsEntry {
+  let entry = dataDraft[ds]
+  if (!entry) {
+    entry = dataDraft[ds] = { rows: [], blocked: [] }
+  }
+  return entry
+}
+
+/** 归一化:裁剪空白、丢弃完全空白的行、稳定排序 —— dirty 判定与提交共用一份。 */
+function normRows(rows: RowFilterDraft[]): RowFilterDraft[] {
+  return rows
+    .map((r) => ({ table: r.table.trim(), predicate: r.predicate.trim() }))
+    .filter((r) => r.table || r.predicate)
+    .sort((a, b) => a.table.localeCompare(b.table) || a.predicate.localeCompare(b.predicate))
+}
+
+function normBlocked(list: BlockedColumnsDraft[]): BlockedColumnsDraft[] {
+  return list
+    .map((b) => ({
+      table: b.table.trim(),
+      columns: Array.from(
+        new Set(b.columns.split(',').map((c) => c.trim()).filter(Boolean)),
+      ).sort().join(', '),
+    }))
+    .filter((b) => b.table || b.columns)
+    .sort((a, b) => a.table.localeCompare(b.table))
+}
+
+function entryKey(entry: DataGrantsEntry | undefined): string {
+  if (!entry) return JSON.stringify({ rows: [], blocked: [] })
+  return JSON.stringify({ rows: normRows(entry.rows), blocked: normBlocked(entry.blocked) })
+}
+
+/** 本次要提交的数据源 = 草稿与服务端读回值不一致的那些。 */
+const dataGrantsDirtyDs = computed(() => {
+  const keys = new Set([...Object.keys(dataOriginal), ...Object.keys(dataDraft)])
+  return Array.from(keys)
+    .filter((ds) => entryKey(dataDraft[ds]) !== entryKey(dataOriginal[ds]))
+    .sort()
+})
+
+const dataGrantsDirty = computed(() => dataGrantsDirtyDs.value.length > 0)
+
+watch(dataDs, (ds) => {
+  if (ds) ensuredDataDraft(ds)
+})
+
+function addRowFilter() {
+  if (!dataDs.value) return
+  ensuredDataDraft(dataDs.value).rows.push({ table: '', predicate: '' })
+}
+
+function removeRowFilter(index: number) {
+  if (!dataDs.value) return
+  ensuredDataDraft(dataDs.value).rows.splice(index, 1)
+}
+
+function addBlockedColumns() {
+  if (!dataDs.value) return
+  ensuredDataDraft(dataDs.value).blocked.push({ table: '', columns: '' })
+}
+
+function removeBlockedColumns(index: number) {
+  if (!dataDs.value) return
+  ensuredDataDraft(dataDs.value).blocked.splice(index, 1)
+}
+
+function entryFromWire(
+  rows: Record<string, string> | undefined,
+  blocked: Record<string, string[]> | undefined,
+): DataGrantsEntry {
+  return {
+    rows: Object.entries(rows ?? {}).map(([table, predicate]) => ({ table, predicate })),
+    blocked: Object.entries(blocked ?? {}).map(([table, columns]) => ({
+      table,
+      columns: [...columns].join(', '),
+    })),
+  }
+}
+
+async function loadDataGrants(userId: number) {
+  dataGrantsLoading.value = true
+  dataGrantsError.value = false
+  dataGrantsSaveError.value = ''
+  dataGrantsAdminExempt.value = false
+  for (const key of Object.keys(dataOriginal)) delete dataOriginal[key]
+  for (const key of Object.keys(dataDraft)) delete dataDraft[key]
+  try {
+    const body = await apiGet(`/v1/admin/users/${userId}/data-grants`)
+    if (drawerUser.value?.id !== userId) return // 抽屉已切走
+    dataGrantsAdminExempt.value = Boolean(body.admin_exempt)
+    const rowsBy = (body.row_filters ?? {}) as Record<string, Record<string, string>>
+    const colsBy = (body.blocked_columns ?? {}) as Record<string, Record<string, string[]>>
+    const allDs = new Set([...Object.keys(rowsBy), ...Object.keys(colsBy)])
+    for (const ds of allDs) {
+      const entry = entryFromWire(rowsBy[ds], colsBy[ds])
+      dataOriginal[ds] = entry
+      dataDraft[ds] = cloneEntry(entry)
+    }
+    const offered = dataGrantDsOptions.value
+    if (!dataDs.value || !offered.includes(dataDs.value)) {
+      dataDs.value = offered[0] ?? ''
+    }
+    if (dataDs.value) ensuredDataDraft(dataDs.value)
+  } catch {
+    if (drawerUser.value?.id !== userId) return
+    // 读不到就锁住这一节:宁可不改,也不能把"读失败"当成"无授权"写回去
+    dataGrantsError.value = true
+  } finally {
+    if (drawerUser.value?.id === userId) dataGrantsLoading.value = false
+  }
+}
+
+function resetDataGrantsDraft() {
+  for (const key of Object.keys(dataDraft)) delete dataDraft[key]
+  for (const [ds, entry] of Object.entries(dataOriginal)) {
+    dataDraft[ds] = cloneEntry(entry)
+  }
+}
+
+async function saveDataGrants() {
+  const user = drawerUser.value
+  if (!user || !dataGrantsDirtyDs.value.length || dataGrantsSaving.value) return
+  dataGrantsSaving.value = true
+  dataGrantsSaveError.value = ''
+  try {
+    for (const ds of dataGrantsDirtyDs.value) {
+      const entry = dataDraft[ds] ?? EMPTY_DATA_GRANTS
+      const body = await apiPut(`/v1/admin/users/${user.id}/data-grants`, {
+        datasource: ds,
+        row_filters: normRows(entry.rows).map((r) => ({
+          table: r.table, predicate: r.predicate,
+        })),
+        blocked_columns: normBlocked(entry.blocked).map((b) => ({
+          table: b.table,
+          columns: b.columns.split(',').map((c) => c.trim()).filter(Boolean),
+        })),
+      })
+      // 用服务端读回值(排序/去重后的存储形态)重锚,而不是请求体
+      const saved = entryFromWire(
+        (body.row_filters ?? {}) as Record<string, string>,
+        (body.blocked_columns ?? {}) as Record<string, string[]>,
+      )
+      dataOriginal[ds] = saved
+      dataDraft[ds] = cloneEntry(saved)
+    }
+    notifySuccess(t('dataGrantsSavedOk', ui.lang))
+  } catch (e) {
+    // 400 的原因(谓词无法解析/未知列/管理员豁免)原样展示
+    dataGrantsSaveError.value = e instanceof ApiError ? e.message
+      : e instanceof Error ? e.message : String(e)
+  } finally {
+    dataGrantsSaving.value = false
   }
 }
 
@@ -1870,6 +2171,57 @@ async function loadActivity(userId: number) {
   font-family: var(--font-mono);
   color: var(--text-secondary);
   margin-bottom: var(--sp-2);
+}
+
+/* row / column grants: table + predicate rows. The PUT is per-datasource, so
+   the datasource picker sits above both groups and each group edits freely. */
+.dg-ds-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.dg-ds-label {
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.dg-ds-select {
+  flex: 1;
+  min-width: 0;
+}
+.dg-group {
+  margin-top: var(--sp-3);
+}
+.dg-group-head {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-1);
+}
+.dg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+}
+.dg-table {
+  flex: 0 0 116px;
+}
+.dg-value {
+  flex: 1;
+  min-width: 0;
+}
+.dg-save-error {
+  margin: var(--sp-2) 0;
+}
+.identity-item {
+  display: inline-block;
+  margin-right: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  word-break: break-all;
 }
 
 .token-reveal {

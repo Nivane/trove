@@ -809,6 +809,7 @@ async def check_result(
     allowed_tables: set[str] | None = None,
     datasource: str | None = None,
     object_ctx: Any | None = None,
+    exec_sql: str | None = None,
 ) -> tuple[str, list[dict]]:
     """确定性校验工具:执行草稿 SQL 后跑规则链,返回 (观测文本, hits)。
 
@@ -822,14 +823,20 @@ async def check_result(
     的意义:模型**定稿前**自己看到扇出违规,当场修正,省掉交付前拦截的
     一整轮重写预算。``None`` → 整段静默(未声明部署逐字节不变)。
 
+    ``exec_sql``(可选):实际执行的语句 —— 行/列 scope 改写后的版本。
+    **规则仍针对 ``sql``(模型写的那条)判**:规则问的是「草稿回没回答
+    问题」,scope 包出来的派生表会改变结构守卫看到的外形(扇出边在子查询
+    里),拿改写版去判会让受限用户莫名其妙地丢掉结构检查。没有 scope 时
+    两者逐字节相同(调用方传同一条)。
+
     返回 (text, hits):
       - 通过: ``"OK (N rows)"``,hits 为空
       - 违规: ``"VIOLATION [规则名] 原因"``,hits=[{"name", "reason"}]
       - 不可执行: ``"ERROR: ..."``,hits 为空
     """
     obs = await _probe_result(
-        connectors, sql, dialect, limit=CHECK_RESULT_LIMIT, timeout_s=timeout_s,
-        allowed_tables=allowed_tables, datasource=datasource,
+        connectors, exec_sql or sql, dialect, limit=CHECK_RESULT_LIMIT,
+        timeout_s=timeout_s, allowed_tables=allowed_tables, datasource=datasource,
     )
     if not obs["ok"]:
         return f"ERROR: {obs['error']}", []
@@ -868,6 +875,15 @@ def _like_pattern(keyword: str) -> str:
     return f"%{escaped}%"
 
 
+def _denied_column_error(table: str, column: str) -> str:
+    """列拒绝的统一文案 —— 复用 ``scope.ScopeError`` 的渲染(不另拼一份)。"""
+    from trove.services.authz.scope import ScopeError
+
+    return ScopeError(
+        "column", tables=(table,), columns=(f"{table}.{column}",),
+    ).render()
+
+
 async def search_values(
     connectors,
     table: str,
@@ -875,6 +891,8 @@ async def search_values(
     column: str | None = None,
     timeout_s: float = PROBE_TIMEOUT_S,
     datasource: str | None = None,
+    blocked_columns: frozenset[str] | None = None,
+    scope_sql: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """按关键词检索真实值:定位脏值/格式变体/拼写差异。
 
@@ -883,11 +901,19 @@ async def search_values(
       ``column → 匹配值`` 映射(帮模型定位"这个值藏在哪列")。
 
     标识符取自已校验的 schema(无注入面);LIKE 通配符按字面转义。
-    **永不抛异常**——失败折叠成 ``{"ok": false, "error": ...}``。
+    **永不抛异常**——失败折叠成 ``{"ok": false, "error": ...}``
+    (``scope_sql`` 的拒绝是唯一例外:它上抛 ``ScopeError`` 由调用方折叠,
+    因为拒绝文案必须原样带 ``[ERR:AUTHZ_*]`` 标签)。
 
-    返回对象而非 JSON 串:值与行的隔离收在回喂口(见 ``probe_query`` 的
-    说明),``values`` 里是**原样**检索值。
+    Args:
+        blocked_columns: 主体在该表上被禁的列(小写)。显式请求 → 拒绝;
+            全列扫描时**跳过**这些列,只把**名字**放进结果
+            ``blocked_columns``(决策 3:列名可见、值不出现)。
+        scope_sql: 行过滤注入口(``scope.apply_scope`` 的 currying)。对每条
+            生成的单表 SQL 施加 —— 值检索与执行面看到的是同一批行,否则
+            生成阶段能把用户看不到的值当成「真实数据」写进过滤条件。
     """
+    denied = blocked_columns or frozenset()
     if connectors is None:
         return {"ok": False, "error": "no datasource available"}
     table = (table or "").strip()
@@ -906,7 +932,13 @@ async def search_values(
         cols = [c.name for c in target.columns if c.name.lower() == column.lower()]
         if not cols:
             return {"ok": False, "error": f"column '{column}' not found in '{table}'"}
-        obs = await _search_one(connectors, table, cols[0], keyword, timeout_s, datasource)
+        # 显式请求被禁列 = 拒绝(不是「找不到」)。生成期模型可以换列重试。
+        if cols[0].lower() in denied:
+            return {"ok": False, "error": _denied_column_error(table, cols[0])}
+        obs = await _search_one(
+            connectors, table, cols[0], keyword, timeout_s, datasource,
+            scope_sql=scope_sql,
+        )
         if not obs["ok"]:
             return {"ok": False, "error": obs["error"]}
         return {
@@ -915,11 +947,19 @@ async def search_values(
 
     # 未指定列:扫描前 N 列,返回 column → 匹配值 映射。
     # 单列失败不能静默吞掉(否则方言/类型错误会被谎报成"无匹配"),
-    # 首错上抛;真无匹配才返回空映射。
+    # 首错上抛;真无匹配才返回空映射。被禁列**跳过**,但名字如实列出
+    # —— 「没扫这一列」与「扫了没匹配」对模型是两件事。
     hits: dict[str, list] = {}
     first_error: str | None = None
+    skipped: list[str] = []
     for c in target.columns[:SEARCH_VALUES_MAX_COLS]:
-        obs = await _search_one(connectors, table, c.name, keyword, timeout_s, datasource)
+        if c.name.lower() in denied:
+            skipped.append(c.name)
+            continue
+        obs = await _search_one(
+            connectors, table, c.name, keyword, timeout_s, datasource,
+            scope_sql=scope_sql,
+        )
         if obs.get("ok"):
             if obs.get("values"):
                 hits[c.name] = obs["values"]
@@ -927,25 +967,36 @@ async def search_values(
             first_error = obs.get("error")
     if first_error and not hits:
         return {"ok": False, "error": first_error}
+    extra = {"blocked_columns": sorted(skipped)} if skipped else {}
     if not hits:
-        return {
-            "ok": True, "table": table, "hits": {},
-            "note": f"no column contains a value matching '{keyword}'",
-        }
-    return {"ok": True, "table": table, "hits": hits}
+        note = f"no column contains a value matching '{keyword}'"
+        if skipped:
+            note = (
+                f"no permitted column contains a value matching '{keyword}' "
+                f"(blocked: {', '.join(sorted(skipped))})"
+            )
+        return {"ok": True, "table": table, "hits": {}, "note": note, **extra}
+    return {"ok": True, "table": table, "hits": hits, **extra}
 
 
 async def _search_one(
     connectors, table: str, column: str, keyword: str, timeout_s: float,
     datasource: str | None = None,
+    scope_sql: Callable[[str], str] | None = None,
 ) -> dict:
-    """单列 LIKE 检索:返回 {"ok", "values"} 或 {"ok": False, "error"}。"""
+    """单列 LIKE 检索:返回 {"ok", "values"} 或 {"ok": False, "error"}。
+
+    ``scope_sql`` 在**执行前**施加行过滤(表引用子查询重写);拒绝上抛
+    ``ScopeError``,不折叠成 "execution failed" —— 授权拒绝不是执行故障。
+    """
     pattern = _like_pattern(keyword)
     sql = (
         f"SELECT DISTINCT `{column}` FROM `{table}` "
         f"WHERE CAST(`{column}` AS CHAR) LIKE '{pattern}' ESCAPE '!' "
         f"LIMIT {SEARCH_VALUES_LIMIT}"
     )
+    if scope_sql is not None:
+        sql = scope_sql(sql)
     try:
         result = await asyncio.wait_for(
             connectors.execute(sql, datasource), timeout=timeout_s,
@@ -1067,6 +1118,10 @@ def build_sql_registry(
     budget: Any = None,
     profiles: Any = None,
     semantic_provider: Any = None,
+    egress: Any = None,
+    authorizer: Any = None,
+    principal: Any = None,
+    model: Any = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -1110,13 +1165,42 @@ def build_sql_registry(
             看到结构违规、当场修正。读不出 / 无声明 → None,check_result
             整段静默。注册表生命周期 = 一次生成轮,上下文在这里取一次
             快照(一轮内声明不会变;跨轮的现读由每轮重建注册表保证)。
+        egress: 可选的出境脱敏口(``services/authz/egress.EgressRedactor``)。
+            装配后工具观测在回喂模型前按 ``mask`` 声明脱敏,汇总记在
+            ``registry.egress_report``;None = 未接(测试直调逐字节不变)。
+        authorizer: 执行层强制点(``authz.enforcer.Authorizer``);None =
+            未装配鉴权面。**只有 authorizer 与 principal 都为 None 才整段
+            跳过** —— 主体带着 grant 就必须生效,不能因为少装组件而放宽。
+        principal: 提问者的 **wire 主体**(``state.principal``);形状异常按
+            ``None`` 处理(= 没有主体 → A1 拒绝),不「尽量解出一部分」。
+        model: 语义模型(声明 RLS 的来源);None 时从 ``semantic_provider``
+            取一次快照,读不出 → 只套主体 grant(绝不因此拦下问题)。
     """
     from trove.llm.agent_loop import ToolRegistry
 
     # 对象约束上下文:一次生成轮取一次快照(never-raise,见 object_check)。
     object_ctx = context_from_provider(semantic_provider)
 
-    registry = ToolRegistry(finish=finish, allowed_roles=roles)
+    # 主体只解析**一次**:A1–A3 判定与行/列 scope 必须是同一个输入(两次
+    # 解析可能在半坏的 wire 上给出不同结论)。形状异常 → None = 没有主体。
+    from trove.services.authz.policy import Principal, principal_from_wire
+
+    principal_obj = (
+        principal if isinstance(principal, Principal)
+        else principal_from_wire(principal)
+    )
+    # 语义模型快照:工具路径从未注入过声明 RLS(没有 contract / fast_path),
+    # 这里补上;读不出 → None,仍套主体 grant(grant 是物理表名,不需要模型)。
+    scope_model = model
+    if scope_model is None and semantic_provider is not None:
+        try:
+            scope_model = semantic_provider.model()
+        except Exception:  # noqa: BLE001 —— 读声明失败不拦问题(方向同 object_ctx)
+            scope_model = None
+
+    registry = ToolRegistry(
+        finish=finish, allowed_roles=roles, egress_redactor=egress,
+    )
     registry.check_hits = []
     # check_result **通过**的次数。今天通过时 hits 为空,配合 graphs 的
     # `if registry.check_hits:`,跑完整条规则链且全过这件事零痕迹 —— 而
@@ -1241,16 +1325,57 @@ def build_sql_registry(
             observation_text(result)[:200],
         )
 
+    def _scope_sql(sql_text: str) -> tuple[str, str | None]:
+        """执行前授权 + 行/列改写;返回 ``(可执行 SQL, 拒绝文案)``。
+
+        工具是**用户可见取数路径**的一部分:probe/check 会真实执行模型写的
+        SQL,`search_values` 会真实读值。不在这里过一次授权门,生成阶段就是
+        一条绕过 ``execute_sql`` 的旁路(设计 §2.3)。
+
+        拒绝不是终态 —— 生成期模型可以换列/换表重写(与 ``execute_sql`` 的
+        terminal 判定相反),所以这里返回错误观测而非抛出。
+
+        ``authorizer`` 与 ``principal`` 都缺席 = 嵌入部署没有鉴权面(与
+        ``execute_sql`` 的「未装配 = 不判」同一条);只要有一方在场就走
+        ``authorize_and_scope`` —— 主体带 grant 时必须生效。
+        """
+        if authorizer is None and principal_obj is None:
+            return sql_text, None
+        from trove.services.authz.scope import ScopeError, authorize_and_scope
+
+        try:
+            scoped = authorize_and_scope(
+                sql_text,
+                authorizer=authorizer,
+                principal=principal_obj,
+                model=scope_model,
+                datasource=datasource,
+                dialect=dialect,
+                default=getattr(connectors, "default_name", None),
+                # 工具 SQL 由模型/KB 模板给出,从未注入过声明 RLS → 这里补。
+                include_declared_rls=True,
+            )
+        except ScopeError as exc:
+            return sql_text, exc.render()
+        return scoped.sql, None
+
     async def probe_tool(arguments: dict) -> dict:
         # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
         sql_text = arguments.get("sql", "")
+        # 授权门在缓存**之前**:缓存的是观测,不是许可 —— 一次拒绝过的 SQL
+        # 不该因为同运行的缓存条目而看起来可执行。
+        exec_sql, denied = _scope_sql(sql_text)
+        if denied is not None:
+            result = {"ok": False, "error": denied}
+            await _audit("probe", sql_text, result)
+            return result
         key = _cache_key(datasource, sql_text, "probe", PROBE_LIMIT, run_id)
         cached = _cache_get(probe_cache, key)
         if cached is not None:
             await _audit("probe", sql_text, "(cache hit) " + observation_text(cached))
             return cached
         result = await probe_query(
-            connectors, sql_text, dialect,
+            connectors, exec_sql, dialect,
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
         )
@@ -1263,6 +1388,13 @@ def build_sql_registry(
     async def check_tool(arguments: dict) -> str:
         # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
         sql_text = arguments.get("sql", "")
+        exec_sql, denied = _scope_sql(sql_text)
+        if denied is not None:
+            # 与 probe 同一形状的 "ERROR:" 前缀:这是**不可执行**,不是违规
+            # (不给 check_passed 加分,也不产出 hits 归因)。
+            text = f"ERROR: {denied}"
+            await _audit("check", sql_text, text)
+            return text
         key = _cache_key(datasource, sql_text, "check", CHECK_RESULT_LIMIT, run_id)
         cached = _cache_get(probe_cache, key)
         if cached is not None:
@@ -1274,6 +1406,7 @@ def build_sql_registry(
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
             object_ctx=object_ctx,
+            exec_sql=exec_sql,
         )
         registry.check_hits.extend(hits)
         # 通过 = hits 为空且不是 ERROR。ERROR(不可执行)不算通过,也不算违规
@@ -1287,10 +1420,53 @@ def build_sql_registry(
     async def search_tool(arguments: dict) -> dict:
         # 值检索:定位脏值/格式变体/拼写差异,锚定过滤值到真实数据
         table = arguments.get("table", "")
-        result = await search_values(
-            connectors, table, arguments.get("keyword", ""),
-            arguments.get("column"), datasource=datasource or None,
+        keyword = arguments.get("keyword", "")
+        from trove.services.authz.scope import (
+            ScopeError,
+            apply_scope,
+            denied_columns,
         )
+
+        scope_ds = (datasource or "").strip() or (
+            getattr(connectors, "default_name", "") or "")
+        blocked: frozenset[str] = frozenset()
+        scope_sql: Callable[[str], str] | None = None
+        if authorizer is not None or principal_obj is not None:
+            if authorizer is not None:
+                # search_values 只碰一张表:表名直接给 A3,不必再解析 SQL。
+                decision = authorizer.check(
+                    principal_obj, datasource=datasource,
+                    tables=[table] if table else [],
+                    default=getattr(connectors, "default_name", None),
+                    dialect=dialect,
+                )
+                if not decision.allowed:
+                    result = {
+                        "ok": False,
+                        "error": ScopeError(
+                            decision.reason,
+                            tables=tuple(decision.narrowed_tables),
+                        ).render(),
+                    }
+                    await _audit("search", f"TABLE {table}", result)
+                    return result
+            # 到这里 principal 必不为 None(authorizer 的 A1 已挡掉 None)。
+            blocked = denied_columns(principal_obj, scope_ds, table)
+            # 行过滤注入每条单表 SQL:值检索与执行面必须看到同一批行,
+            # 否则生成阶段会把用户看不到的值当成「真实数据」写进过滤条件。
+            scope_sql = lambda s: apply_scope(  # noqa: E731
+                s, model=scope_model, principal=principal_obj,
+                datasource=scope_ds, dialect=dialect, include_declared_rls=True,
+            ).sql
+        try:
+            result = await search_values(
+                connectors, table, keyword, arguments.get("column"),
+                datasource=datasource or None,
+                blocked_columns=blocked, scope_sql=scope_sql,
+            )
+        except ScopeError as exc:
+            # 行过滤/列判定的拒绝上抛到这里折叠 —— 拒绝文案原样带标签。
+            result = {"ok": False, "error": exc.render()}
         await _audit("search", f"TABLE {table}", result)
         return result
 

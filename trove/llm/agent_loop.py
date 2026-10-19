@@ -96,6 +96,11 @@ def _model_observation(
     工具回喂的**唯一**收口点:新增工具自动继承,不需要各自接线。工具现取的
     外部内容(库里的行、检索值)是外部不可信内容,命中注入模式即作废。
 
+    同一收口点也承载**数据出境脱敏**:注册表装配了 ``egress_redactor`` 时,
+    先在隔离之前按语义模型的 ``mask`` 声明改写敏感单元格(见
+    ``services/authz/egress.py``);redactor 抛异常 → 整条观测替换为扣留
+    标记,绝不回落原文。
+
     **隔离按值的结构粒度生效**:handler 返回容器就逐叶隔离(一个坏单元格
     不吃掉整行),返回拼好的文本只能整块作废(精度降档,不是安全破口)。
 
@@ -106,6 +111,28 @@ def _model_observation(
     # 取 handler 的**原始**返回值(可能是容器);错误路径只给文本,退回到
     # ``observation``。两条路都必须是"未经隔离的系统侧原文"。
     raw = res.get("value", res["observation"])
+    # Egress 脱敏在隔离**之前**:按值的结构粒度改写敏感单元格,结构仍在,
+    # 隔离核照常逐叶工作。任何失败 → 整条扣留(绝不回落原文)。审计面
+    # (tool_history / observers / 日志)拿到的仍是脱敏前的原文。
+    redactor = getattr(registry, "egress_redactor", None)
+    if redactor is not None:
+        try:
+            raw, report = redactor.redact_tool_result(
+                str(res["tc"]["name"]), res.get("arguments") or {}, raw,
+            )
+        except Exception as e:  # noqa: BLE001 —— 失败方向是扣留,不是放行
+            logger.warning(
+                "egress redaction failed (tool=%s): %s",
+                res["tc"]["name"], e,
+            )
+            raw = "[ERR:EGRESS_REDACT] observation withheld"
+            report = {
+                "channel": "tool_result",
+                "tool": str(res["tc"]["name"]),
+                "withheld": True,
+            }
+        if report:
+            registry.record_egress(report)
     observation, hits = isolate_tree(raw)
     if hits:
         var = _tool_label(registry, str(res["tc"]["name"]))
@@ -280,7 +307,13 @@ class ToolRegistry:
         the payload only when 'answer' is a non-empty string, and terminates.
     """
 
-    def __init__(self, *, finish: bool = False, allowed_roles: list[str] | None = None):
+    def __init__(
+        self,
+        *,
+        finish: bool = False,
+        allowed_roles: list[str] | None = None,
+        egress_redactor: Any = None,
+    ):
         self._specs: dict[str, ToolSpec] = {}
         self._lazy_specs: dict[str, ToolSpec] = {}
         self._finish_spec: ToolSpec | None = None
@@ -288,8 +321,31 @@ class ToolRegistry:
         # (分类信息,见 ``_trace``);外部观察者拿到的仍是六元签名。
         self._observers: list[Observer] = [self._trace]
         self.allowed_roles = list(allowed_roles) if allowed_roles is not None else None
+        # Egress 脱敏口(鸭子类型:``redact_tool_result(name, args, value)``)。
+        # None = 未装配(测试直建注册表 / 非生成节点),工具回喂逐字节不变。
+        self.egress_redactor: Any = egress_redactor
+        #: 本注册表(= 一轮生成)的出境脱敏汇总:``{tool: {fields, rows, values, withheld?}}``。
+        self.egress_report: dict[str, dict[str, Any]] = {}
         if finish:
             self.add_finish_tool()
+
+    def record_egress(self, report: dict[str, Any]) -> None:
+        """累计一次出境脱敏(字段名与计数,绝不含值)。
+
+        汇总形态按工具聚合:同一轮里多次 probe 的字段并集 + 计数相加。
+        ``withheld`` 计数让「扣留过一次」在审计里留下痕迹(扣留不是脱敏,
+        但同样是这条观测没有原文出境)。
+        """
+        tool = str(report.get("tool") or "unknown")
+        entry = self.egress_report.setdefault(
+            tool, {"fields": {}, "rows": 0, "values": 0},
+        )
+        for name, mode in (report.get("fields") or {}).items():
+            entry["fields"][str(name)] = str(mode)
+        entry["rows"] += int(report.get("rows") or 0)
+        entry["values"] += int(report.get("values") or 0)
+        if report.get("withheld"):
+            entry["withheld"] = int(entry.get("withheld") or 0) + 1
 
     def register(
         self, name: str, func: ToolHandler, **kwargs: Any,

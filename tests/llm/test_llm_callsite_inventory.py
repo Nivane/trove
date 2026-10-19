@@ -62,7 +62,7 @@ _KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 #: ``embedding`` 后共 34 处;B6 假设层起草 +1 → 35 处;A4 历史蒸馏 CLI +1
 #: → 36 处,形状照 distill_lessons:render + build_distill_prompt;A5 该
 #: 提炼点从 CLI 迁入 ``history_distill.run_lesson_distill``(CLI 与蒸馏管理
-#: 端共用一处,总数仍 36)。
+#: 端共用一处,总数仍 36);覆盖率体检的计数代理 +1(纯转发,Ac)→ 37)。
 CALL_SITES: dict[str, str] = {
     # ── agent 会话层:提示词都来自 render ──
     "trove/agent/session.py::SessionManager.compact_session#1": "Av",
@@ -98,6 +98,10 @@ CALL_SITES: dict[str, str] = {
     #    随 messages 送出(messages 里的 system 是系统自带的固定句)──
     "trove/services/scan/hypotheses.py::propose#1": "Av",
     "trove/services/skills/service.py::SkillService.draft_with_llm#1": "Av",
+    # 覆盖率体检的计数代理:只转发调用方(query_sketch)给的 messages,
+    # 自己不拼内容、不建渲染 —— 文本来源仍是上面 query_sketch 的两个站点
+    # (Av);这里挂 key 只为「多一个调用点必须有人看一眼」。
+    "trove/services/question_coverage/engine.py::CountingLLM.chat#1": "Ac",
     # ── 工作流节点 ──
     "trove/workflow/graphs.py::make_route_intent._classify#1": "Av",
     "trove/workflow/graphs.py::make_route_intent._rewrite_followup#1": "Av",

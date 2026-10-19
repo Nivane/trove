@@ -157,8 +157,47 @@ async def create_app_components(
         os.environ.get("TROVE_ADMIN_PASSWORD")
     )
 
+    # ── OIDC SSO(可选;默认关闭)─────────────────────────
+    # 只有显式 enabled 且配置自洽时才装配客户端 —— 配置有问题的部署宁可
+    # 让 SSO 路由 404(与「从未支持」同一形状)并让启动日志说清楚原因,
+    # 也不挂一个每次登录都必然失败的路由。关闭 / 配置无效时为 None。
+    from trove.services.auth.oidc import OidcClient, validate_oidc_config
+
+    oidc = None
+    if config.oidc.enabled:
+        problems = validate_oidc_config(config.oidc)
+        if problems:
+            logger.warning(
+                "OIDC is enabled but unusable — SSO stays off: %s",
+                "; ".join(problems),
+            )
+        else:
+            oidc = OidcClient(config.oidc)
+
     # ── LLM Gateway ───────────────────────────────────────
-    llm_gateway = LLMGateway(providers=config.providers)
+    # egress_policy 是 lambda 而不是快照:管理端 PUT /admin/settings 就地改
+    # 活 config,下一次调用立刻生效。审计回调 best-effort(失败静默),
+    # 且只记 provider/model,不记 prompt。
+    def _audit_egress_denied(provider: str, model: str) -> None:
+        async def _write() -> None:
+            try:
+                await auth.record_audit(
+                    action="llm.egress_denied",
+                    details={"provider": provider, "model": model},
+                )
+            except Exception:
+                pass
+
+        try:
+            asyncio.get_running_loop().create_task(_write())
+        except RuntimeError:
+            pass
+
+    llm_gateway = LLMGateway(
+        providers=config.providers,
+        egress_policy=lambda: config.egress,
+        on_egress_denied=_audit_egress_denied,
+    )
 
     # ── Datasource ────────────────────────────────────────
     from trove.services.datasource.config_store import ConfigStore, boot_register
@@ -270,6 +309,25 @@ async def create_app_components(
         git_enabled=config.git_kb,
     )
 
+    # ── 覆盖率体检(逐题编译级回放)──
+    # 运行记录落 ``<root>/.trove/coverage/``(已 gitignore);项目根与漂移
+    # 巡检同一口径从 ``kb_dir`` 反推。启动时懒恢复崩溃留下的 running 行
+    # (→ interrupted + skipped),状态端点绝不把死进程报成 running。
+    from trove.services.question_coverage.service import QuestionCoverageService
+    from trove.services.question_coverage.store import CoverageStore
+
+    coverage_root = Path(kb.kb_dir).parent.parent
+    question_coverage = QuestionCoverageService(
+        CoverageStore(coverage_root),
+        kb=kb,
+        connectors=connector_registry,
+        llm=llm_gateway,
+        config=config,
+        skills=skills,
+        root=coverage_root,
+    )
+    await question_coverage.startup()
+
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
     # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
     # 隔离,注入 gen_sql 个性化上下文(多用户共用时每人有自己的口径)。
@@ -312,35 +370,14 @@ async def create_app_components(
     # 任何初始化失败都不阻断问题流程。
     semantic_layer = None
     try:
-        from trove.services.semantic_layer.provider import (
-            SemanticLayerProvider,
-        )
+        from trove.services.semantic_layer.factory import build_provider
         adapter = await connector_registry.get()
         ds_name = connector_registry.default_name or "default"
-        schema = await adapter.get_schema()
-        known_tables = {t.name.lower() for t in schema.tables}
-        catalog = {
-            t.name.lower(): {c.name.lower() for c in t.columns}
-            for t in schema.tables
-        }
-        semantic_dir = (
-            Path.cwd() / config.semantic_layer_path / ds_name
-            if config.semantic_layer_path else Path.cwd() / ".trove" / "semantic" / ds_name
-        )
-        semantic_layer = SemanticLayerProvider(
-            directory=semantic_dir,
-            datasource=ds_name,
-            dialect=adapter.dialect(),
-            table_exists=lambda t: t.lower() in known_tables,
-            kb_semantics_path=kb.semantics_path(ds_name),
-            catalog=catalog,
-        )
-        if semantic_layer.enabled:
+        semantic_layer = await build_provider(kb, config, ds_name, adapter)
+        if semantic_layer is not None:
             logger.info(
                 "Semantic layer enabled: %s (+KB semantics.yml)",
                 semantic_layer.directory)
-        else:
-            semantic_layer = None
     except Exception as e:
         logger.warning(
             "Semantic layer init failed (%s); continuing without it.", e)
@@ -517,6 +554,9 @@ async def create_app_components(
         "settings": settings_store,
         "auth": auth,
         "bootstrap_admin_password": bootstrap_password,
+        # OIDC 客户端(未启用 / 配置无效时 None):路由按 `app.state.oidc`
+        # 是否存在决定挂不挂,关闭部署没有新端点。
+        "oidc": oidc,
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
         "config_store": config_store,
@@ -530,6 +570,7 @@ async def create_app_components(
         "lineage": lineage,
         "skills": skills,
         "presets": presets,
+        "question_coverage": question_coverage,
         "graphs": graphs,
         "session_manager": session_manager,
         "checkpointer": checkpointer,
@@ -798,10 +839,24 @@ async def async_main_serve(argv: list[str]) -> None:
             await server.serve()
         finally:
             await components["connector_registry"].close_all()
+            oidc = components.get("oidc")
+            if oidc is not None:
+                try:
+                    await oidc.dispose()
+                except Exception:
+                    pass
             jobs = components.get("jobs")
             if jobs is not None:
                 try:
                     await jobs.store.dispose()
+                except Exception:
+                    pass
+            coverage = components.get("question_coverage")
+            if coverage is not None:
+                try:
+                    # 先收掉后台体检任务,再释放存储(aiosqlite 线程不关会
+                    # 挂住进程退出 —— 与 jobs.store 同款防线)。
+                    await coverage.dispose()
                 except Exception:
                     pass
 

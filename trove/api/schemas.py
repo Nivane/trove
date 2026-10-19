@@ -443,6 +443,36 @@ class TopicGrantsPut(BaseModel):
     topic_grants: dict[str, list[str]] | None = None
 
 
+class RowFilterSpec(BaseModel):
+    """一条行过滤:物理表 + 谓词(``district_id = 1``)。
+
+    表名/列名一律是**物理**名称(SQL 的引用面),不是语义层名 —— scope
+    引擎只做「SQL 表名 ↔ grant 表名」的直接比对。
+    """
+
+    table: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+
+
+class BlockedColumnsSpec(BaseModel):
+    """一组被禁列:列名仍可见(目录/提示词),引用即拒绝、值不返回。"""
+
+    table: str = Field(min_length=1)
+    columns: list[str] = Field(default_factory=list)
+
+
+class DataGrantsPut(BaseModel):
+    """PUT /v1/admin/users/{id}/data-grants body — **按数据源整体替换**。
+
+    未声明的表 = 不收窄;``row_filters`` 为空列表 = 该数据源不再有行过滤
+    (收窄语义下「未声明」与「空」等价)。
+    """
+
+    datasource: str = Field(min_length=1)
+    row_filters: list[RowFilterSpec] = Field(default_factory=list)
+    blocked_columns: list[BlockedColumnsSpec] = Field(default_factory=list)
+
+
 class JobCreate(BaseModel):
     """POST /v1/admin/jobs body — a scheduled question (cron/interval + alert)."""
 
@@ -780,3 +810,39 @@ class EvalsetRunRequest(BaseModel):
     sample: int = 0
     compile_only: bool = False
     confirm: bool = False
+
+
+# ── 问题覆盖体检(question coverage)管理面 ────────────────
+
+class CoveragePreflightRequest(BaseModel):
+    """POST /v1/admin/question-coverage/preflight body.
+
+    ``questions`` 刻意是裸列表而不是 ``list[str]``:归一化/去空/超长/上限的
+    判定全在 ``question_coverage`` 服务里(稳定错误码),pydantic 抢先抛 422
+    会让前端拿到一条没有 ``code`` 的通用校验错误。
+    """
+
+    datasource: str = Field(min_length=1)
+    questions: list[Any] = Field(default_factory=list)
+    source_label: str = ""
+
+
+class CoverageRunCreateRequest(CoveragePreflightRequest):
+    """POST /v1/admin/question-coverage/runs body.
+
+    ``confirm_cost`` 是成本确认的显式凭证:不传/传 false 一律 400
+    ``confirm_cost_required``,服务端从不把「没勾」当成默认同意。
+    """
+
+    confirm_cost: bool = False
+
+
+class CoverageDraftsRequest(BaseModel):
+    """POST /v1/admin/question-coverage/runs/{run_id}/drafts body.
+
+    只接受选择(**哪几题**),不接受任何草稿内容 —— 草稿规格由服务端用
+    **当前**语义模型重新计算,客户端传来的载荷没有入口。
+    """
+
+    seqs: list[int] = Field(default_factory=list)
+    all: bool = False

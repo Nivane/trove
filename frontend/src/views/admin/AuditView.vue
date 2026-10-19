@@ -120,7 +120,7 @@
         <div v-if="refusal.by_miss?.length" class="refusal-chips">
           <span class="refusal-chips-label">{{ t('refusalByMiss', ui.lang) }}</span>
           <span v-for="r in refusal.by_miss" :key="r.reason" class="pill pill-neutral">
-            {{ r.reason }} · {{ r.count }}
+            {{ r.label?.[ui.lang] || r.reason }} · {{ r.count }}
           </span>
         </div>
         <p v-if="refusal.capped" class="refusal-foot">{{ t('refusalCapped', ui.lang) }}</p>
@@ -274,7 +274,8 @@ interface RefusalReport {
   coverage_note: string
   coverage_note_en: string
   by_reason?: { reason: string; count: number }[]
-  by_miss?: { reason: string; count: number }[]
+  /** label 由后端给(miss_copy 双语文案),前端不再复制 slug 文案 */
+  by_miss?: { reason: string; count: number; label?: { zh: string; en: string } }[]
   top_questions?: RefusalQuestion[]
   relationship_missing?: {
     reasons?: string[]

@@ -14,12 +14,13 @@ from __future__ import annotations
 # 是已解码的 dict,CLI 自己 import json),目前仍无消费者 → F401 noqa 留着。
 import json  # noqa: F401
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
 
-from trove.eval.attribution import parse_path
+from trove.eval.attribution import FailureRow, parse_path
 from trove.eval.replay import JUDGED_VERDICTS
 from trove.services.semantic_layer.contract import Col, PlanSignature
 
@@ -513,8 +514,17 @@ _PLAN_TEXT_UNMAPPED_HEADERS: tuple[str, ...] = (
 )
 _JOIN_EDGE_RE = re.compile(
     r"^([a-z0-9_]+)\.([a-z0-9_]+)\s*=\s*([a-z0-9_]+)\.([a-z0-9_]+)$")
+#: 长算子放前面(`==` 先于 `=`),否则 `a == 1` 会被拆成 op `=`、值 `= 1`。
 _PLAN_COND_RE = re.compile(
-    r"^([A-Za-z0-9_.]+)\s*(=|!=|<=|>=|<|>)\s*(.+)$")  # 值不折大小写(见 _plan_value)
+    r"^([A-Za-z0-9_.]+)\s*(==|!=|<>|<=|>=|\blike\b|=|<|>)\s*(.+)$",
+    re.I)  # 值不折大小写(见 _plan_value)
+#: 计划侧**确定谓词**的算子闭集(与 SQL 侧 :func:`_predicates` 的词汇表对齐)。
+#: 其余算子(`is` / `not in` / `between` / `ilike` …)在 SQL 侧落 raw、在计划侧也没有
+#: 安全的归一 —— 一律记 unparsed 并让 filter_diff 整档退出可比集(R24:读不出 ≠
+#: 计划说「没有过滤」),绝不当确定分歧。
+_PLAN_CMP_OPS: frozenset[str] = frozenset({"=", "!=", ">", ">=", "<", "<=", "like"})
+#: SQL 拼写不同、语义相同:计划侧先归一再进闭集(`<>` 与 `!=` 是同一个 NEQ)。
+_PLAN_OP_ALIASES: dict[str, str] = {"<>": "!=", "==": "="}
 _PLAN_AGG_RE = re.compile(r"^([a-z_]+)(?:\s+distinct)?\s*[\s(]([a-z0-9_.]*)")
 #: 计划文本里的 `in` 条件(`in ('B','D')` / `in ['1996','1997']`,实测 3 种写法)。
 _PLAN_IN_RE = re.compile(r"^([A-Za-z0-9_.]+)\s+in\s*[\(\[](.*)[\)\]]$", re.I)
@@ -532,15 +542,28 @@ _PLAN_AGG_SHAPE_RE = re.compile(
 _PLAN_TRUNC_MARK_RE = re.compile(r"…\(\d+ chars\)$")
 
 
+def _unquote_literal(v: str) -> str:
+    """剥一层成对引号并还原 SQL 的引号转义(``''`` → ``'``),与 SQL 侧 ``_lit`` 同口径。
+
+    计划 prompt 的示例本身就把字符串写成 ``"value": "'2024-01-01'"``(引号在值里),
+    不剥就会把「计划其实与 gold 相同」读成假分歧(filter 档最承重的判定)。
+    """
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        q = v[0]
+        return v[1:-1].replace(q * 2, q)
+    return v
+
+
 def _plan_value(v: str) -> tuple[str, ...]:
     """计划侧字面量:子查询归一为 ``"(subquery)"``(与 SQL 侧同款);**大小写原样**。
 
     大小写差异是事实(设计 §2.3 对 filter 档的裁量),这里折了它就再也报不出来。
+    SQL 字面量的引号是**拼写**:两侧都按「去引号后的值」比(:func:`_unquote_literal`)。
     """
     v = v.strip()
     if v.lstrip("(").lower().startswith("select"):
         return ("(subquery)",)
-    return (v,)
+    return (_unquote_literal(v),)
 
 
 def _plan_col(name: str) -> Col:
@@ -620,6 +643,9 @@ def _plan_condition(body: str) -> Predicate | None:
         m = _PLAN_COND_RE.match(cand)  # 原样匹配:值的大小写是事实,不折
         if m:
             field, op, value = m.groups()
+            op = _PLAN_OP_ALIASES.get(op.lower(), op.lower())
+            if op not in _PLAN_CMP_OPS:
+                return None   # 算子超出可比闭集:调用方记 raw 并退出 filter 档(R24)
             return Predicate((_plan_col(field),), op, _plan_value(value))
         mi = _PLAN_IN_RE.match(cand)
         vals = _plan_in_values(mi.group(2)) if mi else None
@@ -634,10 +660,16 @@ def _plan_in_values(raw: str) -> tuple[str, ...] | None:
     与 SQL 侧 ``_predicates`` 的 ``tuple(sorted(v for x in e.expressions
     for v in _lit(x)))`` 同口径(设计 §2.3);子查询 / 读不出 → None(调用方记
     raw 并把该档退出可比集,R24)。
+
+    文本路径的 ``_PLAN_IN_RE`` 已吃掉括号;JSON 路径的 ``in`` 值可能是**带括号的
+    字符串**(``"('B','D')"``),外括号在这里统一切掉 —— 与列表形态同一条路。
     """
     if "select" in raw.lower():
         return None
-    vals = [v.strip().strip("'\"").strip() for v in raw.split(",")]
+    raw = raw.strip()
+    if len(raw) >= 2 and (raw[0], raw[-1]) in (("(", ")"), ("[", "]")):
+        raw = raw[1:-1]
+    vals = [_unquote_literal(v.strip()) for v in raw.split(",")]
     vals = [v for v in vals if v]
     return tuple(sorted(vals)) or None
 
@@ -819,7 +851,8 @@ def plan_facts_from_json(d: dict) -> PlanFacts:
         if not field:
             unparsed += 1
             continue
-        op = str(c.get("op") or "=").strip().lower()
+        op_raw = str(c.get("op") or "=").strip().lower()
+        op = _PLAN_OP_ALIASES.get(op_raw, op_raw)
         raw_val = c.get("value")
         if op == "in":
             # 与文本路径同一个 `in` 词汇表(排序去引号);list 形态先摊成同一路
@@ -832,6 +865,14 @@ def plan_facts_from_json(d: dict) -> PlanFacts:
             else:
                 conds.append(Predicate((_plan_col(field),), "raw", (text[:60],)))
                 unparsed += 1
+            continue
+        if op not in _PLAN_CMP_OPS:
+            # `is` / `not in` / `between` / `ilike` …:SQL 侧是 raw,计划侧也绝不
+            # 当确定谓词(读不出 ≠ 计划说「没有」;见 _PLAN_CMP_OPS)。
+            conds.append(Predicate(
+                (_plan_col(field),), "raw",
+                (f"{field} {op_raw} {raw_val}"[:60],)))
+            unparsed += 1
             continue
         conds.append(Predicate((_plan_col(field),), op,
                                _plan_value(str(raw_val or ""))))
@@ -951,3 +992,209 @@ def loop_state(traj: Trajectory | None) -> str:
         or (traj.retry_count or 0) > 0
     )
     return "detected_but_unfixed" if detected else "never_detected"
+
+
+# ══ 逐行归因 + 报告(设计 §4 报告键 / §5 文本分节)═════════════
+#
+# 报告为「改进决策」而写:同一份语料要能回答两件事 —— (a) 失败集中在链路的哪一
+# 跳,(b) 这个数字有多少折扣。故计数成对出现(**行 / 题**)、保真度与观察码并列
+# 在覆盖节、样本让读者能回到具体题目。
+#
+# **行与题双计数是承重的**:97 行只对应 24 题,行数偏袒被反复重试的题 —— 只看行
+# 计数会把「一题重试四次」读成「四题都错在这里」。两个数都报,读的人自己选口径。
+
+
+@dataclass(frozen=True)
+class ChainFinding:
+    """一题一行(一个 failure 行)的归因结论:L1 档位 + L2 责任跳 + loop 三态。"""
+
+    question: str
+    l1: LadderVerdict
+    l2: str = "undecidable"
+    l2_reason: str = ""
+    loop: str = "undecidable"
+    source: str = ""
+    flags: tuple[str, ...] = ()
+    pred_sql: str = ""
+
+
+def attribute_row(row: FailureRow, traj: Trajectory | None, *,
+                  dialect: str = "mysql") -> ChainFinding:
+    """一题一行 → L1 档位 + L2 责任跳 + loop 三态(设计 §2/§3)。
+
+    L2 只在 **gold 可判** 时才谈得上:gold 解析不了就无从说「计划本该做什么」,
+    故先答「gold 不可判」,再谈有无轨迹 —— 两种判不了的原因不同,不能混成一句。
+    ``flags`` 原样承接 ``l1.observations``(跨档观察码,不换桶)。今天它只产出四个
+    码(``needed_table_never_read`` / ``extra_table_read`` / ``extreme_style_mismatch``
+    / ``case_only_value_diff``);设计 §5 观察块另列的两项**不铺**(R33):``paths``
+    是未来 records 的字段(今天没有生产者,铺上去只能是空字典),``compile_miss``
+    今天在 failures 语料里没有生产者(编译期被拒的题走 ``query.refused`` 审计与
+    results.jsonl)—— 硬写只能从错误文本正则猜,那是把「读到 0」洗成「没有编译期
+    失败」。判据与 R20 同源:**没有生产者的字段不许铺**。
+    """
+    gold = sql_facts(row.gold_sql, dialect)
+    pred_sql = row.pred_sql or ""   # 直接构造的行可以是 None(不经 load_rows 字符串化)
+    pred = sql_facts(pred_sql, dialect)
+    l1 = ladder(gold, pred, verdict=row.verdict,
+                had_sql=bool(pred_sql.strip()))
+    l2, reason = "undecidable", "gold 不可判" if (gold is None or not gold.ok) else "无轨迹"
+    if gold is not None and gold.ok:
+        # no_sql 行的 pred_sql 是上一轮残留(failures.jsonl 原样留档的口径):
+        # 拿它当「已读表」会把 linking_missed_table 压成 gen_ignored_plan。
+        l2, reason = responsibility(
+            gold=gold, pred=None if l1.bucket == "no_sql" else pred,
+            l1=l1, traj=traj)
+    return ChainFinding(
+        # 题数/按题聚合/样本/轨迹对齐全部用 strip 后的问句(M-2):同题带不同
+        # 首尾空白会被算成两题,与轨迹查找使用的口径自相矛盾。
+        question=(row.question or "").strip(), l1=l1, l2=l2, l2_reason=reason,
+        loop=loop_state(traj), source=(traj.source if traj else ""),
+        flags=l1.observations, pred_sql=pred_sql,
+    )
+
+
+def _bucket_counts(
+        findings: list[ChainFinding], buckets: tuple[str, ...],
+        key: Callable[[ChainFinding], str]) -> tuple[dict[str, int], dict[str, int]]:
+    """按桶聚合(行数 / 题数)。空桶不发键 —— 报告里「没有」就是键不在。"""
+    rows = {b: 0 for b in buckets}
+    qs = {b: set() for b in buckets}
+    for f in findings:
+        b = key(f)
+        if b in rows:
+            rows[b] += 1
+            qs[b].add(f.question)
+    return ({b: n for b, n in rows.items() if n},
+            {b: len(v) for b, v in qs.items() if v})
+
+
+def build_report(rows: list[FailureRow], trajs: dict[str, Trajectory], *,
+                 dialect: str = "mysql", meta: dict | None = None,
+                 samples: int = 3) -> dict:
+    """组装报告(纯函数:同输入 → 同输出,零 IO 零 LLM)。
+
+    逐键确定性:桶按常量表序(空桶不发键)、观察块与样本渲染按名字排序、样本按
+    **输入序**取每桶前 ``samples`` 条(输入序是语料自己的序,不是集合迭代序)。
+    轨迹按 ``row.question.strip()`` 对齐(失败行的问句带空白是常态;对不上就是没
+    轨迹,不是"没有 plan")。
+    """
+    findings: list[ChainFinding] = []
+    for r in rows:
+        traj = trajs.get(r.question.strip())
+        findings.append(attribute_row(r, traj, dialect=dialect))
+    l1_rows, l1_q = _bucket_counts(findings, L1_BUCKETS, lambda f: f.l1.bucket)
+    l2_rows, l2_q = _bucket_counts(findings, L2_BUCKETS, lambda f: f.l2)
+    loop_rows, _ = _bucket_counts(findings, LOOP_STATES, lambda f: f.loop)
+    obs: dict[str, int] = {}
+    for f in findings:
+        for code in f.flags:
+            obs[code] = obs.get(code, 0) + 1
+    fidelity = {
+        "matched_tables": {"present": 0, "empty": 0, "absent": 0},
+        "plan": {"present": 0, "empty": 0, "absent": 0},
+    }
+    for f in findings:
+        t = trajs.get(f.question.strip())
+        if t is None:
+            fidelity["matched_tables"]["absent"] += 1
+            fidelity["plan"]["absent"] += 1
+            continue
+        fidelity["matched_tables"][t.matched_tables_state] = (
+            fidelity["matched_tables"].get(t.matched_tables_state, 0) + 1)
+        fidelity["plan"][t.plan_text_state] = (
+            fidelity["plan"].get(t.plan_text_state, 0) + 1)
+    loop_by_l2: dict[str, dict[str, int]] = {}
+    for f in findings:
+        loop_by_l2.setdefault(f.l2, {})
+        loop_by_l2[f.l2][f.loop] = loop_by_l2[f.l2].get(f.loop, 0) + 1
+    sample_bag: dict[str, dict[str, list]] = {"l1": {}, "l2": {}}
+    sample_seen: dict[str, dict[str, set[str]]] = {"l1": {}, "l2": {}}
+    if samples:
+        for f in findings:
+            for bucket_key, bucket in (("l1", f.l1.bucket), ("l2", f.l2)):
+                bag = sample_bag[bucket_key].setdefault(bucket, [])
+                seen = sample_seen[bucket_key].setdefault(bucket, set())
+                # 同题多行只占一个样本位:样本要能覆盖不同题(重试行不是新证据)
+                if len(bag) >= samples or f.question in seen:
+                    continue
+                seen.add(f.question)
+                bag.append({"question": f.question, "pred_sql": f.pred_sql,
+                            "reason": f.l1.reason, "l2_reason": f.l2_reason})
+    return {
+        "meta": dict(meta or {}),
+        "counts": {
+            "rows": len(findings),
+            "questions": len({f.question for f in findings}),
+            "l1": l1_rows, "l1_by_question": l1_q,
+            "l2": l2_rows, "l2_by_question": l2_q,
+            "loop": loop_rows, "loop_by_l2": loop_by_l2,
+        },
+        "coverage": {
+            "l1_judged_rows": sum(
+                n for b, n in l1_rows.items() if b != "undecidable"),
+            "l2_judged_rows": sum(
+                n for b, n in l2_rows.items() if b != "undecidable"),
+            # R20:plan 被静默/带标记截断的行数——保真度的一部分,
+            # 不报出来 plan 深度就有一个看不见的天花板
+            "plan_truncated_rows": sum(
+                1 for f in findings
+                if (trajs.get(f.question.strip()) is not None
+                    and trajs[f.question.strip()].plan_truncated)),
+            "fidelity": fidelity,
+        },
+        "observations": dict(sorted(obs.items())),
+        "samples": sample_bag,
+    }
+
+
+def render_report(report: dict) -> str:
+    """确定性的文本渲染(同输入 → 同输出;无时间戳)。
+
+    分节:语料 → L1 表 → L2 表 → loop 交叉 → 覆盖 → 观察 → 样本。每个集合都显式
+    排序(或按常量表序);空桶不出行。行计数与题计数同行给出(``行 / 题``)。
+    """
+    counts = report["counts"]
+    lines: list[str] = []
+    meta = report.get("meta") or {}
+    if meta:
+        lines.append("== 语料 ==")
+        for k in sorted(meta):
+            lines.append(f"  {k}: {meta[k]}")
+    lines.append("== L1 结构档位(行数 / 题数)==")
+    for b in L1_BUCKETS:
+        n = counts["l1"].get(b, 0)
+        if n:
+            lines.append(f"  {b:20s} {n:4d} / {counts['l1_by_question'].get(b, 0)}")
+    lines.append("== L2 责任跳(行数 / 题数)==")
+    for b in L2_BUCKETS:
+        n = counts["l2"].get(b, 0)
+        if n:
+            lines.append(f"  {b:28s} {n:4d} / {counts['l2_by_question'].get(b, 0)}")
+    lines.append("== loop 三态 × L2 ==")
+    for b, m in sorted(counts.get("loop_by_l2", {}).items()):
+        detail = " ".join(f"{k}={v}" for k, v in sorted(m.items()))
+        lines.append(f"  {b:28s} {detail}")
+    lines.append("== 覆盖 ==")
+    cov = report["coverage"]
+    lines.append(f"  L1 可判行={cov['l1_judged_rows']} · L2 可判行={cov['l2_judged_rows']}"
+                 f" · plan 被截断行={cov['plan_truncated_rows']}")
+    for field, m in cov["fidelity"].items():
+        lines.append(f"  fidelity[{field}] " +
+                     " ".join(f"{k}={v}" for k, v in sorted(m.items())))
+    lines.append("== 观察(跨档,给读者的折扣尺)==")
+    for code, n in sorted((report.get("observations") or {}).items()):
+        lines.append(f"  {code}: {n}")
+    lines.append("== 样本 ==")
+    for kind in ("l1", "l2"):
+        for bucket, bag in sorted((report.get("samples") or {}).get(kind, {}).items()):
+            if bag:
+                lines.append(f"  [{kind}:{bucket}]")
+                for s in bag:
+                    # L2 样本给责任跳的理由(此前两处都打印 L1 原因,M-1)
+                    reason = (s.get("l2_reason") if kind == "l2"
+                              else s.get("reason")) or ""
+                    lines.append(f"    - {s['question'][:80]} · {reason}")
+                    pred = " ".join((s.get("pred_sql") or "").split())
+                    if pred:
+                        lines.append(f"      pred: {pred[:120]}")
+    return "\n".join(lines) + "\n"
