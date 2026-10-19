@@ -1005,6 +1005,13 @@ def main_repl():
         from trove.cli.commands.preset_cmds import main_preset
 
         sys.exit(main_preset(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "evalset":
+        # 验收集:generate / list / create / confirm / reject / vouch /
+        # retire / run / readiness —— 生成与手工新建一律落 pending,
+        # 确认门在 EvalsetService,这里不另开一条写路径。
+        from trove.cli.commands.evalset_cmds import main_evalset
+
+        sys.exit(main_evalset(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "extensions":
         # 扩展资产:信封 list / show(只读,零 LLM / 零网络)+ 资产包
         # export / import(导入一律落 pending,确认门在 PresetService,
