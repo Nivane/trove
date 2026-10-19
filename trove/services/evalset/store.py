@@ -68,15 +68,27 @@ def load_evalset(
     path = evalset_path(root, datasource)
     if not path.is_file():
         return EvalsetDoc(datasource=datasource), [], False
+    # 只把**数据错误**降级成 unreadable;程序错误照常上抛,不许被洗成资产问题。
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         doc, issues = parse_evalset(data, datasource=datasource)
-    except Exception as exc:  # noqa: BLE001 — 坏文件任何一种失败都是 unreadable
+    except (yaml.YAMLError, OSError, UnicodeDecodeError, EvalsetError,
+            TypeError) as exc:
         return (
             EvalsetDoc(datasource=datasource),
             [EvalsetIssue(str(path), "evalset.unreadable", str(exc))],
             True,
         )
+    # 目录名才是数据源身份:文件自称别的数据源时,持 A 的锁的调用方可能把
+    # 同一条目写进 B。文档按解析结果原样返回(不静默改写),issue 让下游的
+    # 「有 issue 即拒写」闸把这次操作挡在写盘之前。
+    if doc.datasource != datasource:
+        issues.append(EvalsetIssue(
+            str(path),
+            "evalset.datasource_mismatch",
+            f"file declares datasource {doc.datasource!r} but the asset "
+            f"directory belongs to {datasource!r}",
+        ))
     return doc, issues, True
 
 

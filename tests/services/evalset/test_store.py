@@ -215,6 +215,15 @@ def test_evalset_rev_only_tracks_confirmed(tmp_path):
     for changed in ("pending", "rejected", "retired"):
         assert evalset_rev(_doc([item(qid="e-a", status=changed)])) == evalset_rev(_doc([]))
 
+    # 规范 JSON:按 qid 排序(输入顺序不参与),且 projection 只有四个评分字段
+    # —— 改 note/tags/extra 不移动 rev。
+    a = item(qid="e-a", status="confirmed", note="first")
+    b = item(qid="e-b", status="confirmed", reference_sql="SELECT 3")
+    assert evalset_rev(_doc([a, b])) == evalset_rev(_doc([b, a]))
+    annotated = item(qid="e-a", status="confirmed", note="second",
+                     tags={"metric": ["loan_amount"]}, extra={"custom": 1})
+    assert evalset_rev(_doc([annotated, b])) == evalset_rev(_doc([a, b]))
+
 
 def test_lock_is_exclusive_and_non_blocking(tmp_path):
     lock = EvalsetLock(tmp_path / ".trove" / "evalsets")
@@ -236,6 +245,23 @@ def test_invalid_datasource_is_rejected_on_every_path(tmp_path):
     with pytest.raises(EvalsetError):
         with EvalsetLock(tmp_path / ".trove" / "evalsets").acquire("a/b"):
             pass
+
+
+def test_datasource_mismatch_is_an_issue(tmp_path):
+    # 目录名是数据源身份:文件自称别的数据源 → issue(文档按解析结果原样返回,
+    # 不静默改写)。下游「有 issue 拒写」闸因此能挡住写进别的数据源目录。
+    path = evalset_path(tmp_path, "demo")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "version: 1\ndatasource: other\nitems:\n"
+        "  - qid: e-a\n    question: q\n",
+        encoding="utf-8",
+    )
+    doc, issues, exists = load_evalset(tmp_path, "demo")
+    assert exists is True
+    assert [i.code for i in issues] == ["evalset.datasource_mismatch"]
+    assert doc.datasource == "other"
+    assert [it.qid for it in doc.items] == ["e-a"]
 
 
 def test_unreadable_asset_is_an_issue_not_an_empty_document(tmp_path):
