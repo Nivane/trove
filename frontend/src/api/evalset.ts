@@ -50,7 +50,11 @@ export interface EvalsetItem {
   vouched_by?: string
   rejection_reason?: string
   retired_at?: string
-  latest_verdict: EvalsetVerdict | null
+  /**
+   * 列表端点注入的最近判定;`GET /{qid}`(单条详情)不注入 → 可能缺席。
+   * 缺席与 `null` 都表示「这里没有判定」,读端按未测处理。
+   */
+  latest_verdict?: EvalsetVerdict | null
 }
 
 export interface EvalsetIssue {
@@ -245,7 +249,8 @@ export interface EvalsetGenerateBody {
 export interface EvalsetRunConfirmation {
   code: string
   message: string
-  n_items: number
+  /** detail 缺这个字段就是**未知**,不是「0 道题」—— 读端渲染 '—'。 */
+  n_items: number | null
   tier: string
   model: string
 }
@@ -279,7 +284,11 @@ export function runConfirmation(err: unknown): EvalsetRunConfirmation | null {
   return {
     code: 'confirmation_required',
     message: typeof detail.message === 'string' ? detail.message : '',
-    n_items: Number(detail.n_items ?? 0),
+    // 缺失/非数字 → null(未知),绝不折成 0:那会被读成「没有题可跑」。
+    n_items:
+      typeof detail.n_items === 'number' && Number.isFinite(detail.n_items)
+        ? detail.n_items
+        : null,
     tier: typeof detail.tier === 'string' ? detail.tier : '',
     model: typeof detail.model === 'string' ? detail.model : '',
   }

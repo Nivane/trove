@@ -119,10 +119,21 @@ const duplicateQuestions = ref<Record<string, string>>({})
 const pendingItems = computed(() => items.value.filter((item) => item.status === 'pending'))
 const confirmedItems = computed(() => items.value.filter((item) => item.status === 'confirmed'))
 
+/**
+ * 可批量确认的行 = 单条确认也走得通的行。`needs_reference` 单条禁用确认、
+ * `duplicate_of` 单条要求 force —— 批量既不带 force 也不该绕过这两道闸,
+ * 否则选中即注定逐条失败(批量是「少点几次鼠标」,不是放宽判定)。
+ */
+function batchSelectable(item: EvalsetItem): boolean {
+  return item.status === 'pending' && !item.needs_reference && !item.duplicate_of
+}
+
+const selectableItems = computed(() => pendingItems.value.filter(batchSelectable))
+
 const allPendingSelected = computed(
   () =>
-    pendingItems.value.length > 0 &&
-    pendingItems.value.every((item) => selectedQids.value.includes(item.qid)),
+    selectableItems.value.length > 0 &&
+    selectableItems.value.every((item) => selectedQids.value.includes(item.qid)),
 )
 
 /** 已确认按 tier 分组;未知 tier 排在已知之后(以实际 tier 为准,不丢行)。 */
@@ -175,8 +186,19 @@ function errorText(err: unknown): string {
   return message || code
 }
 
+/** 在途 load 的序号:同 ds/tier 的并发刷新也按「后发起者赢」排序。 */
+let loadSeq = 0
+
 async function load(): Promise<void> {
-  if (!props.datasource) {
+  // 捕获 load 起点的身份:await 之后 props 可能已经指向另一个源/层,
+  // 旧响应绝不能渲染到新名字下(也不能把旧 qid 的计数发出去)。
+  const ds = props.datasource
+  const tier = props.tier ?? ''
+  const seq = ++loadSeq
+  const stale = () =>
+    seq !== loadSeq || props.datasource !== ds || (props.tier ?? '') !== tier
+
+  if (!ds) {
     items.value = []
     counts.value = null
     byTier.value = {}
@@ -187,18 +209,21 @@ async function load(): Promise<void> {
     loadError.value = ''
     selectedQids.value = []
     duplicateQuestions.value = {}
+    // 空源是同步收尾:在途的旧 load 会因 seq 失配跳过 finally,这里必须自己落旗。
+    loading.value = false
     emit('countChange', 0)
     return
   }
   loading.value = true
   loadError.value = ''
   try {
-    const filters = props.tier ? { tier: props.tier } : {}
+    const filters = tier ? { tier } : {}
     const [list, ready, history] = await Promise.all([
-      fetchEvalsetItems(props.datasource, filters),
-      fetchEvalsetReadiness(props.datasource),
-      fetchEvalsetRuns(props.datasource),
+      fetchEvalsetItems(ds, filters),
+      fetchEvalsetReadiness(ds),
+      fetchEvalsetRuns(ds),
     ])
+    if (stale()) return
     items.value = list.items ?? []
     counts.value = list.counts ?? null
     byTier.value = list.by_tier ?? {}
@@ -206,18 +231,20 @@ async function load(): Promise<void> {
     readiness.value = ready
     runs.value = history.runs ?? []
     duplicateQuestions.value = {}
-    await resolveDuplicateQuestions()
+    await resolveDuplicateQuestions(ds, list.items ?? [], stale)
+    if (stale()) return
     degraded.value = dedupeDegraded([
       ...(list.degraded ?? []),
       ...(ready.degraded ?? []),
       ...(history.degraded ?? []),
     ])
-    // 选择只保留仍在待审队列里的 id(刷新后行的身份不变,但状态可能已变)
-    const pending = new Set(
-      items.value.filter((item) => item.status === 'pending').map((item) => item.qid),
+    // 选择只保留仍在可批量确认队列里的 id(刷新后行的身份不变,但状态可能已变)
+    const selectable = new Set(
+      items.value.filter((item) => batchSelectable(item)).map((item) => item.qid),
     )
-    selectedQids.value = selectedQids.value.filter((qid) => pending.has(qid))
+    selectedQids.value = selectedQids.value.filter((qid) => selectable.has(qid))
   } catch (err) {
+    if (stale()) return
     items.value = []
     counts.value = null
     byTier.value = {}
@@ -228,8 +255,11 @@ async function load(): Promise<void> {
     loadError.value = errorText(err)
     duplicateQuestions.value = {}
   } finally {
-    loading.value = false
-    emit('countChange', items.value.length)
+    // 过期响应不碰 loading / 计数;接管这次切换的那次 load 会收尾。
+    if (!stale()) {
+      loading.value = false
+      emit('countChange', items.value.length)
+    }
   }
 }
 
@@ -283,11 +313,15 @@ function questionOf(qid: string): string {
 }
 
 /** 补取「重复对象」的问题文案;读不到就退回 qid(不伪装成完整)。 */
-async function resolveDuplicateQuestions(): Promise<void> {
-  const known = new Set(items.value.map((item) => item.qid))
+async function resolveDuplicateQuestions(
+  ds: string,
+  rows: EvalsetItem[],
+  stale: () => boolean,
+): Promise<void> {
+  const known = new Set(rows.map((item) => item.qid))
   const missing = [
     ...new Set(
-      items.value
+      rows
         .map((item) => item.duplicate_of)
         .filter(
           (qid): qid is string =>
@@ -298,7 +332,9 @@ async function resolveDuplicateQuestions(): Promise<void> {
   await Promise.all(
     missing.map(async (qid) => {
       try {
-        const other = await fetchEvalsetItem(props.datasource, qid)
+        // 用捕获的 ds,不读 live props —— 请求发出后源可能已经切走。
+        const other = await fetchEvalsetItem(ds, qid)
+        if (stale()) return
         duplicateQuestions.value[qid] = other.question
       } catch {
         /* 读不到就保留 qid —— 但绝不编一句话 */
@@ -321,6 +357,8 @@ function pct(value: number | null | undefined): string {
 }
 
 function toggleSelect(qid: string) {
+  const item = items.value.find((row) => row.qid === qid)
+  if (!item || !batchSelectable(item)) return
   selectedQids.value = selectedQids.value.includes(qid)
     ? selectedQids.value.filter((value) => value !== qid)
     : [...selectedQids.value, qid]
@@ -328,7 +366,7 @@ function toggleSelect(qid: string) {
 function toggleSelectAll() {
   selectedQids.value = allPendingSelected.value
     ? []
-    : pendingItems.value.map((item) => item.qid)
+    : selectableItems.value.map((item) => item.qid)
 }
 
 async function doConfirm(item: EvalsetItem, force: boolean) {
@@ -598,6 +636,8 @@ async function doGenerate() {
     return
   }
   generateBusy.value = true
+  // 新一次收割开始 → 旧报告不再代表「当前」;轮询完成前不显示任何旧结论。
+  generateReport.value = null
   const datasource = props.datasource
   try {
     await generateEvalset(datasource, {
@@ -882,6 +922,7 @@ async function pollRun(datasource: string) {
                     type="checkbox"
                     :checked="allPendingSelected"
                     :aria-label="tr('kbEvalsetSelectAll')"
+                    :disabled="!selectableItems.length"
                     @change="toggleSelectAll"
                   >
                 </th>
@@ -904,6 +945,7 @@ async function pollRun(datasource: string) {
                     type="checkbox"
                     :checked="selectedQids.includes(item.qid)"
                     :aria-label="item.question"
+                    :disabled="!batchSelectable(item)"
                     @change="toggleSelect(item.qid)"
                   >
                 </td>
@@ -1229,7 +1271,7 @@ async function pollRun(datasource: string) {
 
     <!-- ── 最近的生成报告(busy 与 empty 分开) ─────────────────── -->
     <div
-      v-if="generateReport"
+      v-if="generateReport && !generateRunning"
       class="ev-report"
       :class="{ 'is-warn': generateReportBusy }"
       role="status"
