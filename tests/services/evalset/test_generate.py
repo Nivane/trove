@@ -317,16 +317,46 @@ def test_verdict_head_matches_distill():
 
 
 async def test_episode_wins_over_audit_for_same_question(episode_db, tmp_path):
+    """精确 (question.lower, sql) 相同 → 只留 episode 版本(不重复收录)。"""
     from tests.services.evalset.fakes import seed_episodes
     await seed_episodes(episode_db, [
         {"question": "Same question", "sql": "SELECT 1", "verdict": "OK"},
     ])
-    audit = FakeAudit(rows=[{"question": "same question", "sql": "SELECT 2",
+    audit = FakeAudit(rows=[{"question": "same question", "sql": "SELECT 1",
                              "verdict": "RETRY: x", "error": "",
                              "last_seen": "x", "seen": 1}])
     result = await collect_production(ctx(home_dir=tmp_path, auth_store=audit), limit=10)
     assert [(it.question, it.reference_sql) for it in result.items] == \
         [("Same question", "SELECT 1")]
+
+
+async def test_audit_different_sql_survives_episode_failure(episode_db, tmp_path):
+    """episode 失败 + 同题不同 SQL 的审计 OK → 可答版本必须保留(R10)。"""
+    from tests.services.evalset.fakes import seed_episodes
+    await seed_episodes(episode_db, [
+        {"question": "Q", "sql": "SELECT 1", "verdict": "RETRY: x"},
+    ])
+    audit = FakeAudit(rows=[{"question": "q", "sql": "SELECT 2",
+                             "verdict": "OK", "error": "",
+                             "last_seen": "x", "seen": 1}])
+    result = await collect_production(ctx(home_dir=tmp_path, auth_store=audit), limit=10)
+    assert [(it.question, it.reference_sql, it.needs_reference)
+            for it in result.items] == [
+        ("Q", "", True),            # episode 失败版(保留 verdict 注记)
+        ("q", "SELECT 2", False),   # 后来答上的审计版本
+    ]
+
+
+async def test_episode_dedupe_prefers_reference_sql(episode_db, tmp_path):
+    """同一问题的 episode:近期的 RETRY 不能顶掉更早带参考 SQL 的成功版(R11)。"""
+    from tests.services.evalset.fakes import seed_episodes
+    await seed_episodes(episode_db, [
+        {"question": "Q", "sql": "SELECT 1", "verdict": "OK"},
+        {"question": "Q", "sql": "", "verdict": "RETRY: x"},
+    ])
+    result = await collect_production(ctx(home_dir=tmp_path), limit=10)
+    assert [(it.question, it.reference_sql, it.needs_reference)
+            for it in result.items] == [("Q", "SELECT 1", False)]
 
 
 async def test_production_respects_limit(episode_db, tmp_path):

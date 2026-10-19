@@ -267,9 +267,10 @@ async def collect_production(
 ) -> SourceResult:
     """从真实行为记录收割候选(设计 §6.3;只读、无用户归属、零确认)。
 
-    合并优先级:episodes(信息更多)先入,同一 ``normalize_question`` 的
-    audit/refusal 后到不覆盖;audit 之间只按 ``(question.lower(), sql)``
-    精确去重;refusal 只在没有同题可答条目时补入,并按归一问题去重。
+    合并优先级:episodes 先入;同一问题多条 episode 优先保留带参考 SQL
+    的行(同档取最近);audit 只在与 episode **精确**
+    ``(question.lower(), sql)`` 相同时让路(同题不同 SQL 的可答版本要
+    保留);refusal 只在没有同题可答条目时补入,并按归一问题去重。
     全部条目截断到 ``limit``(硬上限 ``MAX_GENERATE_PER_RUN``)。
     """
     limit = _cap_limit(limit)
@@ -279,8 +280,6 @@ async def collect_production(
 
     degraded: list[dict[str, Any]] = []
     items: list[GeneratedItem] = []
-    # episodes 收录过的归一问题(后续 audit/refusal 不再覆盖)。
-    episode_questions: set[str] = set()
     # 已有可答条目的归一问题(拒绝条目只在没有可答版本时补入)。
     answerable_questions: set[str] = set()
 
@@ -289,20 +288,35 @@ async def collect_production(
         ctx, datasource, since=since, fetch=fetch,
     )
     degraded.extend(episode_degraded)
+    # 同一问题多条 episode:带参考 SQL 的行优先,同档取最近(iter 已按
+    # updated_at 倒序)—— 最近的 RETRY/EMPTY 不能把更早的成功版本顶掉。
+    episode_best: dict[str, GeneratedItem] = {}
+    episode_order: list[str] = []
+    # episodes 的精确 (question.lower, sql) 对:audit 只在这一对完全相同时
+    # 让路。同题不同 SQL 的审计版本必须保留 —— episode 失败、后来审计答上了
+    # 的问题要能收进可答版本(否则只剩 needs_reference=True 的失败条目)。
+    episode_pairs: set[tuple[str, str]] = set()
     for row in episode_rows:
         if not isinstance(row, dict):
             continue
+        episode_pairs.add((
+            str(row.get("question") or "").strip().lower(),
+            str(row.get("sql") or "").strip(),
+        ))
         item = _episode_item(row)
         if item is None:
             continue
         key = normalize_question(item.question)
-        if key in episode_questions:
-            # 同一问题多条 episode:最近一条(iter 已按 updated_at 倒序)胜出。
-            continue
-        episode_questions.add(key)
-        items.append(item)
-        if not item.needs_reference:
-            answerable_questions.add(key)
+        current = episode_best.get(key)
+        if current is None:
+            episode_best[key] = item
+            episode_order.append(key)
+        elif not current.reference_sql and item.reference_sql:
+            episode_best[key] = item
+    items.extend(episode_best[key] for key in episode_order)
+    answerable_questions.update(
+        key for key, item in episode_best.items() if not item.needs_reference
+    )
 
     audit_rows, audit_degraded = await _read_audit(
         ctx, datasource, since=since, fetch=fetch,
@@ -316,18 +330,15 @@ async def collect_production(
             str(row.get("question") or "").strip().lower(),
             str(row.get("sql") or "").strip(),
         )
-        if pair in seen_audit:
+        if pair in seen_audit or pair in episode_pairs:
             continue
         seen_audit.add(pair)
         item = _audit_item(row)
         if item is None:
             continue
-        key = normalize_question(item.question)
-        if key in episode_questions:
-            continue  # episodes 信息更多:不覆盖
         items.append(item)
         if not item.needs_reference:
-            answerable_questions.add(key)
+            answerable_questions.add(normalize_question(item.question))
 
     refusal_report, refusal_degraded = await _read_refusals(ctx, since=since)
     degraded.extend(refusal_degraded)
