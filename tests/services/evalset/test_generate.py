@@ -192,3 +192,164 @@ async def test_rewrite_success_replaces_questions(monkeypatch):
     assert [it.question for it in result.items] == ["改写问句 0", "改写问句 1"]
     assert not any(d["code"] == "rewrite_failed" for d in result.degraded)
     assert llm.messages[0]["role"] == "system"
+
+
+# ── 追加:production / synthetic 采集(Task 6)─────────────────────
+
+import json
+
+import pytest
+
+from trove.services.evalset.sources import collect_production, generate_synthetic
+
+
+class FakeAudit:
+    def __init__(self, rows=None, refusals=None):
+        self.rows, self.refusals = rows or [], refusals or {}
+
+    async def aggregate_query_audit(self, *, datasource, since="", limit=200):
+        return self.rows
+
+    async def aggregate_refusal_audit(self, *, since="", scan_limit=2000):
+        return self.refusals
+
+
+@pytest.fixture
+def episode_db(tmp_path):
+    path = tmp_path / "memory" / "episodes.sqlite"
+    path.parent.mkdir(parents=True)
+    return path
+
+
+async def test_production_classification(episode_db, tmp_path):
+    from tests.services.evalset.fakes import seed_episodes  # helper added in Step 3
+    await seed_episodes(episode_db, [
+        {"question": "ok question", "sql": "SELECT 1", "verdict": "OK"},
+        {"question": "empty question", "sql": "SELECT 2", "verdict": "EMPTY"},
+        {"question": "retry question", "sql": "SELECT 3", "verdict": "RETRY: x"},
+        {"question": "corrected question", "sql": "SELECT 4", "verdict": "OK",
+         "corrections": [{"kind": "value"}]},
+    ])
+    audit = FakeAudit(rows=[
+        {"question": "audit ok", "sql": "SELECT 5", "verdict": "OK",
+         "error": "", "last_seen": "2026-10-19", "seen": 2},
+        {"question": "audit empty", "sql": "SELECT 6", "verdict": "EMPTY",
+         "error": "", "last_seen": "2026-10-19", "seen": 1},
+        {"question": "audit error", "sql": "", "verdict": "",
+         "error": "boom", "last_seen": "2026-10-19", "seen": 1},
+    ], refusals={"total": 1, "capped": False, "entries": [
+        {"ts": "x", "datasource": "demo", "question": "refused question",
+         "reason": "no_model"},
+        {"ts": "x", "datasource": "other", "question": "other ds",
+         "reason": "no_model"},
+    ]})
+    result = await collect_production(
+        ctx(home_dir=tmp_path, auth_store=audit), limit=50)
+    by_q = {it.question: it for it in result.items}
+    assert by_q["ok question"].needs_reference is False
+    assert by_q["empty question"].needs_reference is True
+    assert by_q["retry question"].needs_reference is True
+    assert by_q["corrected question"].needs_reference is True
+    assert by_q["audit ok"].needs_reference is False
+    assert by_q["audit empty"].needs_reference is True
+    assert by_q["audit error"].needs_reference is True
+    assert by_q["refused question"].needs_reference is True
+    assert "other ds" not in by_q
+    assert all(it.source == "production" for it in result.items)
+    assert all(it.created_by == "system" for it in result.items)
+    # 隐私:产物不含任何用户字段
+    blob = json.dumps([it.__dict__ for it in result.items], default=str)
+    for field in ("user_id", "username", "principal"):
+        assert field not in blob
+
+
+async def test_answerable_version_beats_refusal(tmp_path):
+    audit = FakeAudit(rows=[{"question": "same question", "sql": "SELECT 1",
+                             "verdict": "OK", "error": "",
+                             "last_seen": "x", "seen": 1}],
+                      refusals={"total": 1, "capped": False, "entries": [
+                          {"ts": "x", "datasource": "demo",
+                           "question": "same question", "reason": "no_model"}]})
+    result = await collect_production(ctx(home_dir=tmp_path, auth_store=audit), limit=10)
+    assert [it.question for it in result.items] == ["same question"]
+    assert result.items[0].needs_reference is False
+
+
+async def test_capped_refusals_are_visible(tmp_path):
+    audit = FakeAudit(refusals={"total": 5000, "capped": True, "entries": [
+        {"ts": "x", "datasource": "demo", "question": "q", "reason": "r"}]})
+    result = await collect_production(ctx(home_dir=tmp_path, auth_store=audit), limit=10)
+    assert any(d["code"] == "refusal_scan_capped" for d in result.degraded)
+
+
+async def test_synthetic_without_llm_is_not_success(tmp_path):
+    result = await generate_synthetic(ctx(home_dir=tmp_path, llm=None), limit=10)
+    assert result.status == "no_llm" and result.items == []
+
+
+async def test_synthetic_uses_guard(monkeypatch):
+    from trove.services.evalset import sources as s
+
+    async def fake_gen(llm, model, tables, *, samples=None, stats=None, lang="en"):
+        return [{"question": "q1", "sql": "SELECT 1", "tags": ["t"]},
+                {"question": "q2", "sql": "BAD", "tags": []}]
+
+    async def fake_validate(examples, registry, ds):
+        return [e for e in examples if e["sql"] != "BAD"]
+
+    monkeypatch.setattr(s, "generate_synthetic_examples", fake_gen)
+    monkeypatch.setattr(s, "validate_examples", fake_validate)
+    result = await generate_synthetic(
+        ctx(llm=object(), tables=[{"name": "t"}]), limit=10)
+    assert [it.question for it in result.items] == ["q1"]
+    assert result.items[0].source == "synthetic"
+    assert result.items[0].reference_origin == "llm"
+
+
+def test_verdict_head_matches_distill():
+    """本地副本必须与 history_distill 的口径逐例相等(跨层不 import 的纪律)。"""
+    from trove.services.evalset.sources import _verdict_head
+    from trove.services.kb.history_distill import _verdict_head as distill_head
+
+    for verdict in ("", "OK", "ok", "EMPTY", "RETRY: x", "NO_SQL", "fail",
+                    " OK trailing", "EMPTY\n", "RETRY:x", "   ", "123"):
+        assert _verdict_head(verdict) == distill_head(verdict), verdict
+
+
+async def test_episode_wins_over_audit_for_same_question(episode_db, tmp_path):
+    from tests.services.evalset.fakes import seed_episodes
+    await seed_episodes(episode_db, [
+        {"question": "Same question", "sql": "SELECT 1", "verdict": "OK"},
+    ])
+    audit = FakeAudit(rows=[{"question": "same question", "sql": "SELECT 2",
+                             "verdict": "RETRY: x", "error": "",
+                             "last_seen": "x", "seen": 1}])
+    result = await collect_production(ctx(home_dir=tmp_path, auth_store=audit), limit=10)
+    assert [(it.question, it.reference_sql) for it in result.items] == \
+        [("Same question", "SELECT 1")]
+
+
+async def test_production_respects_limit(episode_db, tmp_path):
+    from tests.services.evalset.fakes import seed_episodes
+    await seed_episodes(episode_db, [
+        {"question": f"q{i}", "sql": f"SELECT {i}", "verdict": "OK"}
+        for i in range(3)
+    ])
+    result = await collect_production(ctx(home_dir=tmp_path), limit=2)
+    assert len(result.items) == 2
+
+
+async def test_production_empty_history_is_empty_ok(tmp_path):
+    result = await collect_production(ctx(home_dir=tmp_path), limit=10)
+    assert result.items == [] and result.status == "ok"
+
+
+async def test_collect_history_output_unchanged_by_evalset(episode_db, tmp_path):
+    from trove.services.kb.history_distill import collect_history
+    from tests.services.evalset.fakes import seed_episodes
+    await seed_episodes(episode_db, [
+        {"question": "q", "sql": "SELECT 1", "verdict": "OK"},
+    ])
+    rows = await collect_history("demo", home_dir=tmp_path, project_root=tmp_path)
+    assert [(r.question, r.sql, r.verdict, r.source) for r in rows] == \
+        [("q", "SELECT 1", "OK", "episode")]
