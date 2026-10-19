@@ -91,7 +91,7 @@ async def test_trial_failure_is_skipped(monkeypatch):
     assert result.items == [] and result.skipped == 5
 
 
-async def test_no_semantic_model():
+async def test_semantic_source_without_model_is_skipped():
     result = await generate_semantic(ctx(model=None), limit=5)
     assert result.status == "no_semantic_model"
     assert result.items == []
@@ -383,3 +383,181 @@ async def test_collect_history_output_unchanged_by_evalset(episode_db, tmp_path)
     rows = await collect_history("demo", home_dir=tmp_path, project_root=tmp_path)
     assert [(r.question, r.sql, r.verdict, r.source) for r in rows] == \
         [("q", "SELECT 1", "OK", "episode")]
+
+
+# ── 追加:生成编排(去重/泄漏/落盘/幂等,Task 7)────────────────────
+
+from types import SimpleNamespace
+
+from trove.services.evalset.generate import (
+    GenerateRequest, _merge_generated, generate_evalset,
+)
+from trove.services.evalset.models import EvalsetDoc, EvalsetItem
+from trove.services.evalset.store import load_evalset, save_evalset
+
+
+class FakeProvider:
+    def __init__(self, model):
+        self._model = model
+
+    def model(self):
+        return self._model
+
+
+async def run_generate(tmp_path, monkeypatch, *, limit=5, git=None, **kw):
+    from trove.services.evalset import generate as g
+    monkeypatch.setattr(g, "build_and_compile",
+                        lambda *a, **k: {"sql": "SELECT 1", "columns": [],
+                                         "datasets": [], "version": 1})
+
+    async def ok_trial(registry, ds, sql):
+        return True
+
+    monkeypatch.setattr(g, "trial_ok", ok_trial)
+    req = GenerateRequest(datasource="demo", limit=limit, **kw)
+    return await generate_evalset(
+        tmp_path, req, kb=SimpleNamespace(kb_dir=tmp_path / ".trove" / "kb",
+                                          git=git,
+                                          semantics_path=lambda ds: tmp_path / "s.yml"),
+        registry=object(),
+        semantic_layer=FakeProvider(model()))
+
+
+async def test_generate_is_idempotent(tmp_path, monkeypatch):
+    first = await run_generate(tmp_path, monkeypatch)
+    second = await run_generate(tmp_path, monkeypatch)
+    assert first.added > 0 and second.added == 0
+    assert second.duplicates == first.added
+    doc, issues, _ = load_evalset(tmp_path, "demo")
+    assert len(doc.items) == first.added
+    assert all(it.status == "pending" for it in doc.items)
+
+
+async def test_rejected_tombstone_blocks_regeneration(tmp_path, monkeypatch):
+    await run_generate(tmp_path, monkeypatch)
+    doc, _, _ = load_evalset(tmp_path, "demo")
+    for it in doc.items:
+        it.status = "rejected"
+    save_evalset(tmp_path, doc)
+    second = await run_generate(tmp_path, monkeypatch)
+    assert second.added == 0
+
+
+async def test_retired_allows_regeneration(tmp_path, monkeypatch):
+    first = await run_generate(tmp_path, monkeypatch)
+    doc, _, _ = load_evalset(tmp_path, "demo")
+    for it in doc.items:
+        it.status = "retired"
+    save_evalset(tmp_path, doc)
+    second = await run_generate(tmp_path, monkeypatch)
+    assert second.added == first.added
+
+
+async def test_no_semantic_model(tmp_path, monkeypatch):
+    req = GenerateRequest(datasource="demo", limit=5)
+    report = await generate_evalset(tmp_path, req, kb=SimpleNamespace(git=None),
+                                    semantic_layer=None)
+    assert report.status == "no_semantic_model"
+
+
+async def test_leakage_marks_but_keeps_pending(tmp_path, monkeypatch):
+    kb_dir = tmp_path / ".trove" / "kb" / "demo"
+    kb_dir.mkdir(parents=True)
+    (kb_dir / "examples.yml").write_text(
+        "examples:\n  - question: \"按地区统计贷款总额是多少？\"\n    sql: SELECT 1\n",
+        encoding="utf-8")
+    # limit=10:候选顺序由稳定哈希决定,metric_dim(district) 排在第 7 位
+    # (R12 —— brief 原样的 limit=5 根本不含与该示例近重复的候选)。
+    report = await run_generate(tmp_path, monkeypatch, limit=10)
+    doc, _, _ = load_evalset(tmp_path, "demo")
+    assert any(it.leakage for it in doc.items)
+    assert all(it.status == "pending" for it in doc.items)
+    assert report.leakage >= 1
+
+
+def test_same_question_different_sql_marks_duplicate_of(tmp_path):
+    # 直接构造两个 content_hash 不同的同题条目,走内部 _merge 函数
+    doc = EvalsetDoc(datasource="demo", items=[
+        EvalsetItem(qid="e-old", question="q", reference_sql="SELECT 1",
+                    source="manual", reference_origin="human", status="pending",
+                    content_hash="aaaaaaaaaaaaaaaa")])
+    stats = _merge_generated(doc, [EvalsetItem(
+        qid="e-new", question="q", reference_sql="SELECT 2",
+        source="semantic", reference_origin="semantic_compiler",
+        status="pending", content_hash="bbbbbbbbbbbbbbbb")])
+    assert stats["conflicts"] == 1
+    assert doc.items[1].duplicate_of == "e-old"
+
+
+async def test_invalid_asset_is_refused_without_overwrite(tmp_path, monkeypatch):
+    """R9:已有资产读出的 issue(含数据源身份不符)→ invalid_asset,零写盘。"""
+    path = tmp_path / ".trove" / "evalsets" / "demo" / "evalset.yml"
+    path.parent.mkdir(parents=True)
+    original = "version: 1\ndatasource: someone-else\nitems: []\n"
+    path.write_text(original, encoding="utf-8")
+    report = await run_generate(tmp_path, monkeypatch)
+    assert report.status == "invalid_asset"
+    assert any(i["code"] == "evalset.datasource_mismatch"
+               for i in report.issues)
+    assert path.read_text(encoding="utf-8") == original
+
+
+async def test_busy_lock_surfaces_as_report(tmp_path, monkeypatch):
+    """锁非阻塞:另一个写者持锁 → 报告带 busy 降级,不抛异常。"""
+    from trove.services.evalset.lock import EvalsetLock
+    with EvalsetLock(tmp_path / ".trove" / "evalsets").acquire("demo"):
+        report = await run_generate(tmp_path, monkeypatch)
+    assert report.added == 0
+    assert any(d["code"] == "evalset.busy" for d in report.degraded)
+
+
+def test_same_question_different_sql_in_one_batch(tmp_path):
+    """R10:同一批候选里同题不同 SQL → 后者标 duplicate_of,不崩。"""
+    doc = EvalsetDoc(datasource="demo")
+    stats = _merge_generated(doc, [
+        EvalsetItem(question="q", reference_sql="SELECT 1",
+                    source="production", reference_origin="pipeline"),
+        EvalsetItem(question="q", reference_sql="SELECT 2",
+                    source="production", reference_origin="pipeline"),
+        EvalsetItem(question="q", reference_sql="SELECT 2",
+                    source="production", reference_origin="pipeline"),
+    ])
+    assert stats["added"] == 2
+    assert stats["conflicts"] == 1
+    assert stats["duplicates"] == 1
+    assert doc.items[1].duplicate_of == doc.items[0].qid
+
+
+async def test_synthetic_only_without_llm_is_no_llm(tmp_path, monkeypatch):
+    report = await run_generate(tmp_path, monkeypatch, sources=["synthetic"])
+    assert report.status == "no_llm"
+    assert report.added == 0
+
+
+class FakeGit:
+    def __init__(self):
+        self.calls = []
+
+    def commit_files(self, files, message, trailers=None):
+        self.calls.append((list(files), message, trailers))
+        return {"committed": True}
+
+
+async def test_commit_stages_only_the_named_evalset_file(tmp_path, monkeypatch):
+    git = FakeGit()
+    report = await run_generate(tmp_path, monkeypatch, git=git)
+    assert report.added > 0
+    assert len(git.calls) == 1
+    files, _message, trailers = git.calls[0]
+    assert files == [tmp_path / ".trove" / "evalsets" / "demo" / "evalset.yml"]
+    assert trailers == {"Generator": "evalset"}
+
+
+async def test_no_new_items_do_not_create_or_commit(tmp_path, monkeypatch):
+    git = FakeGit()
+    first = await run_generate(tmp_path, monkeypatch, git=git)
+    assert first.added > 0
+    git.calls.clear()
+    second = await run_generate(tmp_path, monkeypatch, git=git)
+    assert second.added == 0
+    assert git.calls == []
