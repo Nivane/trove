@@ -32,6 +32,13 @@ htmlcov/
 .trove/kb/*/.staging/
 !.trove/kb/*/*.yml
 
+# 验收集资产同样入库（评测题目即代码）；锁目录与运行产物保持忽略。
+!.trove/evalsets/
+.trove/evalsets/*
+!.trove/evalsets/*/
+!.trove/evalsets/*/*.yml
+.trove/evalsets/.locks/
+
 # Local dev process state (PID / logs)
 .dev/
 

@@ -28,7 +28,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -47,6 +46,9 @@ from trove.eval.replay import recovered as _recovered
 from trove.eval.replay import self_consistent as _self_consistent
 from trove.eval.replay import tried_recovery as _tried
 from trove.eval.replay import zero_answer as _zero_answer
+
+#: 配对键的单一实现在 text.py;私有别名保留,既有调用点/测试不动。
+from trove.eval.text import norm_question as _norm_question
 
 #: 更高更好的指标(准确率/覆盖率类)
 HIGHER_BETTER = {
@@ -156,14 +158,6 @@ def _rate(numer: int, denom: int) -> float:
 def _total_of(entry: dict[str, Any]) -> int:
     """条目录制的 token 总数(未录制/为 0 → 0 = 不进 token 均值分母)。"""
     return int((entry.get("tokens") or {}).get("total") or 0)
-
-
-def _norm_question(value: Any) -> str:
-    """配对键:小写 + 去标点 + 空白压缩(与 ``baseline._norm`` 同一口径,
-    由 tests/eval 钉住相等 —— 本地副本的理由同 replay._CACHE_FIELDS:
-    对账键两侧写法一旦漂移,配对会静默落到 0 条)。"""
-    text = re.sub(r"[\W_]+", " ", str(value or "").lower())
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:

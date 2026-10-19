@@ -48,6 +48,9 @@ _TRUSTED_VARS: frozenset[str] = frozenset({
     # 2. 经人确认后落库的结构化知识(语义层 / KB)
     "schema_context", "evidence", "rules", "full_rules", "few_shots",
     "lessons", "term_notes", "vocabulary", "entities", "metrics",
+    # evalset 改写:问句由语义模型(已确认 KB)的 label/synonyms 确定性
+    # 拼出,来源不是外部输入;改写结果回灌前只做长度/字符串形状校验。
+    "questions",
     # 3. 系统自身的标量与枚举(不可能命中,登记是为了让分类表完整)
     "lang", "dialect", "fix_mode", "has_probe", "total_rows",
     "node", "purpose", "skill_name",

@@ -17,18 +17,20 @@ schema_text/stats_suffix 同时供 /kb init 起草提示词使用(AskData 式
 
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any
 
 from trove.core.logging import get_logger
 from trove.prompts import render
+from trove.services.kb.sql_guard import (
+    TRIAL_TIMEOUT_S,  # noqa: F401 — 保持 synthetic.TRIAL_TIMEOUT_S 公开名
+    sqlglot_ok as _sqlglot_ok,
+    trial_ok as _trial_ok,
+)
 
 logger = get_logger(__name__)
 
 SYNTH_PER_TABLE = 3        # 每表目标条数(提示词约束;护栏会再筛掉坏的)
 SYNTH_MAX_TOKENS = 16384   # 与 init 起草一致(推理模型 max_tokens 计入 CoT)
-TRIAL_TIMEOUT_S = 10       # 单条试执行超时(慢查询静默丢弃)
 
 
 def stats_suffix(stats: dict | None) -> str:
@@ -134,32 +136,6 @@ def _parse_synthetic(response: str) -> list[dict]:
             "tags": [str(t) for t in (ex.get("tags") or [])][:6],
         })
     return cleaned
-
-
-def _sqlglot_ok(sql: str) -> bool:
-    """SQLGlot 语法校验:解析失败(缺括号/错 token)直接丢弃。"""
-    try:
-        import sqlglot
-        sqlglot.parse(sql, error_level=sqlglot.ErrorLevel.RAISE)
-        return True
-    except Exception:
-        return False
-
-
-async def _trial_ok(registry: Any, datasource: str | None, sql: str) -> bool:
-    """试执行护栏:`SELECT * FROM (<sql>) t LIMIT 1` 只取 1 行。
-
-    表名/列名错误、方言不兼容、超时都会让这条被丢弃——只有真能在
-    目标库跑起来的 SQL 才进 few-shot。
-    """
-    wrapped = f"SELECT * FROM ({sql}) t LIMIT 1"
-    try:
-        await asyncio.wait_for(
-            registry.execute(wrapped, datasource), timeout=TRIAL_TIMEOUT_S,
-        )
-        return True
-    except Exception:
-        return False
 
 
 async def generate_synthetic_examples(

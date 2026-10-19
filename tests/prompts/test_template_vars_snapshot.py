@@ -41,6 +41,12 @@ _SNAPSHOT: dict[str, list[str]] = {
     "conclusion/system.zh.j2": [],
     "conclusion/user.en.j2": ["columns", "question", "rows", "rows_note", "sql", "time_context", "total_rows"],
     "conclusion/user.zh.j2": ["columns", "question", "rows", "rows_note", "sql", "time_context", "total_rows"],
+    # evalset 改写:questions 是语义模型模板拼出的问句(已确认 KB 的
+    # label/synonyms),不是外部输入。
+    "evalset/rewrite_system.en.j2": [],
+    "evalset/rewrite_system.zh.j2": [],
+    "evalset/rewrite_user.en.j2": ["questions"],
+    "evalset/rewrite_user.zh.j2": ["questions"],
     "gen_sql/fix.en.j2": ["errors", "sql", "target"],
     "gen_sql/fix.zh.j2": ["errors", "sql", "target"],
     "gen_sql/system.en.j2": ["full_rules", "has_probe"],
