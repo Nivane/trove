@@ -193,6 +193,18 @@ export interface EvalsetBatchResult {
 
 /* ── 后台任务(生成 / 试跑) ──────────────────────────────────────── */
 
+/**
+ * 试跑任务的结局(`RunResult` 的 HTTP 投影,由 `/run/status` 的 `result`
+ * 给出)。**缺失/null 不等于成功** —— 旧服务或坏摘要下读端只能报「已结束」。
+ */
+export interface EvalsetRunResult {
+  exit_code: number
+  run_id: string
+  tier: string
+  message: string
+  skipped: number
+}
+
 /** `init_tasks` 的任务形状;status: running / done / error(idle 是端点兜底)。 */
 export interface EvalsetTask {
   id?: string
@@ -204,6 +216,8 @@ export interface EvalsetTask {
   detail?: string
   summary?: string
   error?: string
+  /** 仅 `/run/status`:解析后的试跑结局;running/error/坏摘要 → null。 */
+  result?: EvalsetRunResult | null
   started_at?: number
   finished_at?: number | null
 }

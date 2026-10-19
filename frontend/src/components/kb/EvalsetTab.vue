@@ -30,7 +30,7 @@ import StatePanel from '../base/StatePanel.vue'
 import { t } from '../../i18n'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
-import { notifyError, notifySuccess } from '../../utils/notify'
+import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify'
 import { tierBadge } from './evalsetTier'
 import {
   confirmEvalsetBatch,
@@ -105,6 +105,11 @@ const byTier = ref<Record<string, { confirmed: number; pending: number }>>({})
 
 const items = ref<EvalsetItem[]>([])
 const issues = ref<EvalsetIssue[]>([])
+/**
+ * 资产有解析 issue = **读不出**(与 readiness `available:false` 同源)。
+ * 头部计数必须显示「未知」而不是 0 —— 那是 R24 的「不可读 ≠ 空集」。
+ */
+const assetUnreadable = computed(() => issues.value.length > 0)
 const degraded = ref<EvalsetDegraded[]>([])
 const readiness = ref<EvalsetReadiness | null>(null)
 const runs = ref<RunSummary[]>([])
@@ -354,6 +359,16 @@ function canVouch(item: EvalsetItem): boolean {
 function pct(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
   return `${Math.round(value * 100)}%`
+}
+/**
+ * EX 的分母是「判得出来的题」(``ex_judged``)。分母为 0 时 EX **不是 0**
+ * ——全 CRASH/GOLD_ERROR 的一轮不能被画成 0% 准确率;缺 ``ex_judged``
+ * 的老摘要保持原行为。
+ */
+function exPct(run: RunSummary | null | undefined): string {
+  if (!run) return '—'
+  if (run.ex_judged === 0) return '—'
+  return pct(run.ex)
 }
 
 function toggleSelect(qid: string) {
@@ -625,6 +640,12 @@ const generateReportBusy = computed(
     generateReport.value.status === 'empty' &&
     (generateReport.value.degraded ?? []).some((entry) => entry.code === 'evalset.busy'),
 )
+/** 报告的解析问题(危险样式)。 */
+const generateReportIssues = computed(() => generateReport.value?.issues ?? [])
+/** 非 busy 的降级项:busy 是锁竞争,单独渲染。 */
+const generateReportDegraded = computed(() =>
+  (generateReport.value?.degraded ?? []).filter((entry) => entry.code !== 'evalset.busy'),
+)
 
 function askGenerate() {
   generateOpen.value = true
@@ -674,11 +695,26 @@ async function pollGenerate(datasource: string) {
         return
       }
       const report = status.report
-      if (report && report.status === 'empty') {
-        // busy 与「没东西可收割」是两件事:前者是锁竞争,后者才是空结果。
-        notifyError(generateReportBusy.value ? tr('kbEvalsetGenerateBusy') : tr('kbEvalsetGenerateEmpty'))
-      } else {
+      if (!report) {
+        // 没有报告 = 结局未知;绝不报成功。
+        notifyError(tr('kbEvalsetGenerateFailed'))
+        return
+      }
+      if (report.status === 'ok') {
         notifySuccess(tr('kbEvalsetGenerateDone'))
+      } else if (report.status === 'empty') {
+        if (generateReportBusy.value) {
+          // busy 与「没东西可收割」是两件事:前者是锁竞争。
+          notifyError(tr('kbEvalsetGenerateBusy'))
+        } else if (generateReportIssues.value.length || generateReportDegraded.value.length) {
+          // source_failed 等降级不能洗成「空结果」。
+          notifyError(tr('kbEvalsetGenerateFailed'))
+        } else {
+          notifyError(tr('kbEvalsetGenerateEmpty'))
+        }
+      } else {
+        // no_llm / invalid_asset / no_semantic_model:失败结局,不是成功。
+        notifyError(tr('kbEvalsetGenerateFailed'))
       }
       return
     }
@@ -769,7 +805,20 @@ async function pollRun(datasource: string) {
       runStage.value = status
       if (status.status === 'running') continue
       if (status.status === 'done') {
-        notifySuccess(tr('kbEvalsetRunDone'))
+        // I1:done 只说明任务收尾;结局在 result 里 —— exit 1/2 不是成功。
+        const result = status.result ?? null
+        if (!result) {
+          // 旧服务/坏摘要:中性提示,绝不冒充成功。
+          notifyInfo(tr('kbEvalsetRunFinished'))
+        } else if (result.exit_code !== 0) {
+          notifyError(
+            result.message
+              ? `${tr('kbEvalsetRunFailed')}: ${result.message}`
+              : tr('kbEvalsetRunFailed'),
+          )
+        } else {
+          notifySuccess(tr('kbEvalsetRunDone'))
+        }
         return
       }
       if (status.status === 'error') {
@@ -841,14 +890,18 @@ async function pollRun(datasource: string) {
 
     <div v-if="counts" class="ev-counts" role="group" :aria-label="tr('kbEvalsetTitle')">
       <span class="ev-count">
-        <b>{{ counts.pending }}</b> {{ tr('kbStatusPending') }}
+        <b>{{ assetUnreadable ? '—' : counts.pending }}</b> {{ tr('kbStatusPending') }}
       </span>
       <span v-for="tierName in scoringTiers" :key="tierName" class="ev-count">
-        <b>{{ byTier[tierName]?.confirmed ?? 0 }}</b>
+        <b>{{ assetUnreadable ? '—' : (byTier[tierName]?.confirmed ?? 0) }}</b>
         <span class="ev-tier" :class="badge(tierName).className">{{ badge(tierName).label }}</span>
       </span>
-      <span class="ev-count"><b>{{ counts.rejected }}</b> {{ tr('kbEvalsetRejected') }}</span>
-      <span class="ev-count"><b>{{ counts.retired }}</b> {{ tr('kbEvalsetRetired') }}</span>
+      <span class="ev-count">
+        <b>{{ assetUnreadable ? '—' : counts.rejected }}</b> {{ tr('kbEvalsetRejected') }}
+      </span>
+      <span class="ev-count">
+        <b>{{ assetUnreadable ? '—' : counts.retired }}</b> {{ tr('kbEvalsetRetired') }}
+      </span>
     </div>
 
     <div v-if="issues.length" class="ev-banner is-danger" role="alert">
@@ -1217,7 +1270,7 @@ async function pollRun(datasource: string) {
             <template v-if="entry.run">
               <span class="ev-muted">{{ fmtDateTime(entry.run.at) || '—' }}</span>
               <span>n {{ entry.run.n ?? '—' }}</span>
-              <span>EX {{ pct(entry.run.ex) }}</span>
+              <span>EX {{ exPct(entry.run) }}</span>
               <span>compile {{ pct(entry.run.compile_hit) }}</span>
               <span>completion {{ pct(entry.run.completion) }}</span>
               <span v-if="entry.run.reference_errors" class="ev-pill is-warn">
@@ -1259,7 +1312,7 @@ async function pollRun(datasource: string) {
                 </td>
                 <td class="ev-cell-time">{{ fmtDateTime(run.at) || '—' }}</td>
                 <td>{{ run.n ?? '—' }}</td>
-                <td>{{ pct(run.ex) }}</td>
+                <td>{{ exPct(run) }}</td>
                 <td>{{ pct(run.compile_hit) }}</td>
                 <td>{{ pct(run.completion) }}</td>
               </tr>
@@ -1283,7 +1336,14 @@ async function pollRun(datasource: string) {
       <div v-if="generateReportBusy" class="ev-report-busy">
         {{ tr('kbEvalsetGenerateBusy') }}
       </div>
-      <div v-else-if="generateReport.status === 'empty'" class="ev-muted">
+      <div
+        v-else-if="
+          generateReport.status === 'empty'
+            && !generateReportIssues.length
+            && !generateReportDegraded.length
+        "
+        class="ev-muted"
+      >
         {{ tr('kbEvalsetGenerateEmpty') }}
       </div>
       <div class="ev-report-counts">
@@ -1293,11 +1353,23 @@ async function pollRun(datasource: string) {
         <span>{{ tr('kbEvalsetReportConflicts', generateReport.conflicts) }}</span>
         <span>{{ tr('kbEvalsetReportLeakage', generateReport.leakage) }}</span>
       </div>
-      <ul v-if="generateReport.issues?.length" class="ev-plain-list">
-        <li v-for="(issue, index) in generateReport.issues" :key="index">
-          {{ issue.code }}: {{ issue.message }}
-        </li>
-      </ul>
+      <div v-if="generateReportIssues.length" class="ev-banner is-danger" role="alert">
+        <TriangleAlert :size="14" aria-hidden="true" />
+        <div>
+          <strong>{{ tr('kbEvalsetIssues') }}</strong>
+          <ul class="ev-plain-list">
+            <li v-for="(issue, index) in generateReportIssues" :key="index">
+              {{ issue.code }}<template v-if="issue.path"> ({{ issue.path }})</template>:
+              {{ issue.message }}
+            </li>
+          </ul>
+        </div>
+      </div>
+      <div v-if="generateReportDegraded.length" class="ev-banner" role="status">
+        <div v-for="(entry, index) in generateReportDegraded" :key="index" class="ev-degraded-row">
+          {{ entry.code }}: {{ entry.message }}
+        </div>
+      </div>
     </div>
 
     <!-- ── 新建 / 编辑 ─────────────────────────────────────────── -->

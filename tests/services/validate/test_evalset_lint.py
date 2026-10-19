@@ -41,9 +41,11 @@ def _write_evalset(tmp_path: Path, datasource: str, items: str) -> Path:
     ev = tmp_path / ".trove" / "evalsets" / datasource
     ev.mkdir(parents=True, exist_ok=True)
     path = ev / "evalset.yml"
-    path.write_text(
-        f"version: 1\ndatasource: {datasource}\nitems:\n{items}",
-        encoding="utf-8")
+    # 空条目列表必须写成 ``items: []``:裸 ``items:`` 是 YAML null,
+    # 会被解析成 invalid_items,把这些测试想钉的 code 淹掉。
+    body = f"version: 1\ndatasource: {datasource}\n"
+    body += f"items:\n{items}" if items.strip() else "items: []\n"
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -87,7 +89,10 @@ async def test_evalset_lint_issue_codes(tmp_path):
 async def test_evalset_without_kb_warns(tmp_path):
     _write_evalset(tmp_path, "orphan", "")
     report = await run_validate("orphan", project_root=tmp_path)
-    assert any(i.check == "evalset.no_kb" for i in report.issues)
+    codes = _codes(report)
+    assert "evalset.no_kb" in codes
+    # 空列表是合法的 ``items: []``,不是 YAML null。
+    assert "evalset.invalid_items" not in codes
 
 
 async def test_pending_leakage_is_warning_not_error(tmp_path):
@@ -130,6 +135,7 @@ async def test_evalset_only_datasource_is_discovered_without_kb(tmp_path):
     assert report.counts["orphan.evalset"] == 0
     assert any(i.check == "evalset.no_kb" and i.datasource == "orphan"
                for i in report.issues)
+    assert "evalset.invalid_items" not in _codes(report)
 
 
 async def test_empty_evalsets_directory_does_not_change_report(tmp_path):

@@ -155,14 +155,18 @@ def _service(request: Request, name: str, user: dict[str, Any]) -> EvalsetServic
 
 def _latest_verdicts(
     root: Path, datasource: str,
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """{qid → 最近一次判定摘要} + 读不出时的降级条目(去重)。
+) -> tuple[dict[tuple[str, str], dict[str, Any]], list[dict[str, Any]]]:
+    """{(qid, tier) → 最近一次判定摘要} + 读不出时的降级条目(去重)。
 
     每个 tier 各读一次 ``latest.jsonl`` / ``latest.summary.json``;任一
     读不出 → **该 tier 整体当没有**(不允许半份判定),并记一条
     ``run_store_unreadable``。缺文件是 ``None`` 的正常态,不进 degraded。
+
+    键必须带 tier:同一 qid 在两层都可能有历史判定(题被背书升级后,
+    旧层的判定仍然留在那个目录里),按固定 tier 顺序合并会让条目显示
+    另一层的结论。条目只取它**当前所属层**的那份(设计 §9.1 line 450)。
     """
-    verdicts: dict[str, dict[str, Any]] = {}
+    verdicts: dict[tuple[str, str], dict[str, Any]] = {}
     degraded: list[dict[str, Any]] = []
     unreadable_tiers: list[str] = []
     for tier in _TIERS:
@@ -194,7 +198,8 @@ def _latest_verdicts(
             }
             if entry.get("reference_error") is not None:
                 verdict["reference_error"] = entry["reference_error"]
-            verdicts[qid] = verdict
+            # 入口写的是目录所属 tier(条目本身不带 tier 字段)。
+            verdicts[(qid, tier)] = verdict
     if unreadable_tiers:
         degraded.append({
             "code": "run_store_unreadable",
@@ -208,7 +213,11 @@ def _latest_verdicts(
 
 
 def _task_report(task: dict[str, Any]) -> dict[str, Any] | None:
-    """解析 ``init_tasks`` summary 里的生成报告(坏 JSON → None)。"""
+    """解析 ``init_tasks`` summary 里落的 JSON(生成报告 / 试跑结局)。
+
+    坏 JSON、空 summary、非对象 → ``None``:读端由此知道「结局未知」,
+    而不是把解析失败当成一个成功的空对象。
+    """
     summary = str(task.get("summary") or "")
     if not summary:
         return None
@@ -254,7 +263,9 @@ async def list_items(
         raise _http(exc) from exc
     verdicts, degraded = _latest_verdicts(_root(request), name)
     data["items"] = [
-        {**item, "latest_verdict": verdicts.get(str(item.get("qid") or ""))}
+        {**item, "latest_verdict": verdicts.get((
+            str(item.get("qid") or ""), str(item.get("tier") or ""),
+        ))}
         for item in (data.get("items") or [])
     ]
     data["degraded"] = list(data.get("degraded") or []) + degraded
@@ -529,11 +540,21 @@ async def run(
     model_for = getattr(config, "model_for", None)
     model = str(model_for("complex") or "") if callable(model_for) else ""
 
+    try:
+        listed = await service.list_items(name, tier=tier, status="confirmed")
+    except (EvalsetError, EvalsetBusy) as exc:
+        raise _http(exc) from exc
+    asset_issues = listed.get("issues") or []
+    if asset_issues:
+        # 读不出的资产不能跑,也不能在成本门里被读成「0 道题」(R24):
+        # 这道门先于确认分支,probe / confirm:true / compile_only 一律拒绝。
+        raise _http(EvalsetError(
+            "evalset.invalid_asset",
+            "evalset asset has parse issues; refusing to run it",
+            issues=asset_issues,
+        ))
+
     if not payload.compile_only and not payload.confirm:
-        try:
-            listed = await service.list_items(name, tier=tier, status="confirmed")
-        except (EvalsetError, EvalsetBusy) as exc:
-            raise _http(exc) from exc
         # 与 runner ``_select`` 同口径:confirmed + exact 才是会真正跑的题;
         # 非 exact 条目被 runner 跳过,不该出现在成本提示的数字里。
         n_items = sum(
@@ -592,7 +613,16 @@ async def run(
                 config=config,
                 semantic_layer=semantic_layer,
             ))
-            init_tasks.done(task_id, f"exit={result.exit_code}")
+            # 摘要携带**结局**,不只是「跑完了」:exit 1/2 与「有 run 文件
+            # 的完成」必须能被前端区分(否则失败被报成成功)。JSON 形状与
+            # 生成报告同一套解析(``_task_report``)。
+            init_tasks.done(task_id, json.dumps({
+                "exit_code": result.exit_code,
+                "run_id": result.run_id,
+                "tier": result.tier,
+                "message": result.message,
+                "skipped": result.skipped,
+            }, ensure_ascii=False))
             await _audit(request, "evalset.run", admin, {
                 "datasource": name,
                 "tier": tier,
@@ -615,9 +645,17 @@ async def run_status(
     request: Request,
     admin: dict[str, Any] = Depends(require_admin),
 ) -> dict:
-    """轮询试跑任务;``kind`` 不符 → ``idle``。"""
+    """轮询试跑任务;``kind`` 不符 → ``idle``。
+
+    完成态附带解析后的 ``result``(exit_code / run_id / tier / message /
+    skipped),坏或缺失的摘要 → ``result: null``。只有 ``status`` 而看不到
+    结局,会让 exit 2 的任务在 UI 上和成功一模一样。
+    """
     _ds_id_or_404(request, name)
-    return _task_status(name, "evalset_run")
+    task = _task_status(name, "evalset_run")
+    if task.get("status") == "idle":
+        return task
+    return {**task, "result": _task_report(task)}
 
 
 # ── 读:预览 / 单条 ─────────────────────────────────────
