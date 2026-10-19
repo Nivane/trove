@@ -33,6 +33,7 @@ from trove.agent.session import SessionManager
 from trove.cli.app import TroveREPL
 from trove.core.config import ConfigLoader
 from trove.core.i18n import L
+from trove.eval.text import classify_pred_error, normalize_rows
 from trove.llm.gateway import LLMGateway
 from trove.tracing.local import configure_trace_store
 from trove.tracing.runlog import create_tracer
@@ -82,11 +83,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def normalize_rows(rows: list[list]) -> list[tuple]:
-    """Set-comparison: sorted, stringified rows (column order-insensitive)."""
-    return sorted(tuple(str(v) for v in row) for row in rows)
-
-
 def extract_tables(sql: str) -> list[str]:
     """gold SQL → 涉及的物理表名(sqlglot 优先,正则兜底,保序去重)。
 
@@ -126,11 +122,6 @@ def record_failure(entry: dict) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
-
-
-def classify_pred_error(error: str) -> str:
-    """final.error → GENERATION_ERROR | EXECUTION_ERROR(与汇总口径一致)。"""
-    return "GENERATION_ERROR" if error and "generation" in error.lower() else "EXECUTION_ERROR"
 
 
 def record_result(entry: dict, path: Path | None = None) -> None:
