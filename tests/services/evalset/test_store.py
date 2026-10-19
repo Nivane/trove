@@ -6,10 +6,13 @@ import hashlib
 import pytest
 import yaml
 
+from trove.services.evalset.lock import EvalsetBusy, EvalsetLock
 from trove.services.evalset.models import (
     EvalsetDoc, EvalsetError, EvalsetItem, check_transition, content_hash,
     dump_evalset, new_qid, parse_evalset, resolve_duplicates, tier_of,
 )
+from trove.services.evalset.rev import evalset_rev
+from trove.services.evalset.store import evalset_path, load_evalset, save_evalset
 
 
 def item(**kw):
@@ -178,3 +181,68 @@ def test_resolve_duplicates_noop_for_pending_or_unknown_qid():
 def test_new_qid_is_prefixed_and_unique():
     assert new_qid().startswith("e-")
     assert new_qid() != new_qid()
+
+
+# ── 存储 / evalset_rev / 锁 ───────────────────────────────
+
+
+def _doc(items):
+    return EvalsetDoc(datasource="demo", items=items)
+
+
+def test_roundtrip_is_lossless_and_atomic(tmp_path):
+    doc = _doc([item(qid="e-a", extra={"custom": 1})])
+    path = save_evalset(tmp_path, doc)
+    assert path == tmp_path / ".trove" / "evalsets" / "demo" / "evalset.yml"
+    assert not path.with_suffix(".yml.tmp").exists()
+    loaded, issues, exists = load_evalset(tmp_path, "demo")
+    assert issues == [] and exists is True
+    assert loaded.items[0].extra == {"custom": 1}
+    assert loaded.updated_at
+
+
+def test_missing_file_is_not_an_error(tmp_path):
+    doc, issues, exists = load_evalset(tmp_path, "demo")
+    assert doc.items == [] and issues == [] and exists is False
+
+
+def test_evalset_rev_only_tracks_confirmed(tmp_path):
+    base = [item(qid="e-a", status="confirmed")]
+    rev = evalset_rev(_doc(base))
+    assert rev == evalset_rev(_doc([item(qid="e-a", status="confirmed")]))
+    assert rev != evalset_rev(_doc([item(qid="e-a", status="confirmed",
+                                         reference_sql="SELECT 2")]))
+    for changed in ("pending", "rejected", "retired"):
+        assert evalset_rev(_doc([item(qid="e-a", status=changed)])) == evalset_rev(_doc([]))
+
+
+def test_lock_is_exclusive_and_non_blocking(tmp_path):
+    lock = EvalsetLock(tmp_path / ".trove" / "evalsets")
+    with lock.acquire("demo"):
+        with pytest.raises(EvalsetBusy):
+            with lock.acquire("demo"):
+                pass
+
+
+def test_invalid_datasource_is_rejected_on_every_path(tmp_path):
+    # 数据源名会拼进路径:读、写、锁都必须用同一把尺子拦下路径穿越。
+    for call in (
+        lambda: load_evalset(tmp_path, "../escape"),
+        lambda: save_evalset(tmp_path, EvalsetDoc(datasource="bad name")),
+    ):
+        with pytest.raises(EvalsetError) as e:
+            call()
+        assert e.value.code == "evalset.invalid_datasource"
+    with pytest.raises(EvalsetError):
+        with EvalsetLock(tmp_path / ".trove" / "evalsets").acquire("a/b"):
+            pass
+
+
+def test_unreadable_asset_is_an_issue_not_an_empty_document(tmp_path):
+    path = evalset_path(tmp_path, "demo")
+    path.parent.mkdir(parents=True)
+    path.write_text("\t- broken: [", encoding="utf-8")
+    doc, issues, exists = load_evalset(tmp_path, "demo")
+    assert exists is True
+    assert [i.code for i in issues] == ["evalset.unreadable"]
+    assert doc.items == []
