@@ -59,6 +59,8 @@ _SITES: dict[str, tuple[str, str]] = {
         "system", "合成示例试跑护栏(SQLGlot + 试执行):管理员建模行为"),
     "trove/services/semantic_layer/verify.py": (
         "system", "语义声明验证:管理端校验面"),
+    "trove/services/evalset/service.py": (
+        "system", "验收集预览:admin-only 确认门前的有界只读试跑(同管理端语义预览,决策 4;masking 拒绝先行)"),
     # ── 基础设施 ────────────────────────────────────────────
     "trove/services/datasource/registry.py": (
         "infra", "ConnectorRegistry 本体:适配器调用的唯一收口"),

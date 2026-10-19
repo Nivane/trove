@@ -636,6 +636,14 @@
         </DataTable>
       </section>
 
+      <!-- ── 验收集:待审 / 已确认 / 覆盖与试跑 ── -->
+      <EvalsetTab
+        v-else-if="values.tab === 'evalset'"
+        :datasource="values.ds"
+        :tier="values.tier"
+        @count-change="evalsetCount = $event"
+      />
+
       <!-- ── 规则: human-authored, no write path — read-only by design ── -->
       <section v-else class="kb-pane">
         <p class="toolbar-note">{{ t('kbRulesReadonly', ui.lang) }}</p>
@@ -842,8 +850,9 @@ import DataTable, { type DataTableColumn } from '../../components/base/DataTable
 import ConfirmDialog from '../../components/base/ConfirmDialog.vue'
 import DiffCard from '../../components/kb/DiffCard.vue'
 import AssetDrawer from '../../components/kb/AssetDrawer.vue'
+import EvalsetTab from '../../components/kb/EvalsetTab.vue'
 
-type TabKey = 'pending' | 'assets' | 'entries' | 'examples' | 'lessons' | 'rules'
+type TabKey = 'pending' | 'assets' | 'entries' | 'examples' | 'lessons' | 'rules' | 'evalset'
 type KpiKey = TabKey
 
 interface QueueItem {
@@ -917,6 +926,8 @@ const { values } = useListQuery({
   prob: '',
   q: '',
   status: '',
+  // 验收集页签的 tier 过滤(空串 = 全部);由 EvalsetTab 读 URL 状态。
+  tier: '',
 })
 
 const datasources = ref<DatasourceInfo[]>([])
@@ -1644,6 +1655,9 @@ const lessonColumns = computed<DataTableColumn[]>(() => [
   { key: 'status', label: t('kbColStatus', ui.lang), width: 110 },
 ])
 
+/** 验收集的行数由页签自己报(服务端过滤后的「当前可见」条数)。 */
+const evalsetCount = ref(0)
+
 const tabDefs = computed(() => [
   { key: 'pending' as TabKey, label: t('kbTabPending', ui.lang), count: pendingLessons.value.length + pendingExamples.value.length },
   { key: 'assets' as TabKey, label: t('kbTabAssets', ui.lang), count: assets.value.length },
@@ -1651,6 +1665,7 @@ const tabDefs = computed(() => [
   { key: 'examples' as TabKey, label: t('kbTabExamples', ui.lang), count: exampleRows.value.length },
   { key: 'lessons' as TabKey, label: t('kbTabLessons', ui.lang), count: lessons.value.length },
   { key: 'rules' as TabKey, label: t('kbTabRules', ui.lang), count: rules.value.length },
+  { key: 'evalset' as TabKey, label: t('kbTabEvalset', ui.lang), count: evalsetCount.value },
 ])
 
 const refusedAssetCount = computed(

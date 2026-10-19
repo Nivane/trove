@@ -110,6 +110,14 @@ Threshold rules **declared in the semantic model's own vocabulary** (metric / di
 - **质量报告出口(B8)**:`trove/eval/quality_report.py`(纯)把「判定史 + 效果测量」整理成能交出去的报告 —— `build_report`(单源)与 `fleet_report`(跨源:计数相加、比率同一口径重算,per-rule 明细原样带 `reports`;**跨源不拼桶** —— 把两个源的 revenue_drop 拼成一条「历史」会造出一段从未存在过的历史)。**口径唯一权威在 `decision/score.py`**,这层不重写任何指标(两个出口各算一遍的后果不是重复,是漂移 —— `eval/gate.py` 的同款教训);`generated_at` 由调用方给,同一输入逐字节同一输出。出口挂在 `GET /v1/admin/quality/overview` 的 `decisions` 块:verdict 存储未装配 → `null` + degraded `not_configured`,**枚举失败也是 `null`**(空报告会变成「测到了且为零」的假声明;空数据源列表才是合法的空块),永不 500。前端 QualityPanel「判定质量」卡:整块拿不到不渲染,每源一行,比率不足给门控文案(复用决策页的措辞键)。`rollup` 的总览行与桶**同一道分母门**(`min_effects`,默认 3;不足 → `None` + `insufficient`)—— 总览行不该比桶更敢说话,一条测量的 100% 正是 `score.py` 要防的伪精度。
 - Wiring: scheduled decision jobs run through `jobs/runner.py::_run_decision` (never the NL pipeline — a verdict must not depend on the model; a runner without `DecisionService` reports the job as an error rather than asking the LLM). 通知消息在规则消息后条件缀「主因」/「噪声带」行(`band_line`,未声明恒空串 → 通知与历史逐字节相同)。Admin API `trove/api/routers/decisions.py` (`/v1/admin/decisions`: list / raw / get / put / simulate / quality);列表对声明了的规则条件带出 `seasonal/significance/causal` 三段,与 `rule_to_dict` 同源)。前端判定历史抽屉渲染 significance 节(by_dim 的 z/k/位置分/原因)与**因果节**(梯级/L2·L3 的净效应与跨零/`unmet` 带实测与阈值/`assumptions` 三态/降级;**无 `rung` 整节不渲染**——R1:梯子必须显式出现,否则不显示结论),查询账目站在两节之外,行卡带门列只在声明后出现。规则文件写入自动 git 提交(`GitVersioning`),回滚走 KB 的 `git_rollback` —— 「这条判定按哪一版规则判的」有史可查。
 
+### 按数据源验收集（evalset，P0）
+
+- 资产：`.trove/evalsets/<datasource>/evalset.yml`（git 版本化，**不在** `.trove/kb/` 下，`kb_rev` 保持纯检索语义）；运行产物在 `.trove/eval/evalsets/<ds>/<tier>/`，不入库。
+- 信任分层：存储 `source`+`reference_origin`，读时派生 `tier`；只有 `tier=verified`（production/manual 问题，或管理员 vouch 过 SQL 的条目）进头部准确率，三档分数永不合并。`pending` 永不参与评分。
+- 生成：semantic（语义编译器枚举）、synthetic（复用 kb/synthetic 护栏）、production（episodes/审计/拒绝，产物不带用户归属）；一切产物落 `pending`，确认门带 actor，泄漏与 `match=shape` 在确认时拒绝。
+- 试跑：`trove evalset run --datasource DS [--tier verified|semantic|synthetic|all] --yes`；无 `--yes` 为 dry-run，`--compile-only` 零 LLM；输出可被 `scripts/eval_gate.py` 直接比较，`GOLD_ERROR` 不进 EX 分母。
+- 诚实边界：readiness 的 `null`=未测、`0`=真的为零、`available:false`=读不到；`kb_rev_changed_mid_run=true` 时分数只作参考。
+
 ### 主动扫描 + LLM 假设层 `trove/services/scan/`(B6,消费方)
 
 确定性的「谁超出了历史噪声带」扫描,加一轮可选的 LLM 假设 → 确定性裁决。本包是**消费方**:只读地使用 `analysis`(块序列/噪声带/编译 hop)与 `decision`(草稿门),绝不 import 数据源适配器/KB/jobs(`test_scan_readonly_posture.py` AST 守卫);执行面是注入的 runner,与 `AnalysisEngine` 同款。

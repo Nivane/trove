@@ -389,7 +389,8 @@ describe('KbView', () => {
     mockApi()
     const view = await mountView()
     const tabs = view.findAll('.kb-tab').map((t) => t.text())
-    expect(tabs).toHaveLength(6)
+    // six KB tabs + the evalset tab (Task 12 design §9.2)
+    expect(tabs).toHaveLength(7)
     const count = (label: string) => tabBtn(view, label).find('.tab-badge').text()
     expect(count('Pending')).toBe('4') // 2 pending lessons + 2 example drafts
     expect(count('Assets')).toBe('4')
@@ -397,6 +398,8 @@ describe('KbView', () => {
     expect(count('Examples')).toBe('4') // 2 pending drafts + 2 mirror rows
     expect(count('Lessons')).toBe('3')
     expect(count('Rules')).toBe('1')
+    // the evalset tab owns its count (reported by the tab after load; 0 here)
+    expect(count('Evalset')).toBe('0')
 
     // KPI: adoption health is adopted·refused, sub names the refused count
     const health = kpiTile(view, 'Asset health')
