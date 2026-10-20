@@ -1,6 +1,6 @@
 version: 1
 datasource: demo
-updated_at: '2026-10-20T04:41:45+00:00'
+updated_at: '2026-10-20T04:41:46+00:00'
 items:
 - qid: e-bf6c2193d6
   question: 按counterparty bank统计，percentage of district records where Region name; sample values are Czech region names is Central Bohemia region是多少？
@@ -675,7 +675,7 @@ items:
 
     GROUP BY loan.status'
   source: semantic
-  reference_origin: semantic_compiler
+  reference_origin: human
   status: confirmed
   match: exact
   tags:
@@ -690,14 +690,14 @@ items:
   duplicate_of: ''
   leakage: false
   leakage_hit: ''
-  note: ''
+  note: 'vouched: acceptance: 人工复核参考 SQL 与口径'
   created_at: '2026-10-20T04:35:29+00:00'
   created_by: system
   generator: evalset.semantic.v1
   confirmed_at: '2026-10-20T04:36:06+00:00'
   confirmed_by: acceptance
-  vouched_at: ''
-  vouched_by: ''
+  vouched_at: '2026-10-20T04:41:46+00:00'
+  vouched_by: acceptance
   rejection_reason: ''
   retired_at: ''
 - qid: e-b6b3947c62
