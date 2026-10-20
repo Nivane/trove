@@ -74,3 +74,23 @@ drafts:
   conflict:
     code: field_declared
     message: 字段「trans.type」已声明
+- id: 37990a1f9cd4
+  kind: field
+  action: upsert
+  name: trans.account
+  payload:
+    expression: trans.account
+    synonyms:
+    - counterparty account
+    - counterparty account number
+    - trans.account
+    description: Counterparty (other party's) account number associated with a transaction
+      record.
+    datatype: String
+  note: refuse-conflict:field_declared:counterparty account按percentage of trans records
+    where Transaction type; uppercase code indicating credit, debit, or wit
+  status: pending
+  created_at: '2026-10-20T04:40:28+00:00'
+  conflict:
+    code: field_declared
+    message: 字段「trans.account」已声明
