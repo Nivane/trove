@@ -2,9 +2,9 @@
 
 # Trove
 
-**Ask · Analyze · Decide · Act — in one conversation.**
+**AI Native Data Decision Agent** — ask · analyze · decide · act in one conversation.
 
-*An open-source, self-hosted **data decision agent**: natural language in, verified answers out — the same human-approved semantic model bounds what is answerable, backs zero-LLM scheduled verdicts that know their own uncertainty, and measures the effect of the action that followed.*
+*An open-source, self-hosted **AI-native data decision agent**: natural language in, verified answers out — the same human-approved semantic model bounds what is answerable, backs zero-LLM scheduled verdicts that know their own uncertainty, and measures the effect of the action that followed.*
 
 [English](README.en.md) · [简体中文](README.md)
 
@@ -17,7 +17,7 @@
 
 <br>
 
-<a href="https://nivane.github.io/trove/"><img src="assets/banner.png" alt="Trove — a data decision agent: natural language in, verified answers out. One question flowing through the query pipeline (intent routing → semantic binding → semantic gate → plan &amp; compile → generate &amp; consensus → pre-execution gates → validate &amp; mask → reflect → deliver), next to a real chat session with its analysis panel" width="880"></a>
+<a href="https://nivane.github.io/trove/"><img src="assets/banner.png" alt="Trove — an AI-native data decision agent: natural language in, verified answers out. One question flowing through the query pipeline (intent routing → semantic binding → semantic gate → plan &amp; compile → generate &amp; consensus → pre-execution gates → validate &amp; mask → reflect → deliver), next to a real chat session with its analysis panel" width="880"></a>
 
 <br>
 
@@ -29,7 +29,7 @@
 
 ## What Trove Is
 
-Trove is a **self-learning data decision agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask. The same semantic model is also evaluated on schedule into evidence-carrying verdicts that know their own uncertainty, delivered the moment they trigger; the action happens in your own processes (Trove keeps read-only access to your data), and its effect is measured back afterwards.
+Trove is a **self-learning, AI-native data decision agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask. The same semantic model is also evaluated on schedule into evidence-carrying verdicts that know their own uncertainty, delivered the moment they trigger; the action happens in your own processes (Trove keeps read-only access to your data), and its effect is measured back afterwards.
 
 Its promise is not "always right" but **never wrong without a fight**:
 
@@ -176,7 +176,7 @@ flowchart TB
 
 Read more: [decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [actions & approvals](https://nivane.github.io/trove/capabilities/actions.html) · [decomposition math & driver trees](https://nivane.github.io/trove/engineering/decomposition.html) · [statistics & noise bands](https://nivane.github.io/trove/engineering/statistics.html) · [the closed loop & its contracts](https://nivane.github.io/trove/engineering/closed-loop.html).
 
-## Why Not Another NL2SQL
+## Why the Semantic-Layer Route
 
 Raw-LLM agents write SQL from raw DDL, and are confidently wrong about business meaning: a column named `A11` or a status code `A` means nothing without the glossary, and "average loan amount" is not derivable from a schema. RAG helps — a glossary, examples and lessons anchor generation — but RAG feeds the *ammo*, it does not draw the *boundary*: retrieval misses still get answered with plausible guesses.
 
@@ -203,7 +203,7 @@ One compiler, three outcomes — and the **soft MISS in the middle is the common
 
 Everything a human cares about — which definitions count, which joins are legal, what the enums mean, how much is too much — is declared once in YAML and enforced on every question, instead of re-guessed on every question.
 
-| | A raw LLM agent | RAG-only NL2SQL | A bare semantic layer | **Trove** |
+| | A raw LLM agent | A RAG-only LLM | A bare semantic layer | **Trove** |
 |---|:---:|:---:|:---:|:---:|
 | Draws an answerable boundary (semantic model) | ❌ | ❌ | ✅ | ✅ |
 | Refuses instead of guessing outside coverage | ❌ | ❌ | partial | ✅ + one-click model extension |
@@ -387,7 +387,7 @@ Code layout: `trove/workflow/` (graphs and nodes) · `trove/services/` (datasour
 
 ## FAQ
 
-**Is this a text-to-SQL framework or a BI tool?** Neither exactly — Trove is a data decision agent. You ask, it plans, compiles, executes and verifies, then answers in Markdown with charts and an auditable trail; the same semantic model is also evaluated on schedule into evidence-carrying verdicts. It does not try to be a dashboard builder.
+**What is Trove?** An AI-native data decision agent: you ask, it plans, compiles, executes and verifies, then answers in Markdown with charts and an auditable trail; the same semantic model is also evaluated on schedule into evidence-carrying verdicts.
 
 **Why does it refuse questions?** Because the semantic model is the answerable boundary — that is the product. A refusal means "the model does not cover this", and it arrives with a drafted extension you can confirm to extend coverage and re-answer in one step. Quietly guessing at tables is the failure mode this architecture exists to prevent.
 
