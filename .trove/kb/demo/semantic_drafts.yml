@@ -94,3 +94,21 @@ drafts:
   conflict:
     code: field_declared
     message: 字段「trans.account」已声明
+- id: 620f58f0f16b
+  kind: metric
+  action: upsert
+  name: avg_loan_amount
+  payload:
+    expression: AVG(loan.amount)
+    synonyms:
+    - 贷款的平均金额
+    - 平均贷款金额
+    definition: 所有贷款记录的平均贷款金额。
+    datasets:
+    - loan
+  note: refuse-conflict:name_declared:贷款的平均金额是多少？
+  status: pending
+  created_at: '2026-10-20T04:43:21+00:00'
+  conflict:
+    code: name_declared
+    message: 指标「avg_loan_amount」已声明
