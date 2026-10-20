@@ -1,6 +1,6 @@
 version: 1
 datasource: demo
-updated_at: '2026-10-20T04:41:38+00:00'
+updated_at: '2026-10-20T04:41:39+00:00'
 items:
 - qid: e-bf6c2193d6
   question: 按counterparty bank统计，percentage of district records where Region name; sample values are Czech region names is Central Bohemia region是多少？
@@ -1018,6 +1018,29 @@ items:
   leakage_hit: ''
   note: ''
   created_at: '2026-10-20T04:41:38+00:00'
+  created_by: acceptance
+  generator: manual
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-f279a51f7f
+  question: 贷款的平均金额是多少？
+  reference_sql: SELECT AVG(amount) FROM loan
+  source: manual
+  reference_origin: human
+  status: pending
+  match: exact
+  tags: {}
+  content_hash: 2459ee8a8e4b75d6
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:41:39+00:00'
   created_by: acceptance
   generator: manual
   confirmed_at: ''
