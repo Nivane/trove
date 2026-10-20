@@ -1,0 +1,1005 @@
+version: 1
+datasource: demo
+updated_at: '2026-10-20T04:35:29+00:00'
+items:
+- qid: e-bf6c2193d6
+  question: 按counterparty bank统计，percentage of district records where Region name; sample values are Czech region names is Central Bohemia region是多少？
+  reference_sql: 'SELECT trans.bank, CAST(SUM(CASE WHEN district.A3 = ''central Bohemia'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    JOIN trans ON trans.account_id = account.account_id
+
+    GROUP BY trans.bank'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of district records where Region name; sample values are Czech region names is Central Bohemia region
+    dimension:
+    - bank
+    pattern:
+    - group_by
+  content_hash: 710c036043897278
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-acca198e11
+  question: 按purpose code统计，percentage of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is debit/expense是多少？
+  reference_sql: 'SELECT trans.k_symbol, CAST(SUM(CASE WHEN trans.type = ''VYDAJ'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM trans
+
+    GROUP BY trans.k_symbol'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is debit/expense
+    dimension:
+    - k_symbol
+    pattern:
+    - group_by
+  content_hash: 4fb1d9a5f647d10e
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-407303a28d
+  question: 按counterparty bank统计，percentage of trans records where Transaction operation; uppercase code is transfer to account是多少？
+  reference_sql: 'SELECT trans.bank, CAST(SUM(CASE WHEN trans.operation = ''PREVOD NA UCET'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM trans
+
+    GROUP BY trans.bank'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of trans records where Transaction operation; uppercase code is transfer to account
+    dimension:
+    - bank
+    pattern:
+    - group_by
+  content_hash: bf57f4aff1b82e41
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-370791fd13
+  question: 按statement frequency统计，trans count是多少？
+  reference_sql: 'SELECT account.frequency, COUNT(trans.trans_id)
+
+    FROM trans
+
+    JOIN account ON trans.account_id = account.account_id
+
+    GROUP BY account.frequency'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - number of trans records
+    dimension:
+    - frequency
+    pattern:
+    - group_by
+  content_hash: 160b88e271f59b59
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-6c462d5127
+  question: 按operation type统计，client count是多少？
+  reference_sql: 'SELECT trans.operation, COUNT(DISTINCT client.client_id)
+
+    FROM client
+
+    JOIN disp ON disp.client_id = client.client_id
+
+    JOIN account ON disp.account_id = account.account_id
+
+    JOIN trans ON trans.account_id = account.account_id
+
+    GROUP BY trans.operation'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - number of client records
+    dimension:
+    - operation
+    pattern:
+    - group_by
+  content_hash: 0e5667f535e84e70
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-dd469bd646
+  question: 按Client's gender.统计，percentage of Opaque numeric column A4 where Region name; sample values are Czech region names is Prague region是多少？
+  reference_sql: 'SELECT client.gender, CAST(SUM(CASE WHEN district.A3 = ''Prague'' THEN district.A4 ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A4), 0)
+
+    FROM district
+
+    JOIN client ON client.district_id = district.district_id
+
+    GROUP BY client.gender'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of Opaque numeric column A4 where Region name; sample values are Czech region names is Prague region
+    dimension:
+    - gender
+    pattern:
+    - group_by
+  content_hash: a7e00c8d47d0ba4b
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-fdbfc9cd42
+  question: transaction type按percentage of Opaque numeric column A4 where District name; sample values are Czech place names is Beroun district排名前 5 是哪些？
+  reference_sql: 'SELECT trans.type, CAST(SUM(CASE WHEN district.A2 = ''Beroun'' THEN district.A4 ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A4), 0)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    JOIN trans ON trans.account_id = account.account_id
+
+    GROUP BY trans.type
+
+    ORDER BY CAST(SUM(CASE WHEN district.A2 = ''Beroun'' THEN district.A4 ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A4), 0) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of Opaque numeric column A4 where District name; sample values are Czech place names is Beroun district
+    dimension:
+    - type
+    pattern:
+    - group_by
+    - top_n
+  content_hash: f5b16b7f40fa3fb7
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-42f543352b
+  question: 按Client's gender.统计，card count是多少？
+  reference_sql: 'SELECT client.gender, COUNT(card.card_id)
+
+    FROM card
+
+    JOIN disp ON card.disp_id = disp.disp_id
+
+    JOIN client ON disp.client_id = client.client_id
+
+    GROUP BY client.gender'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - number of card records
+    dimension:
+    - gender
+    pattern:
+    - group_by
+  content_hash: 88962d59ed0be76e
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-a516b97139
+  question: 按Client's gender.统计，sum of Regular payment amount是多少？
+  reference_sql: 'SELECT client.gender, SUM(loan.payments)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN disp ON disp.account_id = account.account_id
+
+    JOIN client ON disp.client_id = client.client_id
+
+    GROUP BY client.gender'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - total Regular payment amount
+    dimension:
+    - gender
+    pattern:
+    - group_by
+  content_hash: 7e220542e4490f98
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-61b4e0cbf5
+  question: 按region统计，sum of Opaque numeric column A12是多少？
+  reference_sql: 'SELECT district.A3, SUM(district.A12)
+
+    FROM district
+
+    GROUP BY district.A3'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - total Opaque numeric column A12
+    dimension:
+    - A3
+    pattern:
+    - group_by
+  content_hash: 09d9b125c51a2ff0
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-5786aefbd7
+  question: counterparty bank按percentage of loan records where Loan repayment status; uppercase one-letter code indicating whether the loan is finished and whether it is being repaid is loan running, loan not paid排名前 5 是哪些？
+  reference_sql: 'SELECT trans.bank, CAST(SUM(CASE WHEN loan.status = ''D'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN trans ON trans.account_id = account.account_id
+
+    GROUP BY trans.bank
+
+    ORDER BY CAST(SUM(CASE WHEN loan.status = ''D'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of loan records where Loan repayment status; uppercase one-letter code indicating whether the loan is finished and whether it is being repaid is loan running, loan not paid
+    dimension:
+    - bank
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 8758bdda319a31a1
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-8f08ab37df
+  question: 按statement frequency统计，avg Opaque numeric column A15是多少？
+  reference_sql: 'SELECT account.frequency, AVG(district.A15)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    GROUP BY account.frequency'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - average Opaque numeric column A15
+    dimension:
+    - frequency
+    pattern:
+    - group_by
+  content_hash: 7e71f39cb0c86d8c
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-742a8b306a
+  question: 按card type统计，avg Opaque numeric column A11是多少？
+  reference_sql: 'SELECT card.type, AVG(district.A11)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    JOIN disp ON disp.account_id = account.account_id
+
+    JOIN card ON card.disp_id = disp.disp_id
+
+    GROUP BY card.type'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - average Opaque numeric column A11
+    dimension:
+    - type
+    pattern:
+    - group_by
+  content_hash: e862df13162f75d4
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-70d24bf9b6
+  question: 按Client's gender.统计，sum of Opaque numeric column A8是多少？
+  reference_sql: 'SELECT client.gender, SUM(district.A8)
+
+    FROM district
+
+    JOIN client ON client.district_id = district.district_id
+
+    GROUP BY client.gender'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - total Opaque numeric column A8
+    dimension:
+    - gender
+    pattern:
+    - group_by
+  content_hash: 33fbd36966fc3b36
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-8740f11893
+  question: 按disposition type统计，percentage of Transaction amount where Transaction operation; uppercase code is VYBER是多少？
+  reference_sql: 'SELECT disp.type, CAST(SUM(CASE WHEN trans.operation = ''VYBER'' THEN trans.amount ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+
+    FROM trans
+
+    JOIN account ON trans.account_id = account.account_id
+
+    JOIN disp ON disp.account_id = account.account_id
+
+    GROUP BY disp.type'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of Transaction amount where Transaction operation; uppercase code is VYBER
+    dimension:
+    - type
+    pattern:
+    - group_by
+  content_hash: 6f11687025ebad3a
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-e421128931
+  question: 按loan status统计，avg Opaque numeric column A16是多少？
+  reference_sql: 'SELECT loan.status, AVG(district.A16)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    JOIN loan ON loan.account_id = account.account_id
+
+    GROUP BY loan.status'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - average Opaque numeric column A16
+    dimension:
+    - status
+    pattern:
+    - group_by
+  content_hash: ec7e51e1af73de9d
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-3bdc291f1d
+  question: card type按percentage of Transaction amount where Transaction type; uppercase code indicating credit, debit, or withdrawal is debit/expense排名前 5 是哪些？
+  reference_sql: 'SELECT card.type, CAST(SUM(CASE WHEN trans.type = ''VYDAJ'' THEN trans.amount ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+
+    FROM trans
+
+    JOIN account ON trans.account_id = account.account_id
+
+    JOIN disp ON disp.account_id = account.account_id
+
+    JOIN card ON card.disp_id = disp.disp_id
+
+    GROUP BY card.type
+
+    ORDER BY CAST(SUM(CASE WHEN trans.type = ''VYDAJ'' THEN trans.amount ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of Transaction amount where Transaction type; uppercase code indicating credit, debit, or withdrawal is debit/expense
+    dimension:
+    - type
+    pattern:
+    - group_by
+    - top_n
+  content_hash: cc3bbb2a2e20c315
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-64cf2e1a68
+  question: 按counterparty account统计，percentage of Transaction amount where Transaction operation; uppercase code is VYBER是多少？
+  reference_sql: 'SELECT trans.account, CAST(SUM(CASE WHEN trans.operation = ''VYBER'' THEN trans.amount ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+
+    FROM trans
+
+    GROUP BY trans.account'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of Transaction amount where Transaction operation; uppercase code is VYBER
+    dimension:
+    - account
+    pattern:
+    - group_by
+  content_hash: 3767c5e9d9f76215
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-39ba4b0cc3
+  question: 按loan status统计，percentage of loan records where Loan repayment status; uppercase one-letter code indicating whether the loan is finished and whether it is being repaid is C是多少？
+  reference_sql: 'SELECT loan.status, CAST(SUM(CASE WHEN loan.status = ''C'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM loan
+
+    GROUP BY loan.status'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of loan records where Loan repayment status; uppercase one-letter code indicating whether the loan is finished and whether it is being repaid is C
+    dimension:
+    - status
+    pattern:
+    - group_by
+  content_hash: 0502df7a0dafe0ab
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-b6b3947c62
+  question: loan status按percentage of account records where Statement issuance frequency; all-caps coded values is weekly排名前 5 是哪些？
+  reference_sql: 'SELECT loan.status, CAST(SUM(CASE WHEN account.frequency = ''POPLATEK TYDNE'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM account
+
+    JOIN loan ON loan.account_id = account.account_id
+
+    GROUP BY loan.status
+
+    ORDER BY CAST(SUM(CASE WHEN account.frequency = ''POPLATEK TYDNE'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of account records where Statement issuance frequency; all-caps coded values is weekly
+    dimension:
+    - status
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 0f617c88b85e589a
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-63f601a3b3
+  question: 按district name统计，percentage of client records where Client gender; capital letter code F=female, M=male is female是多少？
+  reference_sql: 'SELECT district.A2, CAST(SUM(CASE WHEN client.gender = ''F'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM client
+
+    JOIN district ON client.district_id = district.district_id
+
+    GROUP BY district.A2'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of client records where Client gender; capital letter code F=female, M=male is female
+    dimension:
+    - A2
+    pattern:
+    - group_by
+  content_hash: da507e18ae95d0cb
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-e8ec266345
+  question: transaction type按average salary排名前 5 是哪些？
+  reference_sql: 'SELECT trans.type, AVG(district.A11)
+
+    FROM district
+
+    JOIN account ON account.district_id = district.district_id
+
+    JOIN trans ON trans.account_id = account.account_id
+
+    GROUP BY trans.type
+
+    ORDER BY AVG(district.A11) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - avg_salary
+    dimension:
+    - type
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 55f6b5dd41cbe60d
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-1fb8b7e960
+  question: statement frequency按sum of Regular payment amount排名前 5 是哪些？
+  reference_sql: 'SELECT account.frequency, SUM(loan.payments)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    GROUP BY account.frequency
+
+    ORDER BY SUM(loan.payments) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - total Regular payment amount
+    dimension:
+    - frequency
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 42f850ebf9376964
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-5c810d78c4
+  question: district name按sum of Opaque numeric column A5排名前 5 是哪些？
+  reference_sql: 'SELECT district.A2, SUM(district.A5)
+
+    FROM district
+
+    GROUP BY district.A2
+
+    ORDER BY SUM(district.A5) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - total Opaque numeric column A5
+    dimension:
+    - A2
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 6f5ec2fe6dc5be35
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-58c2f3c60b
+  question: counterparty account按percentage of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is withdrawal排名前 5 是哪些？
+  reference_sql: 'SELECT trans.account, CAST(SUM(CASE WHEN trans.type = ''VYBER'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM trans
+
+    GROUP BY trans.account
+
+    ORDER BY CAST(SUM(CASE WHEN trans.type = ''VYBER'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*) DESC
+
+    LIMIT 5'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is withdrawal
+    dimension:
+    - account
+    pattern:
+    - group_by
+    - top_n
+  content_hash: 639ab25531514124
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-de468b7a8f
+  question: 按purpose code统计，percentage of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is withdrawal是多少？
+  reference_sql: 'SELECT trans.k_symbol, CAST(SUM(CASE WHEN trans.type = ''VYBER'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM trans
+
+    GROUP BY trans.k_symbol'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of trans records where Transaction type; uppercase code indicating credit, debit, or withdrawal is withdrawal
+    dimension:
+    - k_symbol
+    pattern:
+    - group_by
+  content_hash: 3edfeff71b4a496a
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
+- qid: e-85a18a46dc
+  question: 按Client's gender.统计，percentage of account records where Statement issuance frequency; all-caps coded values is monthly是多少？
+  reference_sql: 'SELECT client.gender, CAST(SUM(CASE WHEN account.frequency = ''POPLATEK MESICNE'' THEN 1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+
+    FROM account
+
+    JOIN disp ON disp.account_id = account.account_id
+
+    JOIN client ON disp.client_id = client.client_id
+
+    GROUP BY client.gender'
+  source: semantic
+  reference_origin: semantic_compiler
+  status: pending
+  match: exact
+  tags:
+    metric:
+    - share of account records where Statement issuance frequency; all-caps coded values is monthly
+    dimension:
+    - gender
+    pattern:
+    - group_by
+  content_hash: 758d16630d2458cf
+  needs_reference: false
+  duplicate_of: ''
+  leakage: false
+  leakage_hit: ''
+  note: ''
+  created_at: '2026-10-20T04:35:29+00:00'
+  created_by: system
+  generator: evalset.semantic.v1
+  confirmed_at: ''
+  confirmed_by: ''
+  vouched_at: ''
+  vouched_by: ''
+  rejection_reason: ''
+  retired_at: ''
