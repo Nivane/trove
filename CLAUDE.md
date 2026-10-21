@@ -38,9 +38,9 @@ docker compose down              # 停止并移除容器
 ```
 
 - 登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）
-- **默认业务栈 = PostgreSQL**：`postgres` 服务用 `paradedb/paradedb:latest` 镜像（业务表 + pgvector 向量 + pg_bm25 全文检索同实例，`fts_tokenizer` 面向中文 KB 检索），`db-init` 一次性服务把 BIRD 金融 demo 数据灌入（幂等，`scripts/init_postgres_demo.py`），后端 `--datasource postgres://trove:trove@postgres:5432/trove`；向量后端默认 `pgvector`（`vector_dsn` 留空 = 同实例推导）。换回内置 SQLite demo 可改 `--datasource demo`，生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
+- **默认业务栈 = PostgreSQL**：`postgres` 服务用 `paradedb/paradedb:latest` 镜像（业务表 + pgvector 向量 + pg_bm25 全文检索同实例，`fts_tokenizer` 面向中文 KB 检索），`db-init` 一次性服务把 BIRD 金融 demo 数据灌入（幂等，`scripts/init_postgres_demo.py`），库名 `financial` 与随仓库 KB `.trove/kb/financial/` 同名，后端 `--datasource postgres://trove:trove@postgres:5432/financial`；向量后端默认 `pgvector`（`vector_dsn` 留空 = 同实例推导）。换回内置 SQLite demo 可改 `--datasource demo`，生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
 - 管理端数据源流程：admin 登录 → 注册（内置 demo 或 URL，注册即连接探测，失败 400 报原因）→ 该源 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）→ 用户端下拉/列表才可见（仅显示「已连接且 KB 已初始化」的数据源，非 admin 还需 grants 授权）
-- 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
+- 真实对话需要 LLM 凭证：根 `.env` 会被 compose 的 `env_file` 显式注入 backend（文件缺失自动跳过），或取消 `volumes:` 里 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`）；容器内程序不会自己读根 `.env`
 - 后端镜像是不带页面的纯 JSON API（所有路由在 `/v1` 下）；前端由独立容器发布（`frontend/Dockerfile` 多阶段构建：`npm run build` → `frontend/dist` → nginx 运行时）。本机开发：后端 `uv run trove serve`（:8000）+ 前端 `cd frontend && npm run dev`（:5173，HMR，反代 `/v1` → 后端）。
 
 Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres` (`postgres` = psycopg,业务 + pgvector 向量驱动); Doris 复用 MySQL 协议驱动(`--extra doris` = aiomysql); 云仓 `--extra snowflake`(snowflake-connector-python)/ `--extra bigquery`(google-cloud-bigquery 同步客户端). Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset; Postgres uses `PG_TEST_URL`); see README.

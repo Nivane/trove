@@ -268,7 +268,18 @@ docker compose build frontend    # rebuild only the frontend image; build backen
 docker compose down
 ```
 
-Default local login is admin / `admin123` (production is controlled by `TROVE_ADMIN_PASSWORD`; with OIDC configured the login page also offers "Sign in with SSO"). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded; real conversations need LLM credentials — see the comment on the `~/.trove/conf` mount in `docker-compose.yml`.
+Default local login is admin / `admin123` (production is controlled by `TROVE_ADMIN_PASSWORD`; with OIDC configured the login page also offers "Sign in with SSO"). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded; the database name `financial` matches the in-repo KB `.trove/kb/financial/`, so the first question after login is answerable — no "not modelled" refusal.
+
+Real conversations need LLM credentials; pick either path:
+
+- **Project-root `.env`** (recommended): compose explicitly injects it into the backend, and skips it when the file is absent.
+  ```bash
+  echo 'DEEPSEEK_API_KEY=sk-...' >> .env
+  docker compose up -d backend
+  ```
+- **Mount your host config**: uncomment the `${HOME}/.trove/conf` line in `docker-compose.yml`, keeping it under `volumes:` (it must **not** go back under `environment:` — uncommenting there is invalid YAML).
+
+The program inside the container never reads the project-root `.env` by itself (the image does not copy it); credentials arrive through the explicit compose injection or the mount. If you ran an older version (database name `trove`), run `docker compose down -v` before `up --build` to drop the stale volume.
 
 ## Capabilities at a Glance
 

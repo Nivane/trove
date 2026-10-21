@@ -18,11 +18,13 @@ services:
     environment:
       POSTGRES_USER: trove
       POSTGRES_PASSWORD: trove
-      POSTGRES_DB: trove
+      # 库名 = 数据源名 = KB 目录名(.trove/kb/financial):随仓库的语义模型
+      # 直接命中,`up` 之后第一问不会被「未建模」拒绝。
+      POSTGRES_DB: financial
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trove -d trove"]
+      test: ["CMD-SHELL", "pg_isready -U trove -d financial"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -41,7 +43,7 @@ services:
     # scripts 未 COPY 进镜像,挂载后由 init 脚本读取。
     command:
       ["python", "/app/scripts/init_postgres_demo.py",
-       "postgres://trove:trove@postgres:5432/trove"]
+       "postgres://trove:trove@postgres:5432/financial"]
     volumes:
       - ./scripts:/app/scripts
 
@@ -53,22 +55,31 @@ services:
     # 默认连 PostgreSQL 业务库(业务表 + pgvector 向量同实例);演示数据由
     # db-init 负责灌入。换回内置 SQLite demo 可改 --datasource demo。
     command: ["trove", "serve", "--host", "0.0.0.0", "--port", "8000",
-              "--datasource", "postgres://trove:trove@postgres:5432/trove"]
+              "--datasource", "postgres://trove:trove@postgres:5432/financial"]
     depends_on:
       db-init:
         condition: service_completed_successfully
+    # 根 `.env` 不会自己进容器(Dockerfile 不 COPY 它),这里显式声明:
+    # compose 会把项目根 .env 注入 backend;文件不存在时跳过(required: false),
+    # 所以不带凭证也能先起栈、看页面。
+    env_file:
+      - path: .env
+        required: false
     environment:
       # Dev-only: deterministic bootstrap admin password for the login
       # flow; without this it is random and printed once in the logs.
       TROVE_ADMIN_PASSWORD: admin123
-      # Real chats need the LLM credentials from your host config —
-      # uncomment to mount them read-only (never commit secrets):
-      # - ${HOME}/.trove/conf:/root/.trove/conf:ro
     volumes:
       # KB persistence: .trove/kb/<datasource>/ lives at <cwd>/.trove by
       # default (WORKDIR /app) — mount it so KB edits survive container
       # recreation and are shared with local REPL runs.
       - ./.trove:/app/.trove
+      # Real chats need LLM credentials. Two supported paths — either works:
+      #   1. project-root `.env` (injected by the `env_file:` block above),
+      #   2. uncomment the next line to mount your host config read-only
+      #      (never commit secrets). It must stay under `volumes:` — inside
+      #      `environment:` the uncommented line is invalid YAML.
+      # - ${HOME}/.trove/conf:/root/.trove/conf:ro
     healthcheck:
       test:
         [

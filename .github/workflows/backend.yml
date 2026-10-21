@@ -72,6 +72,12 @@ jobs:
         run: uv sync --extra postgres
       - name: Import smoke
         run: uv run python -c "import trove.main; print('import ok')"
+      # compose 契约门:首次上手的承诺(库名对得上随仓库 KB、凭证挂载行
+      # 取消注释后仍是合法 YAML、根 .env 显式声明)不能靠人记得。
+      # `config -q` 不需要 Docker daemon,只做解析与变量插值(零网络);
+      # 内容断言在 tests/deploy/test_compose_contract.py 里。
+      - name: Compose contract gate
+        run: docker compose config -q
       # 静态质量门禁:pyflakes 未用/未定义名 + pycodestyle 错误级
       # (配置见 pyproject.toml [tool.ruff];E501 行长不拦)。
       - name: Ruff lint gate
