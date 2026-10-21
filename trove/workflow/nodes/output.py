@@ -22,7 +22,7 @@ from trove.agent.answer_source import source_line as render_source_line
 from trove.agent.confidence import (
     confidence_enabled, render_line, result_confidence, sql_confidence,
 )
-from trove.core.i18n import L
+from trove.core.i18n import L, detect_language
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
 from trove.services.limits import get_result_limits
@@ -171,14 +171,44 @@ def _build_results_table(
         parts.append("| " + " | ".join(str(cell) for cell in row) + " |")
         shown += 1
     if row_count > shown:
-        parts.append(L(
-            lang,
-            f"\n*…以及另外 {row_count - shown} 行(表格展示上限 {display_rows} 行,"
-            "下载为完整查询结果)*\n",
-            f"\n*... and {row_count - shown} more rows "
-            f"(table shows up to {display_rows}; download includes the full result)*\n",
-        ))
+        # 两种「没显示全」必须分开说:表格展示上限只是没渲染,行还在手里
+        # (下载/透出是完整的);执行层的 max_rows 上限则是**行本身被削了**
+        # ——再承诺「下载为完整结果」就是骗人(ANS-1)。判据是手里保留的
+        # 行数是否小于真实总数,不是 display_rows。
+        if len(rows) < row_count:
+            parts.append(L(
+                lang,
+                f"\n*查询共 {row_count} 行;受本部署上限限制,仅保留前 {len(rows)} 行"
+                f"(表格展示其中 {shown} 行)*\n",
+                f"\n*The query returned {row_count} rows; this deployment's cap "
+                f"kept only the first {len(rows)} rows (table shows {shown})*\n",
+            ))
+        else:
+            parts.append(L(
+                lang,
+                f"\n*…以及另外 {row_count - shown} 行(表格展示上限 {display_rows} 行,"
+                "下载为完整查询结果)*\n",
+                f"\n*... and {row_count - shown} more rows "
+                f"(table shows up to {display_rows}; download includes the full result)*\n",
+            ))
     return "\n".join(parts)
+
+
+def _zero_row_guidance(lang: str) -> str:
+    """0 行结果的可执行解释(ANS-6)。
+
+    0 行本身是**合法结果**,但用户拿到的信息为零 —— 不解释原因,下一步
+    只能靠猜。三类原因覆盖了绝大多数成因:过滤过窄、时间窗无数据、值写法
+    不匹配(枚举翻译)。只给"可能",不冒充诊断。
+    """
+    return L(
+        lang,
+        "查询返回 0 行可能意味着:筛选条件过窄、时间范围内没有数据,"
+        "或枚举值写法不匹配。可以放宽时间范围或去掉一个筛选条件后重试。\n",
+        "Zero rows can mean the filters are too narrow, the time range has no "
+        "data, or a value's spelling does not match. Try widening the time "
+        "range or removing a filter and asking again.\n",
+    )
 
 
 #: ``as_of_basis`` → 展示名。**不翻译的口径照实报原文**(见下方),宁可生僻
@@ -359,6 +389,33 @@ def _answer_source(state: WorkflowState) -> AnswerSource | None:
     return resolve_answer_source(state)
 
 
+#: 判定档位 → 人话(ERR-4)。**闭集之外不猜**:未知值照原样显示,让未来的
+#: 新档位至少是可发现的,而不是被悄悄吞掉。
+_VERDICT_LABELS: dict[str, tuple[str, str]] = {
+    "RETRY": ("自动校验未通过", "automatic validation did not pass"),
+    "EMPTY": ("查询结果为空", "query returned no rows"),
+    "NO_SQL": ("未能生成 SQL", "no SQL was generated"),
+}
+
+
+def _verdict_line(state: WorkflowState) -> str:
+    """技术细节区的判定行:档位说人话,原因只在与答案同语言时出现。
+
+    ``reason`` 是规则/模型的自由文本,内外语言不一定一致;把英文原因挂在
+    中文答案里,读者读到的是一段不属于这门语言的内部话。原因本身仍留在
+    ``state.reason``/日志/评测里,这里不是它唯一的去处。
+    """
+    if not state.verdict or state.verdict == "OK":
+        return ""
+    lang = state.lang
+    label = _VERDICT_LABELS.get(state.verdict)
+    text = (label[0] if lang == "zh" else label[1]) if label else state.verdict
+    line = f"**{L(lang, '评估', 'Assessment')}**: {text}"
+    if state.reason and detect_language(state.reason) == lang:
+        line += f" — {state.reason}"
+    return line + "\n"
+
+
 def _build_details(
     state: WorkflowState, source: AnswerSource | None, *,
     show_confidence: bool, sql_score: float,
@@ -415,12 +472,20 @@ def _build_details(
         parts.append(f"### {L(lang, '语义说明', 'Semantics')}\n")
         parts.append(f"{state.semantics}\n")
 
+    # 图表生成失败(ANS-5):数据本身是完整的,只是可视化没做出来 ——
+    # 静默省略会让用户以为「这题本来就不配图」。
+    if state.chart_status == "failed":
+        parts.append(L(
+            lang,
+            "**图表**: 本次未能生成图表(不影响结果数据)。\n",
+            "**Chart**: could not be generated for this result (the data "
+            "itself is unaffected).\n",
+        ))
+
     # Reflection
-    if state.verdict and state.verdict != "OK":
-        line = f"**{L(lang, '评估', 'Assessment')}**: {state.verdict}"
-        if state.reason:
-            line += f" — {state.reason}"
-        parts.append(line + "\n")
+    line = _verdict_line(state)
+    if line:
+        parts.append(line)
 
     # Metadata + 成本证据。I7:估算给出来;实际扫描量适配器报不出时**不写**,
     # 详情区里一行恒为「未知」的数字只会训练人忽略这一整块。
@@ -620,6 +685,16 @@ def _build_attribution_section(state: WorkflowState) -> str:
     lang = state.lang
     parts: list[str] = [f"### {L(lang, '归因分析', 'Attribution')}\n"]
 
+    # 降级产物只有 hops、没有表(引擎在产出分解表前失败)。只留一个空标题
+    # 等于让读者以为「没有变化可归因」—— 看不见的降级等于没有降级(ANS-4)。
+    if attr.get("degraded"):
+        parts.append(L(
+            lang,
+            "> 归因分析未能完成:本次只取得部分证据,无法给出维度分解。\n",
+            "> Attribution could not be completed: only partial evidence was "
+            "available, so no breakdown is shown.\n",
+        ))
+
     if attr.get("narrative"):
         parts.append(f"{attr['narrative']}\n")
 
@@ -728,9 +803,10 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     question = state.question
 
     if state.clarification_question:
+        lang = state.lang
         response = (
-            "## Clarification\n\n"
-            f"**Question**: {question}\n\n"
+            f"## {L(lang, '澄清', 'Clarification')}\n\n"
+            f"**{L(lang, '问题', 'Question')}**: {question}\n\n"
             f"{state.clarification_question}\n"
         )
         return {"final_response": response}
@@ -777,6 +853,15 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if state.conclusion:
         parts.append(f"### {L(lang, '结论', 'Conclusion')}\n")
         parts.append(f"{state.conclusion}\n")
+    elif state.conclusion_status == "failed":
+        # 没结论不是「配置关了」的同义词:试过但失败了,读者有权知道
+        # 为什么这一轮没有先给一句话(ANS-3)。
+        parts.append(L(
+            lang,
+            "*(结论生成失败,以下直接展示查询结果。)*\n",
+            "*(Conclusion generation failed; showing the query results "
+            "directly.)*\n",
+        ))
 
     # 2. Chart — primary visual (ASCII for CLI; web renders ECharts)
     has_ascii_chart = False
@@ -804,6 +889,11 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     else:
         # No execution data — this is the "empty" workflow case
         parts.append(L(lang, "(未执行任何查询)\n", "(No query executed)\n"))
+
+    # ANS-6:0 行是合法结果,但信息量为零 —— 补一句可执行的原因/下一步。
+    # 放在结果区之后、数据截止之前:读者先看到「0 行」,再看到「为什么」。
+    if state.row_count == 0:
+        parts.append(_zero_row_guidance(lang))
 
     # 3b. 数据截止时间 —— 紧挨着结果。**在折叠区之外**:读结果的人不展开详情
     #     也该看到它(R5 的展示前提)。
@@ -842,6 +932,14 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         for insight in state.insights:
             parts.append(f"- {insight}")
         parts.append("\n")
+    elif state.insights_status == "failed":
+        # 与「洞察没开启」区分:这一轮的洞察确实尝试过,但没生成出来(ANS-2)。
+        parts.append(L(
+            lang,
+            "*(洞察生成失败,本条回答仅包含查询结果。)*\n",
+            "*(Insight generation failed; this answer includes the query "
+            "results only.)*\n",
+        ))
 
     # 归因分析(业务级根因:为什么/贡献类问题的多跳下钻结果)
     if state.attribution:

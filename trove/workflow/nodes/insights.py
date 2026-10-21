@@ -105,6 +105,10 @@ def make_insights(
                 for line in text.splitlines()
                 if line.strip()
             ]
+            if not lines:
+                # 空输出与「没开启」在 state 里长得一样(都是空列表),
+                # 但用户该知道的完全不同 —— 记下来,由 output 交代(ANS-2)。
+                return {"insights": [], "insights_status": "failed"}
             return {
                 "insights": lines[:6],
                 "llm": {
@@ -116,6 +120,6 @@ def make_insights(
             }
         except Exception as e:
             logger.warning("Insights generation failed (%s); skipping", e)
-            return {"insights": []}
+            return {"insights": [], "insights_status": "failed"}
 
     return insights

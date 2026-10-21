@@ -283,13 +283,15 @@ def make_attribution(
         if outcome is None:
             return {}
 
-        # 异常中途降级(表未产出):保持旧形状原样(表空、只有 hops)。
+        # 异常中途降级(表未产出):保持旧形状(表空、只有 hops),外加
+        # ``degraded`` 标记 —— output 靠它把空标题换成一句如实的解释(ANS-4)。
         if outcome.degraded_result:
             result = {
                 "table": [],
                 "hops": outcome.hops,
                 "narrative": "",
                 "baseline": outcome.baseline,
+                "degraded": True,
             }
             return {"attribution": result, "attribution_hops": outcome.hops}
 

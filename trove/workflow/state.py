@@ -366,9 +366,17 @@ class WorkflowState(BaseModel):
     # 洞察(insights 节点):执行完成后 LLM 基于结果表格生成的自然语言洞察。
     insights: list[str] = Field(default_factory=list)
 
+    # 洞察生成状态(insights 节点写入):"" = 未尝试/跳过/成功;
+    # "failed" = 尝试过但失败(LLM 异常或空输出)。与「没开启」分得开 ——
+    # 空列表本身说不清是哪一种,output 靠它决定要不要向用户交代(ANS-2)。
+    insights_status: str = ""
+
     # 结论摘要(conclusion 节点):执行后 LLM 用一句话直接回答问题的结论,
     # 置于回答开头(结论前置)。空 = 未生成(未开启/无 SQL/失败)。
     conclusion: str = ""
+
+    # 结论生成状态(conclusion 节点写入):含义同 insights_status(ANS-3)。
+    conclusion_status: str = ""
 
     # 业务级归因计划(query_sketch 产出):{"target_metric", "dimensions",
     # "baseline", "depth", "focus"}。置位后 reflect OK → attribution 节点
@@ -376,7 +384,8 @@ class WorkflowState(BaseModel):
     attribution_plan: dict[str, Any] | None = None
 
     # 归因结果(attribution 节点产出):{"total_delta", "table", "narrative",
-    # "hops", "dimensions", "baseline", "chart"}。None = 未触发/未生成。
+    # "hops", "dimensions", "baseline", "chart"};降级产物只有 hops 且带
+    # "degraded": True(output 据此给出如实的失败说明)。None = 未触发/未生成。
     attribution: dict[str, Any] | None = None
 
     # 归因多跳观测(attribution 节点写入):每跳 SQL + 结果摘要,供日志/
@@ -407,6 +416,10 @@ class WorkflowState(BaseModel):
     # "llm" = LLM plot_chart 工具判定;"deterministic" = 失败回退确定性
     # infer_chart;空 = 未产生图表。
     chart_source: str = ""
+
+    # 图表生成状态(chart 节点写入):"" = 未尝试/成功/本就不该有图;
+    # "failed" = 尝试生成但推断/构建抛错(输出在详情区交代一句,ANS-5)。
+    chart_status: str = ""
 
     # HITL 状态(hitl 节点):"" = 未参与/未开启;"pending" = 已中断等待确认;
     # "approved" = 用户批准继续执行;"rejected" = 用户否决(中止,不再执行)。

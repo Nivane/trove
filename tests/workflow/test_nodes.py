@@ -3911,10 +3911,11 @@ class TestTerminationLine:
         assert "Confidence" not in response
 
     async def test_clarification_rendered(self):
-        """需要澄清时输出反问，而非答案。"""
+        """需要澄清时输出反问，而非答案;标题跟随提问语言(ERR-3)。"""
         state = make_state(clarification_question="请说明你想查询哪张表的数据")
         response = (await output(state))["final_response"]
-        assert "Clarification" in response
+        assert "## 澄清" in response
+        assert "**问题**" in response
         assert "请说明你想查询哪张表的数据" in response
 
     async def test_conclusion_rendered_first(self):

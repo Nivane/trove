@@ -1726,7 +1726,8 @@ class TestClarifyRouting:
             make_state(question="zzz 完全不相关的数据")
         )
         assert final["clarification_question"]
-        assert "Clarification" in final["final_response"]
+        # 标题跟随提问语言(ERR-3):本用例的提问是中文。
+        assert "## 澄清" in final["final_response"]
         assert final["sql"] == ""
 
     async def test_zero_match_refuses_without_fallback(self, sqlite_registry, catalog):
