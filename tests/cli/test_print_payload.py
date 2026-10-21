@@ -42,6 +42,18 @@ class TestFormatPrintPayload:
         payload = format_print_payload(summary, [])
         assert payload["error"] == "boom"
 
+    def test_error_info_included_when_present(self):
+        """ERR-1/ONB-4:机器消费方拿到结构化错误,而不是只有一句标题。"""
+        info = {
+            "kind": "model",
+            "title": "模型不可用",
+            "retryable": False,
+            "detail": {"raw": "invalid api key", "node": "workflow"},
+        }
+        payload = format_print_payload({**SUMMARY, "error_info": info}, [])
+        assert payload["error_info"] == info
+        assert format_print_payload(SUMMARY, [])["error_info"] is None
+
     def test_kb_hits_included_when_present(self):
         hits = [{"kind": "term", "term": "平均成绩", "mapping": "AVG(grade)"}]
         payload = format_print_payload({**SUMMARY, "kb_hits": hits}, [])

@@ -70,6 +70,7 @@ class TroveREPL:
         llm_gateway: Any = None,
         user_facts: Any = None,
         topic: str = "",
+        verbose: bool = False,
     ):
         self._manager = session_manager
         self._config = config
@@ -80,6 +81,9 @@ class TroveREPL:
 
         self._tui = TUI()
         self._slash_registry = SlashRegistry()
+        # --verbose:失败时额外展开诊断(错误类/失败节点/原文)。
+        # 默认关 —— 业务用户看到的只有人话;排查时才需要 provider 原文。
+        self._verbose = verbose
 
         # Build shared context for command handlers
         self._context = {
@@ -273,6 +277,27 @@ class TroveREPL:
             self._print_done_stats(event.get("summary") or {})
         elif event_type == "error":
             self._tui.print_error(content)
+            if self._verbose:
+                self._render_error_detail(event)
+
+    def _render_error_detail(self, event: dict) -> None:
+        """``--verbose`` 下的诊断块(与网页管理端展开的是同一份 detail)。"""
+        info = (
+            event.get("error_info")
+            or (event.get("summary") or {}).get("error_info")
+            or {}
+        )
+        detail = info.get("detail") or {}
+        lang = getattr(self._config, "language", "zh")
+        lines = [
+            f"{L(lang, '错误类别', 'Error class')}: {detail.get('error_class', '')}",
+            f"{L(lang, '失败节点', 'Failed node')}: {detail.get('node', '')}",
+        ]
+        if detail.get("raw"):
+            lines.append(f"{L(lang, '原始信息', 'Raw message')}: {detail['raw']}")
+        if detail.get("kill"):
+            lines.append(f"{L(lang, '超时后的终止', 'Termination after timeout')}: {detail['kill']}")
+        self._tui.print_info("\n".join(lines))
 
     def _render_task(self, event: dict) -> None:
         """Render a task-list snapshot as one compact progress line."""

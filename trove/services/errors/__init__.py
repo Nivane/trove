@@ -6,6 +6,7 @@ Public API:
   - ``is_transient``   — "retry this SQL call" decision (executor layer).
   - ``validate_arguments`` — shallow JSON-schema check of tool call args.
   - ``present_error``  — internal failure → user-facing copy + machine detail.
+  - ``present_exception`` — uncaught exception → the same presented shape.
 """
 
 from trove.services.errors.classify import (
@@ -19,7 +20,7 @@ from trove.services.errors.classify import (
     tag_error,
     validate_arguments,
 )
-from trove.services.errors.present import present_error
+from trove.services.errors.present import present_error, present_exception
 
 __all__ = [
     "CLASSES",
@@ -30,6 +31,7 @@ __all__ = [
     "classify_error",
     "is_transient",
     "present_error",
+    "present_exception",
     "tag_error",
     "validate_arguments",
 ]

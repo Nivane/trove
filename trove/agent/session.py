@@ -54,6 +54,7 @@ from trove.agent.tasks import (
 from trove.core.i18n import L
 from trove.prompts import render
 from trove.services.authz.policy import LOCAL_SUBJECT, Policy, principal_to_wire
+from trove.services.errors import present_exception
 from trove.services.sql.format import format_sql
 from trove.workflow.state import WorkflowState
 
@@ -1237,6 +1238,9 @@ class SessionManager:
         except Exception as e:
             # 步骤缓冲随异常清理:不跨 run 泄漏(方案 ① 的泄漏边界)。
             self._run_steps.pop(run_id, None)
+            # 未捕获异常同样走呈现层:用户看到的是人话,provider 原文/path
+            # 只进 detail.raw —— 会话边界是最后一道出口,不能把 str(e) 直出。
+            info = present_exception(e, lang=state.lang, node="workflow")
             error_summary = {
                 "session_id": session.session_id,
                 "question": state.question,
@@ -1245,15 +1249,21 @@ class SessionManager:
                 "sql": merged.get("sql", ""),
                 "row_count": merged.get("row_count", -1),
                 "verdict": "",
-                "reason": str(e),
-                "error": str(e),
+                "reason": info["title"],
+                "error": info["title"],
+                "error_info": info,
                 "kb_hits": [],
                 "insights": [],
                 "conclusion": "",
                 "hitl_status": "",
                 "final_response": "",
             }
-            yield {"type": "error", "node": "workflow", "content": str(e), "summary": error_summary}
+            yield {
+                "type": "error", "node": "workflow",
+                "content": info["title"],
+                "summary": error_summary,
+                "error_info": info,
+            }
             return
 
         final = WorkflowState.model_validate(merged)
@@ -2440,12 +2450,17 @@ class SessionManager:
 
         summary = (terminal or {}).get("summary") or {}
         status = "done" if (terminal or {}).get("type") == "done" else "failed"
+        # 任务记录/ContextPacket 是**步骤间的内部数据通道**(综合 prompt 要
+        # 知道失败原因),保留原始错误;事件里的用户可见文案仍是 error_info
+        # 的人话标题。两者不共用同一个字段。
+        info = (terminal or {}).get("error_info") or summary.get("error_info") or {}
+        raw_error = (info.get("detail") or {}).get("raw") or summary.get("error")
         await store.update_status(task.task_id, status, {
             "run_id": run_id,
             "sql": summary.get("sql"),
             "row_count": summary.get("row_count"),
             "verdict": summary.get("verdict"),
-            "error": summary.get("error"),
+            "error": raw_error,
             # ContextPacket:后续子任务/跨轮通过 [previous results] 与
             # matched_tables 锚点复用本步结论。它是步骤间的**数据通道**,
             # 所以留的行比事件载荷多(PACKET_ROWS vs ROWS_PREVIEW)——
@@ -2460,7 +2475,7 @@ class SessionManager:
                 ],
                 "row_count": summary.get("row_count"),
                 "verdict": summary.get("verdict"),
-                "error": summary.get("error"),
+                "error": raw_error,
                 "matched_tables": list(summary.get("matched_tables") or []),
             },
         })

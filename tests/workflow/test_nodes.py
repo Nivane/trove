@@ -3776,7 +3776,9 @@ class TestOutput:
         update = await output(make_state(error="SQL generation failed after 3 attempts", lang="en"))
         response = update["final_response"]
         assert "**Error**" in response
-        assert "3 attempts" in response
+        # ERR-2:业务用户只看人话;诊断进 summary 的 error_info,不进答案正文
+        assert "3 attempts" not in response
+        assert "3 attempts" in update["error_info"]["detail"]["raw"]
 
     async def test_error_state_emits_structured_error_info(self):
         """错误路径同时给出 error_info:前端据此渲染卡片(不解析 markdown)。"""
@@ -3790,20 +3792,25 @@ class TestOutput:
             assert internal not in visible
         assert info["detail"]["node"] == "schema_linking"
 
-    async def test_error_headline_is_plain_language_with_tech_in_details(self):
-        """答案正文说人话;内部词汇降级进 <details> 供排查。"""
+    async def test_error_headline_is_plain_language_with_tech_in_error_info(self):
+        """答案正文只说人话;内部词汇只进 error_info.detail(ERR-2)。
+
+        网页错误卡片按角色展开诊断、CLI 按 ``--verbose`` 展开 —— 它们读的
+        都是这份结构化 detail,而不是答案 markdown 里的折叠块。
+        """
         update = await output(make_state(
             error="连续 3 轮修复无进展(invalid),停止迭代,优雅降级", lang="zh"))
         response = update["final_response"]
+        info = update["error_info"]
         assert "**错误**" in response
         assert "没能给出可靠结果" in response
-        # 细节区保留原始文本(CLI 会把它摊平展示)
-        assert "<details>" in response
-        assert "无进展" in response.split("<details>", 1)[1]
-        # 朝向用户的解释段不得出现内部词汇
-        head = response.split("<details>", 1)[0]
-        assert "无进展" not in head
-        assert "优雅降级" not in head
+        # 正文不展开、也不藏一个可点开的内部诊断块
+        assert "<details>" not in response
+        for internal in ("无进展", "优雅降级", "invalid"):
+            assert internal not in response
+        # 原文完整留档给管理员/支持人员
+        assert "无进展" in info["detail"]["raw"]
+        assert "优雅降级" in info["detail"]["raw"]
 
     async def test_error_info_present_for_deterministic_dead_end(self):
         update = await output(make_state(error="[ERR:DS_AUTH] denied", lang="zh"))
@@ -3835,34 +3842,32 @@ class TestTerminationLine:
                                 "terminated": "timeout", "kill": "", **ev},
         )
 
-    @staticmethod
-    def _split(response: str) -> tuple[str, str]:
-        """正文 / 折叠的内部细节 —— ``test_error_headline_...`` 的同一把尺子。"""
-        head, _, detail = response.partition("<details>")
-        return head, detail
-
     async def test_a_sent_kill_is_a_detail_line_not_a_warning(self):
-        response = (await output(self._timed_out(kill="kill_sent")))["final_response"]
-        head, detail = self._split(response)
+        update = await output(self._timed_out(kill="kill_sent"))
+        response = update["final_response"]
 
-        assert "kill_sent" in detail
-        assert "kill_sent" not in head
-        assert "⚠️" not in head, "发出了终止指令,用户没有要做的动作"
+        assert "kill_sent" not in response
+        assert "⚠️" not in response, "发出了终止指令,用户没有要做的动作"
+        # ERR-2:终止结果进 error_info.detail,不进答案正文
+        assert update["error_info"]["detail"]["kill"] == "kill_sent"
 
     @pytest.mark.parametrize("kill", ["kill_unsupported", "kill_failed"])
     async def test_a_query_that_may_still_be_running_is_said_up_front(self, kill):
-        response = (await output(self._timed_out(kill=kill)))["final_response"]
-        head, detail = self._split(response)
+        update = await output(self._timed_out(kill=kill))
+        response = update["final_response"]
 
-        assert "可能仍在数据源上运行" in head
-        assert kill in detail
+        assert "可能仍在数据源上运行" in response
+        assert kill not in response
+        assert update["error_info"]["detail"]["kill"] == kill
 
     async def test_a_kill_that_was_never_attempted_says_nothing(self):
         """没装终止器 = 没试过。沉默是这里唯一诚实的说法。"""
-        response = (await output(self._timed_out()))["final_response"]
+        update = await output(self._timed_out())
+        response = update["final_response"]
 
         assert "终止" not in response
         assert "kill_" not in response
+        assert "kill" not in update["error_info"]["detail"]
 
     async def test_kb_hits_rendered(self):
         state = make_state(

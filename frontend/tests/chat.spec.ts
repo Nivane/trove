@@ -492,3 +492,158 @@ describe('chat store — failed turn carries structured error', () => {
     expect(turns[0].errorInfo?.title).toBe(INFO.title)
   })
 })
+
+// ── INT-1/2/3:失败后必须能看见、能恢复 ─────────────────────────────
+describe('chat store — failure recovery', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    vi.mocked(streamSse).mockReset()
+  })
+
+  function stubSessionList() {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(new Response('{"sessions": []}', { status: 200 })),
+    )
+  }
+
+  function errorTurn(question: string) {
+    return {
+      question,
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'error' as const,
+      error: 'boom',
+    }
+  }
+
+  it('marks the turn failed and clears streaming when the stream rejects', async () => {
+    const chat = useChatStore()
+    vi.mocked(streamSse).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    stubSessionList()
+    try {
+      await chat.send('q')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    const t = chat.currentTurn!
+    expect(t.status).toBe('error')
+    expect(t.error).toBeTruthy()
+    expect(chat.streaming).toBe(false)
+    expect(chat.controller).toBeNull()
+    expect(t.live).toEqual([])
+  })
+
+  it('clears streaming after a non-2xx response instead of hanging forever', async () => {
+    const chat = useChatStore()
+    vi.mocked(streamSse).mockResolvedValueOnce(
+      new Response(null, { status: 500, statusText: 'Internal Server Error' }),
+    )
+    stubSessionList()
+    try {
+      await chat.send('q')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    expect(chat.currentTurn?.status).toBe('error')
+    expect(chat.currentTurn?.error).toContain('500')
+    expect(chat.streaming).toBe(false)
+    expect(chat.controller).toBeNull()
+  })
+
+  it('treats an abort as a stop, not as a network error', async () => {
+    const chat = useChatStore()
+    const abort = Object.assign(new Error('aborted'), { name: 'AbortError' })
+    vi.mocked(streamSse).mockRejectedValueOnce(abort)
+    stubSessionList()
+    try {
+      await chat.send('q')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    expect(chat.currentTurn?.error).toBe('aborted')
+    expect(chat.streaming).toBe(false)
+  })
+
+  it('retries the clicked earlier failed turn and drops later turns', async () => {
+    const chat = useChatStore()
+    chat.turns = [errorTurn('first'), errorTurn('second')]
+    const mocked = vi
+      .mocked(streamSse)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+    stubSessionList()
+    try {
+      await chat.retry(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    expect(mocked.mock.calls[0][1]).toMatchObject({ question: 'first' })
+    expect(chat.turns.map((t) => t.question)).toEqual(['first'])
+    expect(chat.streaming).toBe(false)
+  })
+
+  it('keeps the pending approval and surfaces an error when resume fails', async () => {
+    const chat = useChatStore()
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'hitl',
+    })
+    chat.pendingHitl = {
+      sessionId: 's1',
+      workflow: 'reflection',
+      batch: false,
+    }
+    vi.mocked(streamSse).mockResolvedValueOnce(
+      new Response(null, { status: 500, statusText: 'Internal Server Error' }),
+    )
+
+    await chat.resume('yes')
+
+    expect(chat.pendingHitl).not.toBeNull()
+    expect(chat.pendingHitl?.decision).toBe('yes')
+    expect(chat.currentTurn?.status).toBe('error')
+    expect(chat.currentTurn?.error).toContain('500')
+    expect(chat.currentTurn?.hitlActionsShown).toBe(false)
+    expect(chat.streaming).toBe(false)
+    expect(chat.controller).toBeNull()
+  })
+
+  it('retries a failed approval through resume instead of resending the question', async () => {
+    const chat = useChatStore()
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'error',
+      error: 'HTTP 500',
+    })
+    chat.pendingHitl = {
+      sessionId: 's1',
+      workflow: 'reflection',
+      batch: false,
+      decision: 'yes',
+    }
+    const mocked = vi
+      .mocked(streamSse)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+
+    await chat.retry(0)
+
+    expect(mocked.mock.calls[0][0]).toBe('/v1/sessions/s1/resume')
+  })
+})
