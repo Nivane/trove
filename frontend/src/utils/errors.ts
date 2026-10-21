@@ -29,12 +29,14 @@ export interface ErrorCardModel {
 const FALLBACK = {
   zh: {
     title: '回答没有完成',
-    suggestion: '可以重试一次;若反复失败,换个说法再问,或到管理端检查数据源状态。',
+    // 没有分类信息时不猜故障面 —— 老会话/未知失败说「联系管理员」就够了,
+    // 断言是「数据源」的问题会把用户引到错误的方向。
+    suggestion: '可以重试一次;若反复失败,换个说法再问,或联系管理员。',
   },
   en: {
     title: 'The answer did not complete',
     suggestion:
-      'You can retry; if it keeps failing, rephrase the question or check the datasource status in the admin console.',
+      'You can retry; if it keeps failing, rephrase the question or contact an admin.',
   },
 }
 

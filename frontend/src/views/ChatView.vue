@@ -216,7 +216,13 @@
                 :analysis="turn.summary.analysis"
               />
               <div
-                v-if="turn.status === 'hitl' && !turn.hitlActionsShown"
+                v-if="
+                  (turn.status === 'hitl' ||
+                    (turn.status === 'error' &&
+                      chat.pendingHitl &&
+                      i === chat.turns.length - 1)) &&
+                  !turn.hitlActionsShown
+                "
                 class="step-wrap"
               >
                 <HitlCard :batch="!!turn.hitlBatch" />
@@ -229,7 +235,7 @@
               <ErrorCard
                 v-if="cards[i]"
                 :card="cards[i]!"
-                @retry="chat.retry()"
+                @retry="chat.retry(i)"
                 @rephrase="rephraseLast(i)"
                 @admin="gotoAdmin"
               />

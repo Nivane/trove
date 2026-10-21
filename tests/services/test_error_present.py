@@ -13,8 +13,9 @@ import re
 
 import pytest
 
+from trove.core.errors import LLMError
 from trove.services.errors import classify_error
-from trove.services.errors.present import present_error  # noqa: F401
+from trove.services.errors.present import present_error, present_exception
 
 # 内部词汇黑名单:用户可见字段里出现即判失败。
 _INTERNAL = re.compile(
@@ -139,6 +140,43 @@ class TestActionExits:
             }
             assert action["id"] == action["kind"]
             assert action["href"].startswith("/admin/")
+
+
+class TestExceptionNormalization:
+    """未捕获异常(会话边界)走同一份呈现层,不把 str(e) 直出给用户。
+
+    ``present_exception`` 只做一件事:按异常类型选故障面(context),再复用
+    ``present_error``。分类与文案仍然只有一处。
+    """
+
+    def test_llm_auth_failure_is_a_model_problem_not_a_datasource_one(self):
+        exc = LLMError(
+            message="LLM call failed after 3 attempts: invalid api key",
+        )
+        info = present_exception(exc, lang="zh")
+        assert info["kind"] == "model"
+        assert info["retryable"] is False
+        assert [a["href"] for a in info["actions"]] == ["/admin/model-config"]
+        visible = _user_visible(info)
+        assert "模型" in visible
+        assert "数据源" not in visible
+        # 原始 provider 文本只进 detail
+        assert "invalid api key" not in visible
+        assert "invalid api key" in info["detail"]["raw"]
+
+    def test_transient_llm_failure_stays_retryable(self):
+        info = present_exception(
+            LLMError(message="LLM call failed: upstream timeout"), lang="en",
+        )
+        assert info["kind"] == "model"
+        assert info["retryable"] is True
+
+    def test_generic_exception_keeps_raw_text_out_of_user_fields(self):
+        info = present_exception(RuntimeError("/secret/path"), lang="zh")
+        visible = _user_visible(info)
+        assert "/secret/path" not in visible
+        assert info["detail"]["raw"] == "/secret/path"
+        assert info["detail"]["node"] == "workflow"
 
 
 class TestShape:

@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from trove.core.errors import LLMError
 from trove.core.i18n import L
 from trove.services.errors.classify import classify_error
 
@@ -238,15 +239,22 @@ def _actions_for(kind: str, lang: str) -> list[dict[str, Any]]:
 
 
 def present_error(
-    text: str, lang: str = "zh", *, node: str = "", **extra: Any
+    text: str,
+    lang: str = "zh",
+    *,
+    node: str = "",
+    context: str = "workflow",
+    exc: BaseException | None = None,
+    **extra: Any,
 ) -> dict[str, Any]:
     """内部错误文本 → 用户可见四件套 + 机器细节。
 
     ``node`` 是失败节点(调用方已知时传入,比从文案里猜可靠)。
+    ``context`` / ``exc`` 交给 ``classify_error``(异常面决定哪套词典生效)。
     额外关键字参数并入 ``detail``,供管理端展示上下文。
     """
     raw = text or ""
-    verdict = classify_error(raw, context="workflow")
+    verdict = classify_error(raw, exc=exc, context=context)
     cls = verdict.cls
 
     gave_up = any(p.search(raw) for p in _GAVE_UP_PATTERNS)
@@ -261,12 +269,18 @@ def present_error(
             copy = _DOMAIN_COPY.get(cls.domain, _GENERIC)
         copy = copy.get(lang, copy["zh"])
 
+    # 可重试与否是**错误类自己的声明**(认证/配置错重试一万次也还是同一份
+    # 错配置);「试过了、停下了」是另一回事 —— 换个采样可能就过了。
+    retryable = cls.retryable and kind not in _NON_RETRYABLE_KINDS
+    if gave_up:
+        retryable = True
+
     return {
         "kind": kind,
         "title": copy["title"],
         "explanation": copy["explanation"],
         "suggestion": copy["suggestion"],
-        "retryable": kind not in _NON_RETRYABLE_KINDS,
+        "retryable": retryable,
         # 一键出口(见 _ACTION_HREFS);空列表 = 这类失败没有管理端落点。
         "actions": _actions_for(kind, lang),
         "detail": {
@@ -277,3 +291,25 @@ def present_error(
             **extra,
         },
     }
+
+
+def present_exception(
+    exc: BaseException,
+    lang: str = "zh",
+    *,
+    node: str = "workflow",
+    context: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """未捕获异常 → 同一份呈现层产物。
+
+    会话边界拿不到 ``state.error``(那套文案由节点写入),只有异常本身。
+    这里只多做一件事:按异常类型选故障面,其余(分类、文案、出口、原始
+    文本留档)全部复用 ``present_error`` —— 呈现规则仍然只有一处。
+    """
+    if context is None:
+        context = "llm" if isinstance(exc, LLMError) else "workflow"
+    text = str(exc) or type(exc).__name__
+    return present_error(
+        text, lang, node=node, context=context, exc=exc, **extra,
+    )

@@ -55,14 +55,17 @@ def _record_result(state: WorkflowState) -> None:
 
 
 def _error_response(state: WorkflowState) -> tuple[str, dict[str, Any]]:
-    """失败路径的对外呈现:标题/解释/下一步 + 折叠的内部细节。
+    """失败路径的对外呈现:标题/解释/下一步。
 
-    返回 (markdown, error_info)。error_info 走 summary 到前端——用户可见
-    那部分由 present_error 保证不含流水线词汇,原始文本一字不动地留在
-    detail.raw 里,折叠区与日志仍可归因。
+    返回 (markdown, error_info)。正文只说人话;原始文本、失败节点、终止
+    结果等诊断信息全部走 ``error_info.detail`` —— 网页按角色展开、CLI 按
+    ``--verbose`` 展开,读的都是这一份结构化数据,答案里不再藏折叠块。
     """
     lang = state.lang
     info = present_error(state.error, lang=lang)
+    kill = _kill_of(state)
+    if kill:
+        info["detail"]["kill"] = kill
     head = (
         f"**{L(lang, '错误', 'Error')}**: {info['title']}\n\n"
         f"{info['explanation']}\n\n"
@@ -71,19 +74,7 @@ def _error_response(state: WorkflowState) -> tuple[str, dict[str, Any]]:
     warning = _still_running_notice(state)
     if warning:
         head += f"\n{warning}"
-    body = (
-        f"**{L(lang, '内部诊断信息', 'Internal diagnostics')}**\n\n"
-        f"- {L(lang, '错误类别', 'Error class')}: `{info['detail']['error_class']}`\n"
-        f"- {L(lang, '失败节点', 'Failed node')}: `{info['detail']['node']}`\n"
-        f"- {L(lang, '原始信息', 'Raw message')}: `{info['detail']['raw']}`\n"
-    )
-    kill_line = _kill_detail_line(state)
-    if kill_line:
-        body += kill_line
-    markdown = head + "\n" + _details_wrap(
-        L(lang, "技术细节", "Technical details"), body,
-    ) + "\n"
-    return markdown, info
+    return head, info
 
 
 #: 终止结果 → 这一行怎么说(设计 §7.3 / §10 / I4)。**三态各说各的**:
@@ -125,19 +116,6 @@ def _still_running_notice(state: WorkflowState) -> str:
         f"> ⚠️ **这次超时的查询可能仍在数据源上运行**:{reason}。\n",
         "> ⚠️ **The query from this run may still be running on the "
         f"datasource**: {reason}.\n",
-    )
-
-
-def _kill_detail_line(state: WorkflowState) -> str:
-    """内部细节区那一行(操作者在折叠区看);没试过则没有这一行。"""
-    kill = _kill_of(state)
-    label = _KILL_DETAIL.get(kill)
-    if label is None:
-        return ""
-    lang = state.lang
-    return (
-        f"- {L(lang, '超时后的终止', 'Termination after timeout')}: "
-        f"`{kill}` — {label[0 if lang == 'zh' else 1]}\n"
     )
 
 

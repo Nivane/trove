@@ -199,24 +199,33 @@ function updateMenu() {
 
 async function onKeydown(e: KeyboardEvent) {
   if (compositionKey(e)) return
+  // 斜杠菜单打开时,回车属于菜单 —— 选中项执行命令,而不是把「/clear」
+  // 当成一句问题发出去。菜单分支必须在 Enter 提交之前。
+  if (menuOpen.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      cycle(1)
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      cycle(-1)
+      return
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault()
+      const cmd = commands.value.find((c) => c.key === activeCmd.value)
+      if (cmd) await runCommand(cmd)
+      return
+    }
+    if (e.key === 'Escape') {
+      menuOpen.value = false
+      return
+    }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !composing.value) {
     e.preventDefault()
     if (draft.value.trim()) await submit()
-    return
-  }
-  if (!menuOpen.value) return
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    cycle(1)
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    cycle(-1)
-  } else if (e.key === 'Tab' || e.key === 'Enter') {
-    e.preventDefault()
-    const cmd = commands.value.find((c) => c.key === activeCmd.value)
-    if (cmd) runCommand(cmd)
-  } else if (e.key === 'Escape') {
-    menuOpen.value = false
   }
 }
 

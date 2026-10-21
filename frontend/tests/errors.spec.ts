@@ -82,6 +82,13 @@ describe('error card model', () => {
     expect(errorCard({ error: '' }, 'zh')).toBeNull()
   })
 
+  it('does not guess a datasource problem when no classified error is available', () => {
+    const zh = errorCard({ error: 'boom' }, 'zh')!
+    expect(zh.suggestion).not.toContain('数据源')
+    const en = errorCard({ error: 'boom' }, 'en')!
+    expect(en.suggestion.toLowerCase()).not.toContain('datasource')
+  })
+
   it('presents the fallback in english when the UI is english', () => {
     const card = errorCard({ error: 'boom' }, 'en')!
     expect(card.title).toBe('The answer did not complete')

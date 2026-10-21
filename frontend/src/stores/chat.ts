@@ -8,6 +8,7 @@ import { defineStore } from 'pinia'
 import { streamSse } from '../api/sse'
 import { apiGet, apiPost } from '../api/http'
 import { useUiStore } from './ui'
+import { t } from '../i18n'
 import { notifyError } from '../utils/notify'
 import { telemetry, newRequestId } from '../utils/telemetry'
 import type {
@@ -95,6 +96,9 @@ export const useChatStore = defineStore('chat', {
       sessionId: string
       workflow: string
       batch: boolean
+      /** 已提交但未成功的审批动作 —— 重试要重发这一次审批,而不是把
+       *  「是否执行」的确认当成一句新问题再问一遍。 */
+      decision?: 'yes' | 'approve_all' | 'no'
     },
     controller: null as AbortController | null,
   }),
@@ -257,76 +261,99 @@ export const useChatStore = defineStore('chat', {
       })
 
       let retried = false
-      for (;;) {
-        const ui = useUiStore()
-        const body: Record<string, unknown> = {
-          question,
-          workflow: 'reflection',
-        }
-        if (ui.datasource) body.datasource = ui.datasource
-        // 主题域经 activeTopic 校验后才带上:过期/不属于当前源的值静默退化为「不限定」
-        if (ui.activeTopic) body.topic = ui.activeTopic
-        if (this.sessionId) body.session_id = this.sessionId
-
-        const resp = await streamSse(
-          '/v1/chat',
-          body,
-          (ev) => this.onEvent(ev),
-          this.controller.signal,
-        )
-
-        if (resp.status === 404 && this.sessionId && !retried) {
-          // stale session on the server → retry once with a fresh one
-          retried = true
-          this.turns.pop()
-          this.setSessionId('')
-          await this.createSession()
-          // re-instate the turn so the retried stream's events target it
-          this.turns.push({
+      try {
+        for (;;) {
+          const ui = useUiStore()
+          const body: Record<string, unknown> = {
             question,
-            thoughts: [],
-            steps: [],
-            answer: '',
-            summary: null,
-            status: 'streaming',
-            requestId: newRequestId(),
-            live: [],
-            startedAt: Date.now(),
-          })
-          continue
-        }
-        if (!resp.ok) {
-          telemetry.error('chat.send', `HTTP ${resp.status}`, {
-            requestId,
-            error: resp.statusText,
-          })
-          this._failTurn(`HTTP ${resp.status}`)
-          return
-        }
-        break
-      }
+            workflow: 'reflection',
+          }
+          if (ui.datasource) body.datasource = ui.datasource
+          // 主题域经 activeTopic 校验后才带上:过期/不属于当前源的值静默退化为「不限定」
+          if (ui.activeTopic) body.topic = ui.activeTopic
+          if (this.sessionId) body.session_id = this.sessionId
 
-      const t = this.currentTurn
-      if (t && t.status === 'streaming') {
-        // stream closed without a terminal event — guard against a hung turn
-        if (!t.answer && !t.error) {
-          telemetry.error('chat.send', 'stream interrupted', { requestId })
-          t.error = 'stream interrupted'
-          t.status = 'error'
-        } else {
-          t.status = 'done'
-          t.at = new Date().toISOString()
+          const resp = await streamSse(
+            '/v1/chat',
+            body,
+            (ev) => this.onEvent(ev),
+            this.controller.signal,
+          )
+
+          if (resp.status === 404 && this.sessionId && !retried) {
+            // stale session on the server → retry once with a fresh one
+            retried = true
+            this.turns.pop()
+            this.setSessionId('')
+            await this.createSession()
+            // re-instate the turn so the retried stream's events target it
+            this.turns.push({
+              question,
+              thoughts: [],
+              steps: [],
+              answer: '',
+              summary: null,
+              status: 'streaming',
+              requestId: newRequestId(),
+              live: [],
+              startedAt: Date.now(),
+            })
+            continue
+          }
+          if (!resp.ok) {
+            telemetry.error('chat.send', `HTTP ${resp.status}`, {
+              requestId,
+              error: resp.statusText,
+            })
+            this._failTurn(`HTTP ${resp.status}`)
+            break
+          }
+          break
         }
-        t.live = []
+
+        const turn = this.currentTurn
+        if (turn && turn.status === 'streaming') {
+          // stream closed without a terminal event — guard against a hung turn
+          if (!turn.answer && !turn.error) {
+            telemetry.error('chat.send', 'stream interrupted', { requestId })
+            turn.error = t('streamInterrupted', useUiStore().lang)
+            turn.status = 'error'
+          } else {
+            turn.status = 'done'
+            turn.at = new Date().toISOString()
+          }
+          turn.live = []
+        }
+      } catch (e) {
+        // 断网 / reader 异常:没有终态事件,轮次必须自己落到 error ——
+        // 否则 streaming 永远为真,输入框与重试按钮一起失联。
+        const err = e as Error
+        if (err?.name === 'AbortError') {
+          const turn = this.currentTurn
+          // stop() 已经把有答案的轮收成 done —— 别用 abort 覆盖它
+          if (turn && turn.status === 'streaming') {
+            turn.status = 'error'
+            turn.error = 'aborted'
+            turn.live = []
+          }
+        } else {
+          telemetry.error('chat.send', 'stream failed', {
+            requestId,
+            error: err?.message,
+          })
+          this._failTurn(t('streamInterrupted', useUiStore().lang))
+        }
+      } finally {
+        this.streaming = false
+        this.batchRunning = false
+        this.controller = null
+        // 记住本轮实际使用的数据源与主题域,便于切回该会话时恢复
+        const ui = useUiStore()
+        ui.rememberSessionDatasource(this.sessionId)
+        ui.rememberSessionTopic(this.sessionId)
+        // 侧栏刷新是 best-effort:它失败不该把一轮已经收尾的问答再变成失败
+        await this.listSessions().catch(() => {})
       }
-      this.streaming = false
-      this.batchRunning = false
-      this.controller = null
-      // 记住本轮实际使用的数据源与主题域,便于切回该会话时恢复
-      const ui = useUiStore()
-      ui.rememberSessionDatasource(this.sessionId)
-      ui.rememberSessionTopic(this.sessionId)
-      await this.listSessions()
     },
 
     onEvent(ev: SseEvent) {
@@ -471,92 +498,148 @@ export const useChatStore = defineStore('chat', {
     async resume(decision: 'yes' | 'approve_all' | 'no') {
       const hitl = this.pendingHitl
       if (!hitl) return
-      this.pendingHitl = null
-      const t = this.currentTurn
-      if (t) {
-        t.status = 'streaming'
-        t.hitlActionsShown = true
+      // 审批发出去了、结果还没回来:失败时这份待确认(连同选择)要留着,
+      // 重试才能重发「这一次审批」,而不是把确认当成一句新问题再问一遍。
+      hitl.decision = decision
+      const turn = this.currentTurn
+      if (turn) {
+        turn.status = 'streaming'
+        turn.hitlActionsShown = true
       }
       this.streaming = true
       this.controller = new AbortController()
-      await streamSse(
-        `/v1/sessions/${hitl.sessionId}/resume`,
-        { decision, workflow: hitl.workflow },
-        (ev) => {
-          const tt = this.currentTurn
-          if (!tt) return
-          if (ev.type === 'begin') {
-            const node = String(ev.data.node ?? '')
-            if (!node) return
-            if (!tt.startedAt) tt.startedAt = Date.now()
-            tt.live = tt.live ?? []
-            const tail = tt.live[tt.live.length - 1]
-            if (tail && tail.node === node) {
-              tail.startedAt = Date.now()
-            } else {
-              tt.live.push({
-                node,
-                label: ev.data.label as string | undefined,
-                startedAt: Date.now(),
-                startedSeq: tt.live.length + 1,
-              })
-            }
-          } else if (ev.type === 'step') {
-            tt.steps.push(stepCardFromEvent(ev.data as StepPayload))
-            tt.live = []
-          } else if (ev.type === 'task') {
-            const task = ev.data as Partial<TaskItem> & { task_id: string }
-            const idx = this.tasks.findIndex((x) => x.task_id === task.task_id)
-            if (idx >= 0)
-              this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
-            this.batchRunning = this.tasks.some(
-              (x) => x.status === 'pending' || x.status === 'in_progress',
-            )
-          } else if (ev.type === 'done') {
-            const summary = ev.data.summary as DoneSummary | undefined
-            const content = String(ev.data.content ?? '')
-            tt.live = []
-            if (summary?.batched) {
-              // terminal batched done → synthesis kept separate from the
-              // per-task answer chunks appended below
-              tt.summary = summary
-              tt.synthesis = summary.final_response
-              tt.status = 'done'
-              tt.at = new Date().toISOString()
-            } else {
-              const answerAdd = summary?.final_response || content
-              if (answerAdd && !tt.answer.includes(answerAdd)) {
-                tt.answer += (tt.answer ? '\n\n' : '') + answerAdd
+      let received = false
+      try {
+        const resp = await streamSse(
+          `/v1/sessions/${hitl.sessionId}/resume`,
+          { decision, workflow: hitl.workflow },
+          (ev) => {
+            received = true
+            const tt = this.currentTurn
+            if (!tt) return
+            if (ev.type === 'begin') {
+              const node = String(ev.data.node ?? '')
+              if (!node) return
+              if (!tt.startedAt) tt.startedAt = Date.now()
+              tt.live = tt.live ?? []
+              const tail = tt.live[tt.live.length - 1]
+              if (tail && tail.node === node) {
+                tail.startedAt = Date.now()
+              } else {
+                tt.live.push({
+                  node,
+                  label: ev.data.label as string | undefined,
+                  startedAt: Date.now(),
+                  startedSeq: tt.live.length + 1,
+                })
               }
-              if (summary) tt.summary = summary
+            } else if (ev.type === 'step') {
+              tt.steps.push(stepCardFromEvent(ev.data as StepPayload))
+              tt.live = []
+            } else if (ev.type === 'task') {
+              const task = ev.data as Partial<TaskItem> & { task_id: string }
+              const idx = this.tasks.findIndex((x) => x.task_id === task.task_id)
+              if (idx >= 0)
+                this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
+              this.batchRunning = this.tasks.some(
+                (x) => x.status === 'pending' || x.status === 'in_progress',
+              )
+            } else if (ev.type === 'done') {
+              const summary = ev.data.summary as DoneSummary | undefined
+              const content = String(ev.data.content ?? '')
+              tt.live = []
+              if (summary?.batched) {
+                // terminal batched done → synthesis kept separate from the
+                // per-task answer chunks appended below
+                tt.summary = summary
+                tt.synthesis = summary.final_response
+                tt.status = 'done'
+                tt.at = new Date().toISOString()
+              } else {
+                const answerAdd = summary?.final_response || content
+                if (answerAdd && !tt.answer.includes(answerAdd)) {
+                  tt.answer += (tt.answer ? '\n\n' : '') + answerAdd
+                }
+                if (summary) tt.summary = summary
+                if (summary?.error_info) tt.errorInfo = summary.error_info
+              }
+            } else if (ev.type === 'error') {
+              // 服务端已经接下了这次审批并跑出了失败 —— 审批不再待确认,
+              // 重试走「重问」而不是「重发审批」(避免重复执行)。
+              this.pendingHitl = null
+              const summary = ev.data.summary as DoneSummary | undefined
+              this._failTurn(
+                String(
+                  ev.data.error ??
+                    ev.data.message ??
+                    summary?.error ??
+                    ev.data.content ??
+                    'resume failed',
+                ),
+                summary?.error_info,
+              )
             }
-          } else if (ev.type === 'error') {
-            this._failTurn(
-              String(
-                ev.data.error ??
-                  ev.data.message ??
-                  ev.data.content ??
-                  'resume failed',
-              ),
-            )
+          },
+          this.controller.signal,
+        )
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        if (this.currentTurn?.status === 'streaming') {
+          this.currentTurn.status = 'done'
+          this.currentTurn.at = new Date().toISOString()
+        }
+        this.pendingHitl = null
+      } catch (e) {
+        const err = e as Error
+        if (err?.name === 'AbortError') {
+          // 用户主动停下:这一次确认作废,不诱导再点一次
+          this.pendingHitl = null
+          const tt = this.currentTurn
+          if (tt && tt.status === 'streaming') {
+            tt.status = 'error'
+            tt.error = 'aborted'
+            tt.live = []
           }
-        },
-        this.controller.signal,
-      )
-      if (this.currentTurn?.status === 'streaming') {
-        this.currentTurn.status = 'done'
-        this.currentTurn.at = new Date().toISOString()
+        } else {
+          telemetry.error('chat.resume', 'resume failed', {
+            error: err?.message,
+          })
+          // 已经收到过事件 = 服务端消费了这次审批;没收到 = 请求根本没成功。
+          // 只有后者可以原地重试审批。
+          if (received) this.pendingHitl = null
+          else if (this.pendingHitl) this.pendingHitl.decision = decision
+          this._failTurn(
+            err?.message?.startsWith('HTTP ')
+              ? err.message
+              : t('streamInterrupted', useUiStore().lang),
+          )
+          const tt = this.currentTurn
+          if (tt) tt.hitlActionsShown = false
+        }
+      } finally {
+        if (this.currentTurn) this.currentTurn.live = []
+        this.streaming = false
+        this.batchRunning = false
+        this.controller = null
       }
-      if (this.currentTurn) this.currentTurn.live = []
-      this.streaming = false
-      this.batchRunning = false
-      this.controller = null
     },
 
-    /** Re-send the most recent failed turn's question. */
-    async retry() {
-      const t = this.currentTurn
-      if (!t || t.status !== 'error' || !t.question) return
+    /** 重试一轮失败:被点的是哪一轮,就重发哪一轮的问题。
+     *  HITL 审批失败的那一轮重发审批(见 resume),而不是把「是否执行」
+     *  当成新问题再问一遍。 */
+    async retry(index?: number) {
+      const idx = index ?? this.turns.length - 1
+      const t = this.turns[idx]
+      if (!t || t.status !== 'error' || !t.question || this.streaming) return
+      if (
+        idx === this.turns.length - 1 &&
+        this.pendingHitl?.decision
+      ) {
+        await this.resume(this.pendingHitl.decision)
+        return
+      }
+      // 被点的轮及其之后的轮都作废 —— 重跑产生新的后续
+      this.turns = this.turns.slice(0, idx)
+      this.tasks = []
       await this.send(t.question)
     },
 

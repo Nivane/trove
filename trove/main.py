@@ -83,6 +83,14 @@ def parse_args(argv: list[str] | None = None):
         action="store_true",
         help="Print version and exit",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help=(
+            "REPL: also print diagnostic detail (error class, failed node, "
+            "raw message) after a failure; off by default"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -609,6 +617,7 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
         "row_count": summary.get("row_count", -1),
         "verdict": summary.get("verdict", ""),
         "error": summary.get("error", ""),
+        "error_info": summary.get("error_info"),
         "kb_hits": summary.get("kb_hits", []),
         "semantics": summary.get("semantics", ""),
         "insights": summary.get("insights", []),
@@ -704,6 +713,7 @@ async def async_main_repl():
             user_facts=components["user_facts"],
             # --topic 是 REPL 的初始值;/topic 在会话内查看/修改。
             topic=args.topic,
+            verbose=getattr(args, "verbose", False),
         )
 
         try:

@@ -58,6 +58,23 @@ describe('Composer', () => {
     expect(stopSpy).toHaveBeenCalled()
   })
 
+  it('runs the highlighted slash command on Enter instead of sending it as a question', async () => {
+    const wrapper = mountComposer()
+    const chat = useChatStore()
+    const sendSpy = vi.spyOn(chat, 'send').mockResolvedValue()
+    const clearSpy = vi.spyOn(chat, 'clearConversation').mockResolvedValue()
+
+    await wrapper.find('textarea').setValue('/clear')
+    await nextTick()
+    expect(wrapper.find('.command-menu').exists()).toBe(true)
+
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+
+    expect(clearSpy).toHaveBeenCalled()
+    expect(sendSpy).not.toHaveBeenCalled()
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
   it('keeps the composer free of hint text', () => {
     const wrapper = mountComposer()
     expect(wrapper.find('.composer-hint').exists()).toBe(false)

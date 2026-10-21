@@ -807,7 +807,10 @@ class TestReflectionGraph:
     async def test_preexisting_error_passes_straight_to_output(self, sqlite_registry, catalog):
         graphs = build(make_services(RecordingLLM([]), catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(error="upstream failed"))
-        assert "upstream failed" in final["final_response"]
+        # ERR-2:正文只给人话,原文进结构化诊断
+        assert "这次没能完成" in final["final_response"]
+        assert "upstream failed" not in final["final_response"]
+        assert final["error_info"]["detail"]["raw"] == "upstream failed"
         assert final["row_count"] == -1
 
     async def test_error_analysis_reaches_regeneration(self, sqlite_registry, catalog):
