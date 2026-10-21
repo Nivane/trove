@@ -104,7 +104,8 @@ def make_conclusion(
             )
             text = (response or "").strip()
             if not text:
-                return {"conclusion": ""}
+                # 空输出 = 这次尝试失败了,不是「没开启」——记下来(ANS-3)。
+                return {"conclusion": "", "conclusion_status": "failed"}
             return {
                 "conclusion": text,
                 "llm": {
@@ -116,6 +117,6 @@ def make_conclusion(
             }
         except Exception as e:
             logger.warning("Conclusion generation failed (%s); skipping", e)
-            return {"conclusion": ""}
+            return {"conclusion": "", "conclusion_status": "failed"}
 
     return conclusion

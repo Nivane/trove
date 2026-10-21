@@ -1159,6 +1159,9 @@ class TestRowColumnScope:
         )(state)
         assert out["attribution"]["table"] == []
         assert out["attribution"]["narrative"] == ""
+        # 降级必须写进产物:否则 output 只会渲染一个空标题,读者以为
+        # 「没有变化可归因」而不是「分析没做成」(ANS-4)。
+        assert out["attribution"]["degraded"] is True
         hops = out["attribution_hops"]
         assert hops and all("county" not in h["sql"].lower() for h in hops)
 

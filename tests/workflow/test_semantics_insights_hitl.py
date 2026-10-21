@@ -15,6 +15,16 @@ from trove.workflow.state import WorkflowState
 from tests.helpers.authz import local_admin_principal
 
 
+class FailingLLM:
+    """LLM whose every call raises (gateway down / timeout / auth failure)."""
+
+    async def chat(self, *args, **kwargs):
+        raise RuntimeError("gateway down")
+
+    async def chat_full(self, *args, **kwargs):
+        raise RuntimeError("gateway down")
+
+
 class RecordingLLM:
     """Scripted LLM (content-only); records call messages."""
 
@@ -139,6 +149,24 @@ class TestInsightsNode:
         out = await node(make_state(columns=[], rows=[], row_count=-1))
         assert out == {}
 
+    async def test_generation_failure_is_recorded(self):
+        """LLM 挂了 → 洞察为空,但状态必须写下来(output 才能说人话)。"""
+        node = make_insights(FailingLLM(), on_config())
+        out = await node(make_state(
+            columns=["amount"], rows=self.ROWS, row_count=3,
+        ))
+        assert out["insights"] == []
+        assert out["insights_status"] == "failed"
+
+    async def test_empty_response_is_recorded_as_failure(self):
+        llm = RecordingLLM([""])
+        node = make_insights(llm, on_config())
+        out = await node(make_state(
+            columns=["amount"], rows=self.ROWS, row_count=3,
+        ))
+        assert out["insights"] == []
+        assert out["insights_status"] == "failed"
+
     async def test_strips_bullets_and_truncates(self):
         llm = RecordingLLM(["\n".join(f"- 洞察 {i}" for i in range(10))])
         node = make_insights(llm, on_config())
@@ -186,15 +214,13 @@ class TestConclusionNode:
         node = make_conclusion(llm, on_config())
         out = await node(make_state(columns=["x"], rows=self.ROWS, row_count=2))
         assert out["conclusion"] == ""
+        assert out["conclusion_status"] == "failed"
 
-    async def test_llm_failure_degrades_to_empty(self):
-        class Boom:
-            async def chat(self, model, messages, **kwargs):
-                raise RuntimeError("llm down")
-
-        node = make_conclusion(Boom(), on_config())
+    async def test_generation_failure_is_recorded(self):
+        node = make_conclusion(FailingLLM(), on_config())
         out = await node(make_state(columns=["x"], rows=self.ROWS, row_count=2))
         assert out["conclusion"] == ""
+        assert out["conclusion_status"] == "failed"
 
 
 class TestHITLNode:

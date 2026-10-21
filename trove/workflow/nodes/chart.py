@@ -195,8 +195,11 @@ def make_chart(
         try:
             spec = infer_chart(state.columns, state.rows, hints)
             payload = build_chart(state.columns, state.rows, spec, state.question)
-        except Exception:
-            return {}  # 图表推断失败绝不阻断输出链路
+        except Exception as e:
+            # 推断失败绝不阻断输出链路,但**必须清空** —— 返回 {} 会把上一轮
+            # (可能是另一份结果)的图留在 state 里,答案就在为旧数据作证(ANS-5)。
+            logger.warning("Deterministic chart inference failed (%s); cleared", e)
+            return {"chart": None, "chart_status": "failed"}
         return {"chart": payload, "chart_source": "deterministic"}
 
     return chart

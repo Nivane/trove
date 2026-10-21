@@ -278,6 +278,29 @@ class TestChartNode:
         )
         assert await node(state) == {"chart": None}
 
+    async def test_inference_failure_clears_stale_chart(self, monkeypatch):
+        """推断抛错 → 必须显式清空,而不是返回 {} 让上一轮的图留下来。
+
+        重跑修正轮可能换掉了结果;一张属于旧结果的图挂在答案上,是在为
+        一个已经不存在的数据集作证(ANS-5)。
+        """
+        import trove.workflow.nodes.chart as chart_mod
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("inference blew up")
+
+        monkeypatch.setattr(chart_mod, "infer_chart", _boom)
+        node = make_chart()
+        state = WorkflowState(
+            session_id="s1", question="q",
+            columns=["a", "b"], rows=[["x", 1]], row_count=1,
+            chart={"type": "bar", "categories": ["old"], "series": []},
+        )
+        out = await node(state)
+        assert out["chart"] is None
+        # 静默清图会让用户以为「这题本来就没有图」;失败要留下可披露的状态。
+        assert out["chart_status"] == "failed"
+
 
 class TestChartNodeSemanticHints:
     """图表节点接入语义层时间字段提示:值形态无法识别的声明时间列 → 折线。"""
