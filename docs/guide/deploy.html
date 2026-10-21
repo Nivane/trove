@@ -52,8 +52,9 @@ uv run trove --datasource demo             # REPL</code></pre>
     <pre><code>echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print</code></pre>
 
     <p>
-      真实对话需要模型凭证。凭证放项目根的 <code>.env</code>（自动加载、已在
-      <code>.gitignore</code> 里）或直接导出环境变量，例如 <code>DEEPSEEK_API_KEY</code>。
+      真实对话需要模型凭证。本机运行时凭证放项目根的 <code>.env</code>（自动加载、已在
+      <code>.gitignore</code> 里）或直接导出环境变量，例如 <code>DEEPSEEK_API_KEY</code>；
+      容器里的注入方式见下方<a href="#llm-credentials">「模型凭证」</a>。
     </p>
 
     <p>
@@ -191,6 +192,36 @@ docker compose restart backend   # 只重启后端，前端容器不受影响</c
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L71">docker-compose.yml:71 <span class="ref-line">.trove</span></a>
+    </p>
+
+    <h3 id="llm-credentials">模型凭证</h3>
+
+    <p>
+      容器里的程序<strong>不会自己读项目根的 <code>.env</code></strong>（镜像不拷贝它）。
+      凭证有两条注入路径，任选一条：
+    </p>
+
+    <ol>
+      <li>
+        <strong>项目根 <code>.env</code>（推荐）</strong>：compose 已显式声明
+        <code>env_file: .env</code>（<code>required: false</code>，文件不存在时跳过），
+        <code>up</code> 时自动注入 backend 容器。
+<pre><code>echo 'DEEPSEEK_API_KEY=sk-...' &gt;&gt; .env
+docker compose up -d backend</code></pre>
+      </li>
+      <li>
+        <strong>挂载宿主机配置</strong>：取消 <code>docker-compose.yml</code> 里
+        <code>${HOME}/.trove/conf</code> 那一行的注释。它必须留在
+        <code>volumes:</code> 下——放回 <code>environment:</code> 会让取消注释后的
+        YAML 直接解析失败。
+      </li>
+    </ol>
+
+    <p>
+      旧版本的 compose 库名是 <code>trove</code>；现在默认 <code>financial</code>，
+      与随仓库的 <code>.trove/kb/financial/</code> 对齐，登录后第一问直接可答。
+      已存在旧 <code>pgdata</code> 卷时，先 <code>docker compose down -v</code>
+      再 <code>up --build</code>。
     </p>
 
     <h3 id="sso">配置 OIDC 单点登录</h3>

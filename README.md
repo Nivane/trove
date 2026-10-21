@@ -267,7 +267,18 @@ docker compose build frontend    # 只重建前端镜像;build backend 只重建
 docker compose down
 ```
 
-本地默认登录 admin / `admin123`(生产由 `TROVE_ADMIN_PASSWORD` 控制;配置 OIDC 后登录页另出现「使用 SSO 登录」)。compose 栈默认 PostgreSQL,已预载 BIRD demo 数据;真实对话需要 LLM 凭证,见 `docker-compose.yml` 里 `~/.trove/conf` 挂载那一行的注释。
+本地默认登录 admin / `admin123`(生产由 `TROVE_ADMIN_PASSWORD` 控制;配置 OIDC 后登录页另出现「使用 SSO 登录」)。compose 栈默认 PostgreSQL,已预载 BIRD demo 数据,库名 `financial` 与随仓库的 KB `.trove/kb/financial/` 同名——登录后第一个问题直接可答,不会撞上「未建模」。
+
+真实对话需要 LLM 凭证,两条路任选:
+
+- **项目根 `.env`**(推荐):compose 已显式把它注入 backend,文件不存在时跳过。
+  ```bash
+  echo 'DEEPSEEK_API_KEY=sk-...' >> .env
+  docker compose up -d backend
+  ```
+- **挂载宿主机配置**:取消 `docker-compose.yml` 里 `${HOME}/.trove/conf` 那一行的注释,并保持在 `volumes:` 下(它**不能**放回 `environment:`——取消注释会变成非法 YAML)。
+
+容器里的程序不会自己去读项目根 `.env`(镜像不拷贝它),凭证来自 compose 的显式注入或挂载。如果之前用旧版本跑过(库名是 `trove`),先 `docker compose down -v` 清掉旧 volume 再 `up --build`。
 
 ## 能力速览
 
