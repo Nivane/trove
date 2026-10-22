@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import os
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -816,11 +818,46 @@ def serve_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _bind_conflict_hint(host: str, port: int) -> str | None:
+    """探一次 serve 将要用的 (host, port):被占用时给一句能照做的提示。
+
+    uvicorn 捕获绑定失败的 ``OSError`` 后自己 ``sys.exit(1)``(``Server.
+    startup``),外层入口拿不到那个异常,用户只看到一行裸 errno
+    (``[Errno 48] error while attempting to bind…``)。启动前先探一次,
+    换成「换端口或停掉占用进程」。探针与真实绑定之间的竞态无害:真被
+    抢了,uvicorn 的原有行为照旧。
+    """
+    try:
+        infos = socket.getaddrinfo(host or None, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return None  # 解析不了的主机名交给 uvicorn 原样报
+    family, socktype, proto, _canon, sockaddr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(sockaddr)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            return (
+                f"Port {port} is already in use on {host} — pass "
+                f"--port <other> or stop the process holding it."
+            )
+        return None
+    finally:
+        sock.close()
+    return None
+
+
 async def async_main_serve(argv: list[str]) -> None:
     """Async main for 'trove serve' (REST API over uvicorn)."""
     import uvicorn
 
     args = serve_parser().parse_args(argv)
+    # 绑定失败的友好提示必须在重活(配置/存储/app 装配)之前给:端口被占
+    # 时等一整套启动流程跑完再报错,用户拿到的那行还是 uvicorn 的裸 errno。
+    conflict = _bind_conflict_hint(args.host, args.port)
+    if conflict:
+        raise SystemExit(conflict)
     config = await _load_config(args)
     # HITL interrupt 依赖 checkpointer(REPL/CLI 同样传入);serve 的
     # /resume 端点靠它恢复被打断的图线程,缺失会导致 resume 抛错。

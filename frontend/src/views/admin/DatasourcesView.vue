@@ -132,6 +132,15 @@
             >
               {{ driftBadge(row)!.label }}
             </span>
+            <!-- ONB-6:已连接但没建模的源,用户提问会被拒。列表必须说出来,
+                 不让「已连接」被读成「能问答」(断开态已由上面的胶囊说清)。 -->
+            <span
+              v-if="notReady(row)"
+              class="pill pill-warn ds-not-ready"
+              :title="t('dsNotReadyTip', ui.lang)"
+            >
+              {{ t('dsNotReady', ui.lang) }}
+            </span>
           </template>
         </el-table-column>
         <el-table-column
@@ -384,6 +393,11 @@ function driftNotApplicable(row: DatasourceInfo): boolean {
 function driftOpen(row: DatasourceInfo): number {
   const probe = driftProbes.value[row.name]
   return probe?.state === 'ok' ? probe.count : 0
+}
+
+/** 已连接但没有 KB:对用户不可见(= 不能问答),「已连接」不足以说明可用。 */
+function notReady(row: DatasourceInfo): boolean {
+  return row.status === 'connected' && row.kb_initialized === false
 }
 
 /** 行的漂移胶囊:ok 且 >0 → 红/黄计数;读不到 → 灰色"不可用/未读到"。 */

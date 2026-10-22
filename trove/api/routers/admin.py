@@ -34,10 +34,12 @@ from trove.core.errors import (
     AuthError,
     DatasourceConflictError,
     DatasourceError,
+    LLMError,
 )
 from trove.core.types import DatasourceConfig
 from trove.services.datasource.naming import validate_datasource_name
 from trove.services.datasource.urls import build_url, parse_datasource_url
+from trove.services.errors.present import present_exception
 from trove.services.kb.locks import KbInitBusy, KbInitLock
 from trove.workflow.miss_copy import RELATION_MISS_REASONS, miss_label
 
@@ -1284,6 +1286,26 @@ def _ds_id_or_404(request: Request, name: str) -> tuple[str, str]:
     return name, cfg.ds_id
 
 
+def _kb_failure_info(exc: BaseException, lang: str) -> dict[str, Any]:
+    """KB 任务失败的结构化呈现(error_info):沿异常链选故障面。
+
+    init_pipeline 把起草阶段的 LLM 失败包进 DatasourceError(「Could not
+    parse LLM draft…」)——只按最外层分类会把「模型凭证缺失」报成数据源
+    故障,管理员会被引去检查连接,而该修的配置在另一页。cause/context
+    链上出现过 LLMError,故障面就是模型(llm 词典生效、出口指向模型配置)。
+    """
+    context = "workflow"
+    seen: set[int] = set()
+    probe: BaseException | None = exc
+    while probe is not None and id(probe) not in seen:
+        seen.add(id(probe))
+        if isinstance(probe, LLMError):
+            context = "llm"
+            break
+        probe = probe.__cause__ or probe.__context__
+    return present_exception(exc, lang, node="kb_init", context=context)
+
+
 @router.post("/admin/datasources/{name}/kb/init", status_code=202)
 async def kb_init_datasource_async(name: str, request: Request,
                                    body: dict | None = None,
@@ -1310,6 +1332,11 @@ async def kb_init_datasource_async(name: str, request: Request,
     # force = 覆盖写(今天的行为)。默认的 overwrite 是**合并**:人的编辑按条目
     # 存活;没有基线时(存量 KB)合并无从谈起,会带着两个选项报错,由人决定。
     force = bool((body or {}).get("force"))
+    # 失败呈现的语言:后台任务跑完时无从得知管理员此刻的界面语言,发起时
+    # 带上来(未知值折回中文,与 present_error 的缺省一致)。
+    lang = (body or {}).get("lang")
+    if lang not in ("zh", "en"):
+        lang = "zh"
     task_id = task["id"]
 
     async def _run() -> None:
@@ -1325,12 +1352,15 @@ async def kb_init_datasource_async(name: str, request: Request,
             await _audit(request, "kb.init", admin, 200,
                          {"id": ds_id, "name": name})
         except KbInitBusy as e:
-            init_tasks.fail(task_id, f"KB init already running: {e}")
+            init_tasks.fail(task_id, f"KB init already running: {e}",
+                            error_info=_kb_failure_info(e, lang))
         except DatasourceError as e:
-            init_tasks.fail(task_id, str(e))
+            init_tasks.fail(task_id, str(e),
+                            error_info=_kb_failure_info(e, lang))
         except Exception as e:
             logger.warning("Async KB init failed (%s): %s", name, e)
-            init_tasks.fail(task_id, f"KB init failed: {e}")
+            init_tasks.fail(task_id, f"KB init failed: {e}",
+                            error_info=_kb_failure_info(e, lang))
         finally:
             init_tasks.release_background(task_id)
 
@@ -1362,6 +1392,7 @@ async def kb_init_status_datasource(name: str, request: Request,
             "datasource": name,
             "kb_initialized": initialized,
             "progress": None,
+            "error_info": None,
         }
     return {
         "task_id": task["id"],
@@ -1372,6 +1403,9 @@ async def kb_init_status_datasource(name: str, request: Request,
         "detail": task["detail"],
         "summary": task["summary"],
         "error": task["error"],
+        # 结构化失败呈现(ONB-6):title/suggestion/出口;原始串仍在上面的
+        # error 里(老读端不受影响)。
+        "error_info": task.get("error_info"),
         "kb_initialized": initialized,
     }
 

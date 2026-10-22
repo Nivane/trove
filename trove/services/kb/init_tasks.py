@@ -62,6 +62,9 @@ class InitTaskStore:
                 "detail": "",
                 "summary": "",
                 "error": "",
+                # 结构化失败呈现(present_error 产物):原始串留在 error,
+                # 用户可见的 title/suggestion/出口留在 error_info。
+                "error_info": None,
                 "started_at": now,
                 "finished_at": None,
             }
@@ -91,13 +94,17 @@ class InitTaskStore:
             task["stage"] = "done"
             task["finished_at"] = time.time()
 
-    def fail(self, task_id: str, error: str) -> None:
+    def fail(self, task_id: str, error: str,
+             error_info: dict[str, Any] | None = None) -> None:
+        """标记失败。``error_info`` 是 present_error 的结构化产物(可选:
+        老调用点只给原始串,行为不变)。"""
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return
             task["status"] = "error"
             task["error"] = error
+            task["error_info"] = error_info
             task["stage"] = "error"
             task["finished_at"] = time.time()
 

@@ -51,6 +51,12 @@
           <Database :size="14" :stroke-width="2" />
           <span class="plus-item-name">{{ ds.name }}</span>
           <span class="plus-item-type">{{ dsTypeLabel(ds.type) }}</span>
+          <!-- 管理员会看到未建模的源(普通用户已被服务端过滤):显式标未就绪 -->
+          <span
+            v-if="ds.kb_initialized === false"
+            class="plus-not-ready"
+            :title="t('dsNotReadyTip', ui.lang)"
+          >{{ t('dsNotReady', ui.lang) }}</span>
           <Check
             v-if="ds.name === currentDatasource"
             class="plus-check"

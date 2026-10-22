@@ -38,3 +38,41 @@ def test_serve_and_mcp_refuse_a_workflow_flag(parser):
     assert not hasattr(parser().parse_args([]), "workflow")
     with pytest.raises(SystemExit):
         parser().parse_args(["-w", "fixed"])
+
+
+def test_serve_port_in_use_gets_an_actionable_error():
+    """ONB-7:端口被占用时给一句能照做的话,而不是 uvicorn 的裸 errno。
+
+    uvicorn 自己捕获绑定失败并 ``sys.exit(1)``,外层拿不到 OSError ——
+    所以入口在启动前先探一次绑定,进程以退出码 1 结束并说明怎么改。
+    """
+    import socket
+
+    from trove.main import main_serve
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        with pytest.raises(SystemExit) as exc:
+            main_serve(["--host", "127.0.0.1", "--port", str(port)])
+        # SystemExit(字符串)由解释器打印到 stderr 并以状态码 1 退出
+        # (与 _mcp_identity_for 的既有写法一致)。
+        message = str(exc.value.code)
+        assert str(port) in message and "--port" in message
+    finally:
+        holder.close()
+
+
+def test_bind_conflict_hint_is_none_for_a_free_port():
+    """端口空着时不拦路:探针只在真的占用时给话。"""
+    import socket
+
+    from trove.main import _bind_conflict_hint
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    assert _bind_conflict_hint("127.0.0.1", port) is None

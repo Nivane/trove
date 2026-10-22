@@ -17,9 +17,22 @@ import type { OverviewWizard } from '../../api/overview'
 
 type MsgKey = keyof typeof import('../../i18n').messages['zh']
 
-const props = defineProps<{ wizard: OverviewWizard | null }>()
+const props = defineProps<{
+  wizard: OverviewWizard | null
+  /** /v1/health 的 LLM 事实(mock/target/providers);缺省不显示提示。 */
+  llm?: { mock: boolean; target: string; providers: number } | null
+}>()
 
 const ui = useUiStore()
+
+/** 首启提示(不是错误):没配模型且不在 mock。
+ *
+ *  ``providers=0`` 不等于「没凭证」——litellm 还可能从环境变量取,所以
+ *  文案留出「可忽略」;health 的判定不因此改变(它只报事实)。 */
+const noModel = computed(() => {
+  const l = props.llm
+  return !!l && !l.mock && !l.target && l.providers === 0
+})
 
 interface WizardStep {
   key: string
@@ -82,6 +95,7 @@ const steps = computed<WizardStep[]>(() => {
 </script>
 
 <template>
+  <p v-if="noModel" class="wiz-model-hint">{{ t('ovWizNoModel', ui.lang) }}</p>
   <ol class="wiz-list">
     <li
       v-for="s in steps"
@@ -110,6 +124,16 @@ const steps = computed<WizardStep[]>(() => {
 </template>
 
 <style scoped>
+.wiz-model-hint {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-relaxed);
+}
+
 .wiz-list {
   display: flex;
   flex-direction: column;

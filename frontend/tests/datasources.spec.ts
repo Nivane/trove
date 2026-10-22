@@ -225,6 +225,24 @@ describe('DatasourcesView', () => {
     expect(editBtns[1].attributes('disabled')).toBeDefined() // demo locked
   })
 
+  it('marks a connected datasource without a KB as not ready', async () => {
+    // ONB-6:已连接但未建模的源对用户不可用(提问会被拒)—— 列表必须说出来,
+    // 而不是让人从「已连接」推断「能问答」。
+    mockGet({ datasources: [
+      { name: 'financial', type: 'mysql', status: 'connected', kb_initialized: true },
+      { name: 'sales', type: 'mysql', status: 'connected', kb_initialized: false },
+      { name: 'cold', type: 'mysql', status: 'disconnected', kb_initialized: false },
+    ] })
+    const view = await mountView()
+    const rows = view.findAll('.el-table__body tbody tr')
+    const pillText = (i: number) =>
+      Array.from(rows[i].element.querySelectorAll('.pill')).map((p) => p.textContent!.trim())
+    expect(pillText(0).join(' ')).not.toContain('Not ready')
+    expect(pillText(1).join(' ')).toContain('Not ready')
+    // 断开的源已经说了「Disconnected」,不再叠一个无意义的未就绪
+    expect(pillText(2).join(' ')).not.toContain('Not ready')
+  })
+
   it('edits a datasource connection through the dialog', async () => {
     mockGet({
       datasources: [{ name: 'financial', type: 'mysql', status: 'connected', kb_initialized: false }],

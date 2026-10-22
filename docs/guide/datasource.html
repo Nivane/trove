@@ -71,7 +71,7 @@ flowchart TD
         <tbody>
           <tr><td>Python</td><td>≥ 3.12</td></tr>
           <tr><td>Node</td><td>仅在改前端时需要（<code>^22.13.0 || &gt;= 24.0.0</code>）</td></tr>
-          <tr><td>模型凭证</td><td><code>/kb init</code> 起草注释时需要；没有凭证会走骨架降级路径</td></tr>
+          <tr><td>模型凭证</td><td><code>/kb init</code> 起草注释与合成示例时需要；<strong>没有凭证会直接失败</strong>——先配凭证再建模</td></tr>
           <tr><td>数据库账号</td><td><strong>强烈建议只读账号</strong>——理由见下</td></tr>
         </tbody>
       </table>
