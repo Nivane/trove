@@ -84,7 +84,7 @@
       <div>
         <p>Trove 把<strong>能确定的都确定下来</strong>——join 路径、枚举值、时间分桶、口径、安全边界都由语义模型和确定性规则算，不花模型一分钱。
         但问句到查询计划那一步是语言理解，必须有模型。</p>
-        <p>没有凭证时程序仍能启动（<code>/kb init</code> 退化为纯骨架），只是问不出可用的答案。这不是降级运行，是缺了必需件。</p>
+        <p>没有凭证时程序仍能启动，但 <code>/kb init</code> 会失败——起草注释与合成示例都要调用模型。请先配好凭证再建模，这不是降级运行，是缺了必需件。</p>
       </div>
     </div>
 
@@ -129,9 +129,9 @@ uv sync</code></pre>
 
     <p>
       两个入口共用同一套管线：<code>trove</code> 是交互 REPL
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1036">main.py:1036 <span class="ref-line">main_repl</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1073">main.py:1073 <span class="ref-line">main_repl</span></a>，
       <code>trove-cli</code> 是管道模式
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L732">main.py:732 <span class="ref-line">async_main_cli</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L734">main.py:734 <span class="ref-line">async_main_cli</span></a>。
     </p>
 
     <h3>4. 看看它凭什么这么答</h3>
@@ -257,7 +257,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: bec4b16</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5553dcb</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -70,6 +70,12 @@ let DETAIL: {
 let confirmGate: Record<string, string> = {}
 /** Set to make the datasource's kb detail endpoint fail. */
 let failDs: string | null = null
+/** Served by /kb/init/status (mutable per test: done / error + error_info). */
+let initStatus: Record<string, unknown> = {
+  status: 'done',
+  stage: 'done',
+  progress: 100,
+}
 
 function resetFixtures() {
   DESTS = [
@@ -235,7 +241,7 @@ function mockApi() {
     }
     if (path.startsWith('/v1/kb/entries?')) return clone({ entries: ENTRIES })
     if (path.startsWith('/v1/kb/examples/pending?')) return clone({ examples: PENDING })
-    if (path.endsWith('/kb/init/status')) return { status: 'done', stage: 'done', progress: 100 }
+    if (path.endsWith('/kb/init/status')) return clone(initStatus)
     if (path.endsWith('/kb/reload/status')) return { status: 'done' }
     if (path.endsWith('/kb/distill-history/status')) {
       return {
@@ -306,6 +312,7 @@ async function mountView(url = '/admin/kb?ds=demo') {
       { path: '/admin', component: { render: () => null } },
       { path: '/admin/kb', component: { render: () => null } },
       { path: '/admin/datasources', component: { render: () => null } },
+      { path: '/admin/model-config', component: { render: () => null } },
     ],
   })
   await router.push(url)
@@ -369,6 +376,7 @@ function calls(path: string): Record<string, unknown>[] {
 
 beforeEach(() => {
   resetFixtures()
+  initStatus = { status: 'done', stage: 'done', progress: 100 }
   pinia = createPinia()
   setActivePinia(pinia)
   useUiStore().lang = 'en'
@@ -687,6 +695,7 @@ describe('KbView', () => {
     expect(calls('/v1/admin/datasources/demo/kb/init')[0]).toEqual({
       overwrite: true,
       force: true,
+      lang: 'en',
     })
 
     await more.trigger('click')
@@ -736,7 +745,69 @@ describe('KbView', () => {
     expect(calls('/v1/admin/datasources/demo/kb/init')[0]).toEqual({
       overwrite: false,
       force: false,
+      lang: 'en',
     })
+  })
+
+  it('a failed init renders the structured error and retries through the confirm dialog', async () => {
+    mockApi()
+    DETAIL!.status = { initialized: false, assets: [], refused_assets: {}, items: {}, files: [] }
+    // 后端 ONB-6 的产物:失败任务带 present_error 的 error_info
+    initStatus = {
+      status: 'error',
+      stage: 'error',
+      error: 'KB init failed: [LLM_001] Missing API key',
+      error_info: {
+        kind: 'model',
+        title: 'Model service unavailable',
+        explanation: 'The model that writes the query did not respond.',
+        suggestion: 'Check the model configuration before retrying.',
+        retryable: true,
+        actions: [
+          {
+            id: 'model',
+            kind: 'model',
+            label: 'Check the model configuration',
+            href: '/admin/model-config',
+            admin_only: true,
+          },
+        ],
+        detail: {
+          raw: 'KB init failed: [LLM_001] Missing API key',
+          node: 'kb_init',
+          error_class: 'LLM_SERVICE',
+          domain: 'llm',
+        },
+      },
+    }
+    const view = await mountView()
+    const panel = view.find('.state-panel.is-error')
+    expect(panel.exists()).toBe(true)
+    // 人话标题/解释/建议,而不是原始异常串
+    expect(panel.text()).toContain('Model service unavailable')
+    expect(panel.text()).toContain('The model that writes the query did not respond.')
+    expect(panel.text()).toContain('Check the model configuration before retrying.')
+    // 原始串留在 detail 区(管理员排查用)
+    expect(panel.text()).toContain('KB init failed: [LLM_001] Missing API key')
+    // 与拒绝侧同形状的出口:去模型配置页
+    const link = panel.find('a[href="/admin/model-config"]')
+    expect(link.exists()).toBe(true)
+
+    // 「重试建模」= 计费动作,仍走同一个确认框(不是静默重跑)
+    await findButton(panel.element, 'Retry modeling')!.click()
+    await settle()
+    const dialog = confirmDialog()
+    expect(dialog.textContent).toContain('calls the billed LLM')
+    initStatus = { status: 'done', stage: 'done', progress: 100 }
+    await findButton(dialog, 'Init KB')!.click()
+    await settle(2300)
+    expect(calls('/v1/admin/datasources/demo/kb/init')[0]).toEqual({
+      overwrite: false,
+      force: false,
+      lang: 'en',
+    })
+    // 成功后失败面板撤掉(没有残留的旧失败)
+    expect(view.find('.state-panel.is-error').exists()).toBe(false)
   })
 
   it('terms and metrics list kinds with a client-side search in the URL', async () => {

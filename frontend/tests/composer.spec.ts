@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import Composer from '../src/components/chat/Composer.vue'
 import { useChatStore } from '../src/stores/chat'
+import { useUiStore } from '../src/stores/ui'
 
 function mountComposer() {
   setActivePinia(createPinia())
@@ -78,5 +79,23 @@ describe('Composer', () => {
   it('keeps the composer free of hint text', () => {
     const wrapper = mountComposer()
     expect(wrapper.find('.composer-hint').exists()).toBe(false)
+  })
+
+  it('marks an uninitialized datasource as not ready in the picker', async () => {
+    const wrapper = mountComposer()
+    const ui = useUiStore()
+    ui.lang = 'en'
+    ui.datasourceList = [
+      { name: 'financial', type: 'mysql', status: 'connected', kb_initialized: true },
+      { name: 'sales', type: 'mysql', status: 'connected', kb_initialized: false },
+    ] as any
+    await nextTick()
+    await wrapper.find('.plus-btn').trigger('click')
+    const items = wrapper.findAll('.plus-item')
+    const sales = items.find((i) => i.text().includes('sales'))!
+    expect(sales.find('.plus-not-ready').exists()).toBe(true)
+    expect(sales.text()).toContain('Not ready')
+    const financial = items.find((i) => i.text().includes('financial'))!
+    expect(financial.find('.plus-not-ready').exists()).toBe(false)
   })
 })

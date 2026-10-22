@@ -171,6 +171,31 @@
       :title="t('kbLoading', ui.lang)"
     />
 
+    <!-- 上一次 init 失败了:结构化原因(title/suggestion/原始串)+ 重试建模。
+         重试仍是计费动作,走同一个确认框;出口(如「检查模型配置」)由后端给。 -->
+    <StatePanel
+      v-else-if="!initialized && initError"
+      mode="error"
+      :title="initError.title || t('dsInitFail', ui.lang)"
+      :description="[initError.explanation, initError.suggestion].filter(Boolean).join(' ')"
+      :detail="initError.detail?.raw"
+    >
+      <template #action>
+        <el-button type="primary" @click="askMenuAction('init')">
+          <RefreshCw :size="15" class="btn-icon" />
+          {{ t('dsInitRetry', ui.lang) }}
+        </el-button>
+        <RouterLink
+          v-for="a in initErrorActions"
+          :key="a.id ?? a.href"
+          class="kb-fix-link"
+          :to="a.href!"
+        >
+          {{ a.label }}
+        </RouterLink>
+      </template>
+    </StatePanel>
+
     <!-- never initialized: the first-run empty state carries the CTA -->
     <StatePanel
       v-else-if="!initialized"
@@ -829,9 +854,11 @@ import {
   X,
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
+import { RouterLink } from 'vue-router'
 import { apiDelete, apiGet, apiPost, ApiError } from '../../api/http'
 import type {
   DatasourceInfo,
+  ErrorInfo,
   KbAsset,
   KbDetail,
   KbLesson,
@@ -962,6 +989,11 @@ const assetOpen = ref(false)
 const assetSel = ref<KbAssetRow | null>(null)
 
 const initProgress = ref<{ stage?: string; progress?: number; detail?: string } | null>(null)
+/** 上一次 init 失败的**结构化**呈现(后端 error_info);没有就不渲染失败面板。 */
+const initError = ref<ErrorInfo | null>(null)
+const initErrorActions = computed(() =>
+  (initError.value?.actions ?? []).filter((a) => !!a.href && !!a.label),
+)
 
 const connected = computed(() => datasources.value.filter((d) => d.status === 'connected'))
 const initialized = computed(() => !!detail.value?.status.initialized)
@@ -1035,6 +1067,22 @@ async function loadAll() {
     // prune the selection to what still exists in this datasource
     const live = new Set(queueSource.value.map((i) => i.id))
     selected.value = selected.value.filter((id) => live.has(id))
+    initError.value = null
+    // 还没就绪时,把**上一次 init 的失败**带回来(任务注册表保留一小时):
+    // 管理员刷新页面/换源回来,看到的应是「为什么失败 + 怎么修」,而不是
+    // 一句空态文案。读不到状态不改变结论 —— 是否就绪由 detail 说了算。
+    if (!kbBody.kb?.status?.initialized) {
+      try {
+        const st = await apiGet<{ status?: string; error_info?: ErrorInfo }>(
+          `/v1/admin/datasources/${encodeURIComponent(ds)}/kb/init/status`,
+        )
+        if (values.ds === ds && st.status === 'error' && st.error_info) {
+          initError.value = st.error_info
+        }
+      } catch {
+        // best-effort:状态端点读不到 ≠ KB 没失败,页面照常给空态 CTA
+      }
+    }
   } catch (e) {
     if (values.ds !== ds) return
     detail.value = null
@@ -1763,25 +1811,32 @@ async function pollInitStatus(): Promise<void> {
       progress?: number
       detail?: string
       error?: string
+      error_info?: ErrorInfo
     }>(`/v1/admin/datasources/${encodeURIComponent(values.ds)}/kb/init/status`)
     initProgress.value = { stage: st.stage, progress: st.progress ?? 0, detail: st.detail }
     if (st.status === 'done') {
       initProgress.value = { stage: 'done', progress: 100 }
       return
     }
-    if (st.status === 'error') throw new Error(st.error || t('dsInitFail', ui.lang))
+    if (st.status === 'error') {
+      // 结构化失败(ONB-6):面板渲染 title/suggestion/出口;原始串只进 toast。
+      initError.value = st.error_info ?? null
+      throw new Error(st.error || t('dsInitFail', ui.lang))
+    }
     if (st.status === 'idle') throw new Error(t('dsInitLost', ui.lang))
   }
 }
 
 async function initKb(overwrite = false, force = false) {
   setBusy('init', true)
+  initError.value = null
   initProgress.value = { stage: 'queued', progress: 0 }
   const notice = ElMessage({ type: 'info', message: t('dsInitStarted', ui.lang), duration: 0 })
   try {
     await apiPost(
       `/v1/admin/datasources/${encodeURIComponent(values.ds)}/kb/init`,
-      { overwrite, force },
+      // lang:失败文案由后端生成,后台任务跑完时无从得知界面语言 —— 发起时带上
+      { overwrite, force, lang: ui.lang },
     )
     await pollInitStatus()
     notifySuccess(t('dsInitDone', ui.lang))
@@ -2184,6 +2239,22 @@ async function copySnippet(sql: string) {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--surface-raised);
+}
+.kb-fix-link {
+  display: inline-flex;
+  align-items: center;
+  height: var(--density-control-h, 30px);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+  text-decoration: none;
+}
+.kb-fix-link:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
 }
 .kb-init-stage {
   display: flex;

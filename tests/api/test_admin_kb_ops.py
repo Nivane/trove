@@ -86,6 +86,8 @@ async def test_kb_init_endpoint(client, api_app, tmp_path):
     assert st["status"] == "done"
     assert st["progress"] == 100
     assert "Initialized" in st["summary"]
+    # 成功任务没有 error_info(键恒在,值恒空 —— 读端不必猜键缺没缺)
+    assert st["error_info"] is None
     kb = api_app.state.kb
     assert (kb.kb_dir / "extra" / "semantics.yml").exists()
 
@@ -182,6 +184,80 @@ async def test_kb_init_uses_datasource_schema(client, api_app, tmp_path):
     notes = (api_app.state.kb.kb_dir / "extra" / "schema_notes.yml").read_text(encoding="utf-8")
     assert "employees" in notes
     assert "students" not in notes
+
+
+async def test_kb_init_llm_failure_carries_error_info(client, api_app, tmp_path):
+    """ONB-6:失败任务带结构化 error_info —— 模型故障指向模型配置,不是原始串。
+
+    init_pipeline 会把 LLM 失败包进 DatasourceError(cause 链才是故障面);
+    呈现层必须沿链识别出 LLMError,否则管理员会被引去检查数据源连接。
+    """
+    import sqlite3
+
+    from trove.core.errors import LLMError
+    from trove.core.types import DatasourceConfig
+    from trove.services.kb.init_tasks import init_tasks
+
+    db = tmp_path / "authfail.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.commit()
+    conn.close()
+    await api_app.state.connector_registry.register(
+        DatasourceConfig(name="authfail", type="sqlite",
+                         connection_params={"path": str(db)}, credentials={}, default=False))
+
+    class AuthFailLLM:
+        async def chat(self, *a, **k):
+            raise LLMError("Missing API key: set DEEPSEEK_API_KEY", provider="deepseek")
+
+        async def chat_full(self, *a, **k):
+            raise LLMError("Missing API key: set DEEPSEEK_API_KEY", provider="deepseek")
+
+    api_app.state.llm_gateway = AuthFailLLM()
+    init_tasks.reset()
+    resp = await client.post("/v1/admin/datasources/authfail/kb/init",
+                             json={"lang": "en"})
+    assert resp.status_code == 202
+    st = await _wait_init(client, "authfail")
+    assert st["status"] == "error"
+    info = st["error_info"]
+    assert info is not None, st
+    assert info["kind"] == "model"
+    assert info["detail"]["error_class"] == "LLM_SERVICE"
+    # 管理员看到的是人话标题,原始异常串只留在 detail.raw
+    assert "Missing API key" not in info["title"]
+    assert "Missing API key" in info["detail"]["raw"]
+    assert [a["href"] for a in info["actions"]] == ["/admin/model-config"]
+    # 缺凭证不是「等会儿再试」能好的
+    assert info["retryable"] is False
+
+
+async def test_kb_init_datasource_failure_carries_error_info(
+    client, api_app, monkeypatch,
+):
+    """ONB-6:数据源故障 → kind=datasource + 去数据源页的出口。"""
+    from trove.core.errors import DatasourceError
+    from trove.services.kb import init_pipeline
+    from trove.services.kb.init_tasks import init_tasks
+
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+
+    async def boom(*a, **k):
+        raise DatasourceError("connection refused by peer", datasource="extra")
+
+    monkeypatch.setattr(init_pipeline, "init_kb", boom)
+    init_tasks.reset()
+    resp = await client.post("/v1/admin/datasources/extra/kb/init", json={})
+    assert resp.status_code == 202
+    st = await _wait_init(client, "extra")
+    assert st["status"] == "error"
+    info = st["error_info"]
+    assert info is not None, st
+    assert info["kind"] == "datasource"
+    assert [a["href"] for a in info["actions"]] == ["/admin/datasources"]
+    assert info["retryable"] is True
 
 
 async def test_kb_detail_endpoint(client, api_app):

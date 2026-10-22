@@ -2244,6 +2244,17 @@ button:disabled {
   font-size: var(--fs-2xs);
   flex-shrink: 0;
 }
+/* 「未就绪」:已连接但没 KB 的源 —— 可选中(管理员可能正要去初始化),
+   但必须先看见它现在问不了。 */
+.plus-not-ready {
+  margin-left: var(--sp-1);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--fs-2xs);
+  flex-shrink: 0;
+}
 .plus-check {
   margin-left: auto;
   flex-shrink: 0;

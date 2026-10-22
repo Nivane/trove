@@ -392,6 +392,8 @@ describe('OverviewView', () => {
     expect(banner.text()).toContain('All 2 datasources reachable')
     expect(banner.text()).toContain('2/2')
     expect(banner.text()).toContain('1 verified')
+    // configured model → the first-start hint stays silent
+    expect(view.find('.wiz-model-hint').exists()).toBe(false)
 
     // six KPI tiles, each carrying its own count discipline
     expect(view.findAll('.kpi-tile')).toHaveLength(6)
@@ -493,6 +495,45 @@ describe('OverviewView', () => {
   })
 
   describe('degraded blocks', () => {
+    it('hints on the first-start checklist when no model is configured', async () => {
+      // ONB-5: target 为空且 providers=0 是「首次启动还没配模型」的常见形状。
+      // 提示而非错误:litellm 还可能从环境变量拿到凭证,静态断「不可用」
+      // 会报假故障 —— health 判定不受这条提示影响。
+      const p = healthy()
+      p.health = {
+        status: 'ok',
+        storage: { ok: true },
+        llm: { mock: false, target: '', providers: 0 },
+        datasources: {
+          demo: { ok: true },
+        } as any,
+      }
+      setPayload(p)
+      const view = await mountView('/admin')
+
+      const hint = view.find('.wiz-model-hint')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toContain('No model configuration detected')
+      expect(hint.text()).toContain('environment variables')
+      // 提示不是错误:横幅仍按 health 的判定,没有错误面
+      expect(view.find('.health-banner').classes()).toContain('is-ok')
+      expect(view.find('.module-error').exists()).toBe(false)
+      expect(view.find('.state-panel.is-error').exists()).toBe(false)
+    })
+
+    it('does not hint in mock mode — mock is not a missing model', async () => {
+      const p = healthy()
+      p.health = {
+        status: 'ok',
+        storage: { ok: true },
+        llm: { mock: true, target: '', providers: 0 },
+        datasources: { demo: { ok: true } } as any,
+      }
+      setPayload(p)
+      const view = await mountView('/admin')
+      expect(view.find('.wiz-model-hint').exists()).toBe(false)
+    })
+
     it('keeps a per-block error face, ≥ N and — instead of 0', async () => {
       setPayload(degraded())
       const view = await mountView('/admin')

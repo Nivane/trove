@@ -90,7 +90,10 @@
         {{ t('ovEmptyFirstCta', ui.lang) }}
       </RouterLink>
       <div v-if="!readOnly" class="ofe-wizard">
-        <OnboardingWizard :wizard="payload?.wizard ?? null" />
+        <OnboardingWizard
+          :wizard="payload?.wizard ?? null"
+          :llm="payload?.health?.llm ?? null"
+        />
       </div>
     </section>
 
@@ -291,7 +294,7 @@
                 <p class="ov-card-sub">{{ t('ovWizSub', ui.lang) }}</p>
               </div>
             </header>
-            <OnboardingWizard :wizard="payload.wizard" />
+            <OnboardingWizard :wizard="payload.wizard" :llm="payload.health?.llm ?? null" />
           </section>
 
           <!-- recent events: the audit stream, window-scoped -->

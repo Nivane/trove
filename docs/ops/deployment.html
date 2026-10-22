@@ -185,6 +185,14 @@ docker compose down              <span class="cmt"># 停止并移除容器（保
       是一次真实提问（见故障表「问答不可用」一行）。
     </p>
 
+    <div class="callout note">
+      <span class="callout-tag">ok ≠ 可问答</span>
+      <div>
+        <p><code>status: ok</code> 只说明<strong>进程活着、内部存储往返正常、已注册的数据源探测通过</strong>——它是存活与依赖检查，<strong>不是就绪检查</strong>。
+        模型凭证是否可用、某个数据源的知识库是否已建模，都不在 health 的判定里：health 发绿而问不出答案，通常是这两种情况，按下方故障表排查，而不是等 health 变色。</p>
+      </div>
+    </div>
+
     <p>
       <code>GET /v1/metrics</code> 输出 Prometheus 文本格式，直接可被
       Prometheus / VictoriaMetrics 抓取。运维上最该关注的几个族：
@@ -371,9 +379,9 @@ curl -s localhost:8000/v1/health        <span class="cmt"># 应为 ok / degraded
             <td>注册即连接探测，400 就是探测失败的原因（连接串、账号、网络或驱动 extra 没装）——按正文修</td>
           </tr>
           <tr>
-            <td><code>/kb init</code> 报凭证错误、或只生成了骨架</td>
+            <td><code>/kb init</code> 报凭证错误</td>
             <td>LLM 凭证</td>
-            <td>没有 LLM 凭证时，初始化按配置走纯骨架或直接报错；补好凭证后重跑 <code>/kb init</code></td>
+            <td>初始化要调用模型起草注释与示例，没有 LLM 凭证会直接失败（管理端任务页会给出原因和「去配置」入口）；补好凭证后重跑 <code>/kb init</code></td>
           </tr>
           <tr>
             <td>定时任务被执行了两次</td>
