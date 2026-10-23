@@ -1,0 +1,56 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-10-23
+
+First release. Trove is an NL→SQL conversational data agent whose answers are
+bounded by a human-confirmed semantic model, with analysis, deterministic
+decision rules, and action follow-through on top.
+
+### Added
+
+- **Semantic-first query pipeline.** Intent routing, semantic matching, SQL
+  generation with self-validation, execution, and reflection adjudication. The
+  semantic model (`semantics.yml`, Apache OSSIE shape) is the generation's
+  primary view and the answerability boundary; structural misses refuse with a
+  one-click path to extend the model, soft misses compile what they can and hand
+  the rest to generation.
+- **Per-datasource knowledge base.** Schema notes, semantic model, examples,
+  rules, and a two-tier (pending/confirmed) lesson bank in `.trove/kb/<ds>/`,
+  YAML as the single source of truth, hybrid keyword + dense retrieval.
+- **Existing semantic-layer import.** `trove import semantic` maps dbt
+  `semantic_models`/metrics YAML (optionally resolving `ref()`/`source()` via
+  `manifest.json`) and Cube's compiled meta JSON. Three landing modes:
+  `preview` (zero writes, default), `bootstrap` (no model yet), and `stage`
+  (opens a semantic change for admin review; `semantics.yml` untouched).
+  Unmappable constructs are reported item by item.
+- **Analysis engine.** Deterministic decomposition ("why did it change"), robust
+  noise-band statistics, effect measurement, all replayable from recorded
+  evidence queries.
+- **Decision rules.** Threshold rules declared in the semantic model's own
+  vocabulary, evaluated deterministically (zero LLM) with evidence, a
+  significance gate over historical noise bands, and a causal ladder that
+  degrades honestly instead of overclaiming.
+- **Actions and closed-loop verification.** Proposals with frozen payloads,
+  human approval, templated delivery over IM channels, and post-hoc effect
+  verification.
+- **Memory.** Episodic recall across sessions, auto-learned preferences, and
+  promotion of recurring corrections — automatic content always lands as
+  `pending` and never bypasses admin confirmation.
+- **Governance.** Admin console, row/column grants, OIDC SSO, org skills,
+  scheduled jobs, and audit surfaces including a refusal report.
+- **Datasources.** SQLite, MySQL, PostgreSQL, ClickHouse, DuckDB, Doris,
+  Snowflake, and BigQuery adapters; Docker Compose deployment with PostgreSQL +
+  pgvector as the default stack.
+- **Evaluation tooling.** `scripts/eval_gate.py` (offline regression gate, zero
+  LLM/network), per-datasource evalsets with a trust tiering model, and the BIRD
+  financial demo datasource.
+
+[Unreleased]: https://github.com/Nivane/trove/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Nivane/trove/releases/tag/v0.1.0

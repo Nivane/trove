@@ -416,6 +416,8 @@ uv run pytest -m "not slow"       # 跳过慢测试
 
 欢迎 bug 报告、功能想法、文档与 pull request。请保持改动聚焦,提交前确保测试通过。较大的改动请先开 issue 讨论。
 
+开发环境、测试约定与几条关键仓库规则见 [CONTRIBUTING.md](CONTRIBUTING.md);发现安全问题请按 [SECURITY.md](SECURITY.md) 私下报告;变更历史见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## License
 
 Trove 以 [Apache License 2.0](LICENSE) 发布。
