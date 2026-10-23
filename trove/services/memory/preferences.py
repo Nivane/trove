@@ -88,6 +88,14 @@ class PreferenceStore:
         await self._backend.executescript(PREFS_TABLE_SQL)
         self._schema_ready = True
 
+    async def dispose(self) -> None:
+        """Release the backend connection (process/test teardown).
+
+        aiosqlite 的 worker 线程不是 daemon 线程 —— 不关连接,进程退出会
+        挂住(与 EpisodeStore.dispose 同款防线)。
+        """
+        await self._backend.dispose()
+
     async def add(
         self, scope: MemoryScope, fact: str, *,
         evidence: str = "", confidence: float = 0.0,

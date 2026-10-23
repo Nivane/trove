@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `trove-cli --print` (and the REPL / `trove serve` shutdown) now release every
+  store connection before returning. aiosqlite worker threads are non-daemon,
+  so one undisposed store kept the process alive after its output was printed.
+- F2-a validation no longer rejects correct per-gender grouping SQL: for
+  questions like "how many clients are there for each gender", `GROUP BY
+  gender` is the requested dimension rather than a missing `WHERE gender = …`
+  filter. Grouping by any other dimension still requires the gender filter.
+
 ## [0.1.0] - 2026-10-23
 
 First release. Trove is an NL→SQL conversational data agent whose answers are

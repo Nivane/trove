@@ -693,42 +693,79 @@ async def async_main_repl():
 
     async with build_checkpointer(config.home) as checkpointer:
         components = await create_app_components(args, config, checkpointer)
-
-        # Create or load a session
-        session_manager = components["session_manager"]
-        session = await session_manager.start_session(
-            project_cwd=".",
-            user_id="local",
-        )
-
-        # Launch REPL
-        from trove.cli.app import TroveREPL
-        repl = TroveREPL(
-            session_manager=session_manager,
-            config=components["config"],
-            catalog_service=components["catalog_service"],
-            connector_registry=components["connector_registry"],
-            session_store=components["session_store"],
-            current_session=session,
-            kb_service=components["kb"],
-            llm_gateway=components["llm_gateway"],
-            user_facts=components["user_facts"],
-            # --topic 是 REPL 的初始值;/topic 在会话内查看/修改。
-            topic=args.topic,
-            verbose=getattr(args, "verbose", False),
-        )
-
         try:
-            await repl.run()
+            # Create or load a session
+            session_manager = components["session_manager"]
+            session = await session_manager.start_session(
+                project_cwd=".",
+                user_id="local",
+            )
+
+            # Launch REPL
+            from trove.cli.app import TroveREPL
+            repl = TroveREPL(
+                session_manager=session_manager,
+                config=components["config"],
+                catalog_service=components["catalog_service"],
+                connector_registry=components["connector_registry"],
+                session_store=components["session_store"],
+                current_session=session,
+                kb_service=components["kb"],
+                llm_gateway=components["llm_gateway"],
+                user_facts=components["user_facts"],
+                # --topic 是 REPL 的初始值;/topic 在会话内查看/修改。
+                topic=args.topic,
+                verbose=getattr(args, "verbose", False),
+            )
+
+            try:
+                await repl.run()
+            finally:
+                # 先存会话(cleanup),再释放连接 —— 顺序反过来会写不进去。
+                await repl.cleanup()
         finally:
-            await repl.cleanup()
-            await components["connector_registry"].close_all()
+            await _dispose_components(components)
 
 
 async def _run_index(argv: list[str]) -> None:
     from trove.cli.index_cmds import main_index
 
     await main_index(argv)
+
+
+async def _dispose_components(components: dict) -> None:
+    """Best-effort release of every component holding a backend connection.
+
+    aiosqlite worker threads are non-daemon: one store left undisposed keeps
+    the interpreter alive after ``asyncio.run`` returns. Interactive entry
+    points used to hide that behind an explicit exit; the one-shot
+    ``--print`` path printed its payload and then hung. Each disposal is
+    isolated — a failing store must not leave the rest holding the process.
+    """
+    async def _best_effort(name: str, obj, method: str) -> None:
+        fn = getattr(obj, method, None) if obj is not None else None
+        if fn is None:
+            return
+        try:
+            await fn()
+        except Exception as e:
+            logger.warning("Component cleanup failed (%s): %s", name, e)
+
+    # 先收掉后台体检任务,再释放连接(与 serve 原清理顺序同源)。
+    await _best_effort(
+        "question_coverage", components.get("question_coverage"), "dispose")
+    await _best_effort(
+        "connector_registry", components.get("connector_registry"), "close_all")
+    # jobs / actions 的后端连接挂在各自的 store 上。
+    for name in ("jobs", "actions"):
+        service = components.get(name)
+        await _best_effort(
+            f"{name}.store", getattr(service, "store", None), "dispose")
+    for name in (
+        "oidc", "verdicts", "memory", "user_facts",
+        "session_store", "settings", "auth",
+    ):
+        await _best_effort(name, components.get(name), "dispose")
 
 
 async def async_main_cli():
@@ -754,30 +791,35 @@ async def async_main_cli():
 
         async with build_checkpointer(config.home) as checkpointer:
             components = await create_app_components(args, config, checkpointer)
-            session_manager = components["session_manager"]
-            session = await session_manager.start_session()
+            try:
+                session_manager = components["session_manager"]
+                session = await session_manager.start_session()
 
-            user_input = sys.stdin.read().strip()
-            if user_input:
-                events = []
-                summary = {}
-                async for event in session_manager.ask_stream(
-                    session=session,
-                    question=user_input,
-                    workflow_name=args.workflow,
-                    # 透传,不做预检:域是否存在由管线自己响亮拒绝(与前端
-                    # 同一条路径),CLI 不自建第二套判定。
-                    topic=args.topic,
-                ):
-                    events.append(event)
-                    if "summary" in event:
-                        summary = event["summary"]
+                user_input = sys.stdin.read().strip()
+                if user_input:
+                    events = []
+                    summary = {}
+                    async for event in session_manager.ask_stream(
+                        session=session,
+                        question=user_input,
+                        workflow_name=args.workflow,
+                        # 透传,不做预检:域是否存在由管线自己响亮拒绝(与
+                        # 前端同一条路径),CLI 不自建第二套判定。
+                        topic=args.topic,
+                    ):
+                        events.append(event)
+                        if "summary" in event:
+                            summary = event["summary"]
 
-                import json
-                print(json.dumps(
-                    format_print_payload(summary, events),
-                    ensure_ascii=False, indent=2,
-                ))
+                    import json
+                    print(json.dumps(
+                        format_print_payload(summary, events),
+                        ensure_ascii=False, indent=2,
+                    ))
+            finally:
+                # 一次性进程没有别的收尾:不释放连接,进程在打印完的结果
+                # 之后一直挂着不退出(aiosqlite worker 线程非 daemon)。
+                await _dispose_components(components)
         return
 
     # Default: launch REPL
@@ -885,27 +927,9 @@ async def async_main_serve(argv: list[str]) -> None:
         try:
             await server.serve()
         finally:
-            await components["connector_registry"].close_all()
-            oidc = components.get("oidc")
-            if oidc is not None:
-                try:
-                    await oidc.dispose()
-                except Exception:
-                    pass
-            jobs = components.get("jobs")
-            if jobs is not None:
-                try:
-                    await jobs.store.dispose()
-                except Exception:
-                    pass
-            coverage = components.get("question_coverage")
-            if coverage is not None:
-                try:
-                    # 先收掉后台体检任务,再释放存储(aiosqlite 线程不关会
-                    # 挂住进程退出 —— 与 jobs.store 同款防线)。
-                    await coverage.dispose()
-                except Exception:
-                    pass
+            # 与 --print 共用同一份清理清单(aiosqlite 线程不关会挂住
+            # 进程退出 —— coverage 先收后台任务,再释放各存储连接)。
+            await _dispose_components(components)
 
 
 def main_serve(argv: list[str] | None = None) -> None:

@@ -209,3 +209,44 @@ async def test_observe_disabled_when_config_off(memory):
     memory.config = MemoryConfig(enabled=False)
     await memory.observe(scope=SCOPE, question="q", sql="SELECT 1", verdict="OK")
     assert await memory.episodes.count(SCOPE) == 0
+
+
+async def test_dispose_releases_owned_backends(memory):
+    """一次性 CLI 的收尾:episodes/preferences 不释放,进程退出会挂住。
+
+    ``close()`` 只结束操作作用域;dispose 才是真释放(见 EpisodeStore)。
+    """
+    await memory.observe(
+        scope=SCOPE, question="q", sql="SELECT 1", verdict="OK", row_count=1,
+    )
+    await memory.preferences.add(SCOPE, "客户偏好按月统计", confidence=0.4)
+    assert memory.episodes._backend._conn is not None
+    assert memory.preferences._backend._conn is not None
+
+    await memory.dispose()
+
+    assert memory.episodes._backend._conn is None
+    assert memory.preferences._backend._conn is None
+
+
+async def test_dispose_is_best_effort_across_parts(tmp_path, kb, facts):
+    """一个部件释放失败,其余部件照常释放。"""
+    class _Failing:
+        async def dispose(self):
+            raise RuntimeError("boom")
+
+    class _Recorder:
+        def __init__(self):
+            self.called = False
+
+        async def dispose(self):
+            self.called = True
+
+    drift = _Recorder()
+    m = MemoryService(
+        tmp_path / "home2", MemoryConfig(enabled=True), kb=kb, user_facts=facts,
+        drift_store=drift,
+    )
+    m.episodes = _Failing()
+    await m.dispose()
+    assert drift.called

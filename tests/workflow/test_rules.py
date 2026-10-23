@@ -656,6 +656,39 @@ class TestF2FilterCoverage:
                "AND district_id = d.district_id) < 2000")
         assert verify(q, sql, ["count"], [[3]], 1, lang="en") == (None, [])
 
+    def test_per_gender_grouping_question_passes(self):
+        """「for each gender」问的是分布:GROUP BY gender 即已覆盖,不是缺过滤。"""
+        q = "How many clients are there for each gender?"
+        sql = "SELECT gender, COUNT(client_id) FROM client GROUP BY gender"
+        assert verify(
+            q, sql, ["gender", "count"], [["M", 3], ["F", 3]], 2, lang="en",
+        ) == (None, [])
+
+    def test_by_gender_grouping_question_passes(self):
+        q = "What is the average loan amount by gender?"
+        sql = "SELECT gender, AVG(amount) FROM loan GROUP BY gender"
+        assert verify(
+            q, sql, ["gender", "avg"], [["M", 100.0]], 1, lang="en",
+        ) == (None, [])
+
+    def test_per_gender_question_without_gender_column_fails(self):
+        """按性别分组也要求 SQL 真的用到 gender 列:整个丢了仍然报 F2-a。"""
+        q = "How many clients are there for each gender?"
+        reason, hits = verify(
+            q, "SELECT COUNT(client_id) FROM client", ["count"], [[6]], 1,
+            lang="en",
+        )
+        assert reason and "F2-a" in reason
+
+    def test_per_district_female_question_still_requires_gender_filter(self):
+        """分组守卫只放行「按性别」:别的维度分组时 gender 仍是过滤条件。"""
+        q = "How many female clients are there for each district?"
+        reason, hits = verify(
+            q, "SELECT district_id, COUNT(*) FROM client GROUP BY district_id",
+            ["district_id", "count"], [["1", 2]], 1, lang="en",
+        )
+        assert reason and "F2-a" in reason
+
     def test_female_question_with_birth_number_encoding_passes(self):
         """无 gender 列的数据源(性别编进 birth_number)→ 不误报 F2-a。
 

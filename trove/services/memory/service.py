@@ -79,6 +79,29 @@ class MemoryService:
         )
         self.preferences = PreferenceStore(self.home / "memory" / "preferences.sqlite")
 
+    async def dispose(self) -> None:
+        """Release every backend connection this facade owns.
+
+        aiosqlite worker threads are non-daemon — a store left undisposed
+        keeps the interpreter alive after ``asyncio.run`` returns, which the
+        one-shot CLI shows as "printed the answer, never exited". Part
+        failures are isolated: cleanup of the rest continues.
+        ``user_facts`` is a shared component the app shell owns, not this
+        facade, so it is disposed by its own owner.
+        """
+        for name, part in (
+            ("episodes", self.episodes),
+            ("preferences", self.preferences),
+            ("drift_store", self.drift_store),
+        ):
+            if part is None:
+                continue
+            try:
+                await part.dispose()
+            except Exception as e:
+                logger.warning(
+                    "Memory cleanup failed (%s): %s", name, e)
+
     # ── Public config helpers ─────────────────────────────
 
     @property
