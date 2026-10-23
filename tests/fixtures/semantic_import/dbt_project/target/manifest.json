@@ -1,0 +1,15 @@
+{
+  "nodes": {
+    "model.shop.orders": {
+      "resource_type": "model",
+      "name": "orders",
+      "relation_name": "\"analytics\".\"orders\""
+    },
+    "model.shop.customers": {
+      "resource_type": "model",
+      "name": "customers",
+      "relation_name": "\"analytics\".\"customers\""
+    }
+  },
+  "sources": {}
+}

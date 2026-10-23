@@ -1121,6 +1121,12 @@ def main_repl():
         from trove.cli.commands.extensions_cmds import main_extensions
 
         sys.exit(main_extensions(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "import":
+        # 外部语义层导入(dbt / Cube):preview 零写入;bootstrap 走
+        # init_semantics、stage 走 ChangeService.open —— 确认门不绕过。
+        from trove.cli.commands.import_cmds import main_import
+
+        sys.exit(main_import(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
         async def _run_maint():
             from trove.cli.maintenance_cmds import main_maintenance

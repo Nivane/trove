@@ -125,6 +125,7 @@ flowchart LR
           <tr><td class="mono">validate</td><td>扩展面干跑校验：KB lint / 决策规则编译 / 技能挂点；<code>--run</code> 装前试跑、<code>--impact</code> 影响面回放、<code>--packs</code> 反作弊——零 LLM，退出码即结论（见下文）</td></tr>
           <tr><td class="mono">extensions</td><td>扩展资产：<code>list</code> / <code>show</code> / <code>plan</code>（信封，能力从引用推导）；<code>export</code> / <code>import</code>（资产包，导入全落 pending）</td></tr>
           <tr><td class="mono">preset</td><td>预设包（接入模板）：<code>list</code> / <code>show</code> / <code>apply</code>——套用只落 pending 草稿</td></tr>
+          <tr><td class="mono">import</td><td>外部语义层导入：<code>semantic</code>——dbt YAML / Cube 编译 meta → 语义模型；preview 零写入、bootstrap 走白名单写入、stage 进语义变更评审</td></tr>
           <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code>——<strong>只属于 <code>trove-cli</code> 入口</strong>，<code>trove index …</code> 不认它</td></tr>
         </tbody>
       </table>
@@ -227,6 +228,33 @@ trove preset apply &lt;名称&gt;      # 套用（只落 pending 草稿，确认
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1104">main.py:1104 <span class="ref-line">preset</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/preset_cmds.py#L66">preset_cmds.py:66 <span class="ref-line">main_preset</span></a>
+    </p>
+
+    <h3>import semantic</h3>
+
+    <pre><code>trove import semantic --source dbt --path ./dbt_project \
+  [--manifest ./dbt_project/target/manifest.json] --datasource financial \
+  [--mode preview|bootstrap|stage] [--json] [--strict] [--force] [--note TEXT]
+
+trove import semantic --source cube --path ./cube-meta.json \
+  --datasource financial --mode stage</code></pre>
+
+    <p>
+      默认 <code>preview</code>（零写入）：解析后给出计数、warnings、unsupported、阻断 lint 项
+      与建议落点。<code>bootstrap</code> 只用于空模型，写前做 <code>parse_ossie</code>
+      回环计数比对与阻断 lint，再走 <code>KbService.init_semantics</code> 白名单；
+      <code>stage</code> 只开语义变更评审单（隔离区 + <code>semantic_changes.yml</code>），
+      <code>semantics.yml</code> 不动，同一份 payload 重复执行按指纹幂等。
+      退出码：<code>0</code> 成功 · <code>1</code> 运行时/服务错误 ·
+      <code>2</code> 用法错误、阻断 lint、模式前置条件不满足，或 <code>--strict</code>
+      下有 warning / unsupported。详见
+      <a href="../admin/semantic.html#import">语义模型 · 从 dbt / Cube 导入</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1124">main.py:1124 <span class="ref-line">import</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/import_cmds.py#L75">import_cmds.py:75 <span class="ref-line">main_import</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L220">landing.py:220 <span class="ref-line">land_bootstrap</span></a>
     </p>
 
     <h2 id="repl">REPL 斜杠命令</h2>
@@ -391,7 +419,7 @@ trove preset apply &lt;名称&gt;      # 套用（只落 pending 草稿，确认
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 5553dcb</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4ce265f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

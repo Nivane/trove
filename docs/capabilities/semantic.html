@@ -124,6 +124,29 @@
       </ol>
     </figure>
 
+    <h2 id="import">导入既有语义层：dbt 与 Cube</h2>
+
+    <p>
+      如果口径已经写在 dbt Semantic Layer 或 Cube 里，不必重抄一遍：
+      <code>trove import semantic</code> 把它们解析成同一份 OSSIE 语义模型
+      （数据集 / 字段 / 指标 / 关系）。导入本身是<strong>纯解析</strong>——零 LLM、
+      零网络、零连接——能确定的事实才写，确定不了的（filter、cumulative、
+      runningTotal、多对多 join、原始 Cube JS 等）逐条列进报告，绝不静默猜。
+    </p>
+
+    <p>
+      默认 <code>preview</code> 只报告不写盘；落盘只有两条路：空模型走
+      <code>bootstrap</code>（<code>/kb init</code> 同款白名单 + 回环计数与阻断 lint 双门），
+      已有模型走 <code>stage</code>（进语义变更评审的隔离区，管理员确认 merge 才生效，
+      重复导入按 payload 指纹幂等）。细节与有损清单见
+      <a href="../admin/semantic.html#import">语义模型 · 从 dbt / Cube 导入</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L41">landing.py:41 <span class="ref-line">build_document</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/__init__.py#L33">importers/__init__.py:33 <span class="ref-line">run_semantic_import</span></a>
+    </p>
+
     <h2 id="topics">主题域：把「可答范围」声明成域</h2>
 
     <p>
@@ -544,7 +567,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: ae69b74</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4ce265f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

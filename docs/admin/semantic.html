@@ -261,6 +261,102 @@
       白名单不等于「写者全集」。
     </p>
 
+    <h2 id="import">从 dbt / Cube 导入既有语义层</h2>
+
+    <p>
+      已经用 dbt Semantic Layer 或 Cube 管口径的团队不必从零建模型：
+      <code>trove import semantic</code> 把外部声明解析成 Trove 的数据集 / 字段 / 指标 / 关系。
+      导入是<strong>纯解析</strong>——零 LLM、零网络、零数据库连接——并且<strong>不新增写入口</strong>：
+      落盘只走下面三种模式里明说的既有确认门。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>输入</th><th>接受什么</th><th>明确不做（逐条进报告）</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>--source dbt</code></td>
+            <td>dbt 项目的 <code>semantic_models</code> + <code>metrics</code> YAML；可选
+              <code>--manifest target/manifest.json</code> 把 <code>ref()</code> / <code>source()</code>
+              解析成物理表。primary / unique 实体成为主键与唯一键，foreign 实体成为关系，
+              dimensions 成为字段，measures 成为聚合表达式，simple / ratio / derived 指标递归展开</td>
+            <td>cumulative / conversion 指标、measure / metric 的 <code>filter</code>、percentile 类聚合、
+              残留 Jinja、无法唯一解析的实体或度量、<code>saved_queries</code> 等外围段</td>
+          </tr>
+          <tr>
+            <td><code>--source cube</code></td>
+            <td>Cube 的<strong>编译产物</strong> meta JSON（<code>/cubejs-api/v1/meta</code> 或
+              <code>cubejs compile</code>）：<code>sql_table</code> 成为数据集，dimensions 成为字段，
+              count / countDistinct / sum / avg / min / max 成为指标，等值 join 成为关系</td>
+            <td>原始 JS/TS 模型（需要执行 JS 才能拿到定义，明确不做）；派生 cube、
+              <code>runningTotal</code> / <code>rank</code> / <code>timeShift</code>、多对多 join、
+              segments / views / folders</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>三种模式，默认<strong>零写入</strong>：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>模式</th><th>什么时候用</th><th>写什么 / 怎么过确认门</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>preview</code>（默认）</td>
+            <td>第一次接一个项目，先看映射结果与有损项</td>
+            <td><strong>一个字节都不写</strong>。报告给出计数、warnings、unsupported、阻断 lint 项，
+              以及建议落点（空模型 → bootstrap；已有模型 → stage）</td>
+          </tr>
+          <tr>
+            <td><code>bootstrap</code></td>
+            <td>还没有语义模型，整份导入</td>
+            <td>构造完整 OSSIE 文档 → <code>parse_ossie</code> 回环计数必须与解析结果一致 →
+              阻断 lint 必须为空 → 才走 <code>KbService.init_semantics</code>
+              （与 <code>/kb init</code> 同一条白名单路径），并自动 git 提交（trailer 标明生成器）。
+              <strong>已有非空模型会拒绝</strong>；<code>--force</code> 才是显式整体覆盖</td>
+          </tr>
+          <tr>
+            <td><code>stage</code></td>
+            <td>已有模型，增量或成批导入</td>
+            <td>按 dataset → field → metric → relationship 构造有序 payload，走语义变更评审的
+              <code>ChangeService.open</code>：只写 <code>semantic_changes.yml</code> 与隔离区，
+              <code>semantics.yml</code> <strong>零字节变化</strong>，管理员确认 merge 后才生效。
+              同一份 payload 重复执行返回<strong>同一张审批单</strong>（指纹幂等，不重复开单）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>trove import semantic --source dbt --path ./dbt_project \
+  --manifest ./dbt_project/target/manifest.json --datasource financial --mode preview
+
+trove import semantic --source cube --path ./cube-meta.json \
+  --datasource financial --mode stage
+
+# --json 机器可读 · --strict 有 warning / unsupported 即退出码 2 · --force 仅 bootstrap</code></pre>
+
+    <div class="callout warn">
+      <span class="callout-tag">有损映射会说出来</span>
+      <div>
+        <p>导入不替你猜：解析器能确定的才写进模型，确定不了的逐条列在报告的
+        <code>warnings</code>（可导入但有信息丢失）与 <code>unsupported</code>（整项跳过）里。
+        指标表达式统一按数据集名限定（如 <code>SUM(orders.amount)</code>），因为编译器靠这个
+        锚定指标属于哪个数据集；物理表名、键对与基数只按可验证的事实映射。</p>
+        <p>bootstrap 的 <code>--force</code> 是<strong>整体覆盖</strong>现有语义模型：先用
+        <code>--mode preview</code> 看一遍将写入的计数，或者改用 <code>--mode stage</code>
+        让改动经过评审——覆盖是本命令唯一不可逆的动作。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/dbt.py#L58">dbt.py:58 <span class="ref-line">parse_dbt</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/cube.py#L63">cube.py:63 <span class="ref-line">parse_cube</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L220">landing.py:220 <span class="ref-line">land_bootstrap</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L287">landing.py:287 <span class="ref-line">land_stage</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/import_cmds.py#L75">import_cmds.py:75 <span class="ref-line">main_import</span></a>
+    </p>
+
     <h2 id="related">相关页面</h2>
 
     <div class="table-wrap">
@@ -285,7 +381,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 287cd52</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 4ce265f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
