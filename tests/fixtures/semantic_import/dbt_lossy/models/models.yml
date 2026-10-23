@@ -1,0 +1,46 @@
+semantic_models:
+  - name: events
+    model: "{{ ref('events') }}"
+    dimensions:
+      - name: event_time
+        type: time
+        expr: occurred_at
+    measures:
+      - name: event_count
+        agg: count
+        expr: event_id
+  - name: sessions
+    model: ref('sessions')
+    entities:
+      - name: session
+        type: primary
+        expr: session_id
+    dimensions:
+      - name: session_date
+        type: time
+        expr: started_at
+    measures:
+      - name: gmv
+        agg: sum
+        expr: amount
+        filter: "{{ Dimension('session__is_paid') }}"
+      - name: median_gmv
+        agg: median
+        expr: amount
+
+metrics:
+  - name: gmv_cumulative
+    type: cumulative
+    type_params:
+      measure: gmv
+  - name: conversion_rate
+    type: conversion
+    type_params:
+      conversion_type_params: {}
+  - name: gmv_total
+    type: simple
+    type_params:
+      measure: gmv
+
+saved_queries:
+  - name: monthly_gmv

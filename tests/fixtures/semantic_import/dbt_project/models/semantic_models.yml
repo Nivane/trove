@@ -1,0 +1,57 @@
+semantic_models:
+  - name: orders
+    description: One row per order
+    model: ref('orders')
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: order_date
+        type: time
+        expr: ordered_at
+      - name: status
+        type: categorical
+        expr: status
+    measures:
+      - name: order_total
+        agg: sum
+        expr: amount
+      - name: order_count
+        agg: count
+        expr: order_id
+
+  - name: customers
+    description: One row per customer
+    model: ref('customers')
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+    dimensions:
+      - name: country
+        type: categorical
+        expr: country
+
+metrics:
+  - name: revenue
+    description: Total revenue
+    type: simple
+    type_params:
+      measure: order_total
+  - name: order_count_metric
+    type: simple
+    type_params:
+      measure: order_count
+  - name: average_order_value
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: order_count_metric
+  - name: revenue_minus_ten
+    type: derived
+    type_params:
+      expr: revenue - 10

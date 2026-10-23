@@ -1,0 +1,58 @@
+{
+  "compilerId": "fixture",
+  "cubes": [
+    {
+      "name": "orders",
+      "sql_table": "orders",
+      "description": "Orders cube",
+      "dimensions": [
+        {"name": "orders.id", "sql": "{CUBE}.id", "type": "number"},
+        {"name": "orders.status", "sql": "{CUBE}.status", "type": "string"},
+        {"name": "orders.ordered_at", "sql": "{CUBE}.ordered_at", "type": "time"}
+      ],
+      "measures": [
+        {"name": "orders.count", "sql": "{CUBE}.id", "type": "count"},
+        {"name": "orders.revenue", "sql": "{CUBE}.amount", "type": "sum"},
+        {"name": "orders.distinct_customers", "sql": "{CUBE}.customer_id", "type": "countDistinct"},
+        {"name": "orders.running_revenue", "sql": "{CUBE}.amount", "type": "runningTotal"}
+      ],
+      "segments": [
+        {"name": "orders.completed", "sql": "{CUBE}.status = 'completed'"}
+      ],
+      "joins": [
+        {"name": "customers", "sql": "{CUBE}.customer_id = {customers}.id", "relationship": "many_to_one"},
+        {"name": "campaigns", "sql": "{CUBE}.id = {campaigns}.order_id", "relationship": "many_to_many"}
+      ]
+    },
+    {
+      "name": "customers",
+      "sql_table": "customers",
+      "dimensions": [
+        {"name": "customers.country", "sql": "{CUBE}.country", "type": "string"}
+      ],
+      "measures": [
+        {"name": "customers.count", "sql": "{CUBE}.id", "type": "count"}
+      ],
+      "joins": [
+        {"name": "orders", "sql": "{CUBE}.id = {orders}.customer_id", "relationship": "one_to_many"}
+      ]
+    },
+    {
+      "name": "campaigns",
+      "sql_table": "campaigns",
+      "dimensions": [
+        {"name": "campaigns.channel", "sql": "{CUBE}.channel", "type": "string"}
+      ]
+    },
+    {
+      "name": "derived_orders",
+      "sql": "SELECT * FROM orders",
+      "dimensions": [
+        {"name": "derived_orders.status", "sql": "{CUBE}.status", "type": "string"}
+      ]
+    }
+  ],
+  "views": [
+    {"name": "executive"}
+  ]
+}
