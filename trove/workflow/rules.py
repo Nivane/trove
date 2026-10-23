@@ -759,6 +759,14 @@ _GENDER_COND = re.compile(r"\b(?:gender|sex)\s*(?:=|<>|!=|<|>|LIKE|IN)", re.I)
 _GENDER_METRIC_GUARD = re.compile(
     r"\b(?:male|female|men|women|man|woman)\s+(?:average|mean|median|avg)\b", re.I,
 )
+# 「per gender / by gender」问的是性别分布:gender 是分组维度,不是过滤
+# 条件——正确写法 ``SELECT gender, COUNT(*) … GROUP BY gender`` 永远不会
+# 出现 ``WHERE gender = …`` 谓词。这类题只要 SQL 真的用到 gender/sex 列
+# 即视为已覆盖。刻意不套 _GROUP_GUARD:「for each district, how many
+# female clients」里 gender 仍是必须出现的过滤条件。
+_GENDER_GROUP_Q = re.compile(
+    r"\b(?:per|each|every|by)\s+(?:the\s+)?(?:gender|sex)\b", re.I,
+)
 
 # 具体日期(1/1/1995)出现在问题里 → SQL 必须有日期条件。
 # 裸年份(1997)不算:按年分列(如 A15)也可回答,且 BIRD 数据里常出现
@@ -802,6 +810,9 @@ def _f2a(question: str, sql: str, columns: list, rows: list[list], row_count: in
         return None
     clean = _unquote_sql(sql)
     if _GENDER_COND.search(clean):
+        return None
+    if (_GENDER_GROUP_Q.search(question)
+            and re.search(r"\b(?:gender|sex)\b", clean, re.I)):
         return None
     if re.search(r"\bbirth_number\b", clean, re.I):
         return None
