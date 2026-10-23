@@ -48,6 +48,13 @@ dependencies = [
     "PyJWT[crypto]>=2.8.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Nivane/trove"
+Repository = "https://github.com/Nivane/trove"
+Documentation = "https://nivane.github.io/trove/"
+Issues = "https://github.com/Nivane/trove/issues"
+Changelog = "https://github.com/Nivane/trove/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 postgres = [
     "langgraph-checkpoint-postgres>=2.0.0",

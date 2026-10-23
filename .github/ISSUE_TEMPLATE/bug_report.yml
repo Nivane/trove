@@ -1,0 +1,81 @@
+name: Bug report
+description: Something behaved differently than documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste credentials, tokens, or customer
+        data.** Redact hostnames and connection strings.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behavior, including the exact error text if there is one.
+      placeholder: |
+        Asked "…", expected …, got …
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem.
+      placeholder: |
+        1. trove --datasource demo
+        2. Ask: …
+        3. Observe: …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `trove --version`, or the commit you are running.
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Local REPL / CLI
+        - Local server + frontend dev
+        - Docker Compose
+        - Other (describe above)
+    validations:
+      required: true
+  - type: dropdown
+    id: datasource
+    attributes:
+      label: Datasource
+      options:
+        - Demo (SQLite / BIRD financial)
+        - SQLite
+        - MySQL / Doris
+        - PostgreSQL
+        - ClickHouse
+        - DuckDB
+        - Snowflake
+        - BigQuery
+        - Other / not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: From `~/.trove/runs/<run_id>.log` or the server log. Redact secrets.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Checklist
+      options:
+        - label: I have removed credentials, tokens, and customer data from this report.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

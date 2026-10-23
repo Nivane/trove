@@ -1,0 +1,57 @@
+name: Feature request
+description: A capability you need that Trove does not have
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, check whether the capability already exists under a
+        different name — the docs cover the query pipeline, KB modeling,
+        analysis, decision rules, actions, memory, and governance.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where Trove currently stops you.
+      placeholder: |
+        When I …, I have to …, which means …
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The shape of the change, if you have one in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or how other tools handle this.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Query pipeline / SQL generation
+        - Knowledge base / semantic model
+        - Semantic-layer import (dbt / Cube)
+        - Analysis / decision rules / actions
+        - Memory
+        - Datasource adapter
+        - Admin console / API
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Checklist
+      options:
+        - label: This request does not contain credentials or customer data.
+          required: true

@@ -413,6 +413,8 @@ Code layout: `trove/workflow/` (graphs and nodes) · `trove/services/` (datasour
 
 Bug reports, feature ideas, docs and pull requests are welcome. Please keep changes focused and make sure the tests pass before submitting; for larger changes, open an issue to discuss first.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the test contract, and a few load-bearing repository rules. Report security issues privately as described in [SECURITY.md](SECURITY.md); change history lives in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 Trove is released under the [Apache License 2.0](LICENSE).
