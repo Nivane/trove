@@ -163,7 +163,7 @@ async def test_sweep_naive_updated_at_falls_back(tmp_home):
 
 # ---------------------------------------------------------------------------
 # Task 4: purge_orphan_checkpoints / prune_thread_depth / run_all
-# 校准说明(锁定 langgraph 1.2.11 / checkpoint-sqlite 3.1.1):
+# 校准说明(锁定 langgraph 1.2.11 / checkpoint-sqlite 3.1.2):
 #   - aput(config, checkpoint, metadata, new_versions) 四参全必填;config 需
 #     checkpoint_ns,checkpoint dict 需 id 键。
 #   - alist 产出 CheckpointTuple 对象(非 (thread_id, checkpoint) 元组)。

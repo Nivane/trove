@@ -2,8 +2,8 @@
 
 这个方言是仓里第二个同步驱动(google-cloud-bigquery 只有同步客户端),但
 与雪花的同步故事有一处结构差别:_job 模型_。``client.query(sql)`` 一提交,
-我们手里就有 ``QueryJob`` —— 终止不需要雪花那套「注入 requestId 再按它对号
-入座」的机制,job 对象本身就是双方都认得的名字。所以这里钉三件事:
+我们手里就有 ``QueryJob`` —— 终止不需要雪花那套「先拿查询 id、再按 id 打」的
+机制,job 对象本身就是双方都认得的名字。所以这里钉三件事:
 
 1. ``to_thread`` 包装真的成立(工作线程卡住时事件循环还能推进);
 2. **列名从 result schema 取** —— 非 cursor 模型最易出 bug 的地方:零行
@@ -440,7 +440,7 @@ class TestTermination:
         """取消栈上那次 ``interrupt()`` 必须打中**本任务正在飞**的那条查询。
 
         job 模型下靶子就是 ``client.query`` 返回的那个对象 —— 不需要雪花那套
-        id 反查(登记见 ``_inflight``,按任务键)。
+        按查询 id 打 abort 的机制(登记见 ``_inflight``,按任务键)。
         """
         release = threading.Event()
         job = FakeJob(blocking=release)

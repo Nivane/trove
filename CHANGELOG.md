@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Cleared the advisories flagged by the CI dependency scan: `filelock`
+  (three lock-file GHSAs, raised to ≥4.2.1 through a uv constraint),
+  `fastmcp`/`fastmcp-slim` 3.4.10 (kept on the 3.x line), and
+  `langgraph-checkpoint-sqlite` 3.1.2 / `langgraph-checkpoint-postgres` 3.1.3.
+  The `filelock` floor forces `snowflake-connector-python` 5.x (4.x pins
+  `filelock<4`); the Snowflake adapter now runs queries through the 5.x public
+  async lifecycle (`execute_async` → `get_results_from_sfqid` → `fetchall`)
+  and aborts with `cursor.abort_query(query_id)`, since `conn._cancel_query`
+  no longer exists.
+
 ### Fixed
 
 - `trove-cli --print` (and the REPL / `trove serve` shutdown) now release every

@@ -5,16 +5,22 @@
 收不回工作线程:进程侧"取消"之后,服务端那条查询会继续跑,除非有人真的去停它。
 ∴ ``interrupt()`` 在这里不是优化,是唯一能停下来的手段。
 
-终止机制 = **按 ``requestId`` 打 abort** —— 驱动自己的超时定时器与 SIGINT
-处理器走的就是 ``conn._cancel_query(sql, request_id)`` 这一条路:
+终止机制 = **提交时拿服务端查询 id,abort 按它打** —— 5.x 的驱动把这条路由
+收成了公开的异步查询生命周期:
 
-* ``execute`` 之前由**我们**生成 UUID4,经 ``_statement_params`` 注入(驱动在
-  解析到合法 uuid4 时采用它);abort 时原样回传。名字双方都认得,才 abort 得动。
-* 不用 ``cursor.abort_query(sfqid)``:那个接口要**服务端查询 id**,而同步
-  ``execute`` 的 ``sfqid`` 要等 ``cmd_query`` 返回之后才被驱动赋值 ——
-  查询在飞时它是 None,拿不到的就是拿不到。
-* 注入依赖 4.0+ 的驱动行为(3.x 会另生成 id),``pyproject`` 的 floor 因此是
-  ``>=4.0``;若在 3.x 上跑,abort 会被服务端拒 → 我们如实报 False,不是静默的谎。
+* ``cursor.execute_async(sql)`` 立即返回 ``{"queryId": …}``(服务端查询 id),
+  ``cursor.abort_query(qid)`` 按它打 ``connection_abort_query``,返回值是服务端
+  是否真的接下(``ABORTED``)。
+* 同步 ``execute`` 拿不到这个 id:它要等结果返回才由驱动赋值 sfqid,查询在飞时
+  是 None —— 拿不到的就是拿不到。所以执行路径走 ``execute_async`` →
+  ``get_results_from_sfqid`` → ``fetchall``(驱动自己的轮询等待器)。**代价是
+  每条语句多一两次状态往返**:换来的「在飞时可终止」,是同步驱动包在 to_thread
+  里唯一能真停下来的路。
+* 客户端 requestId 不再由我们注入:5.x 的 ``_statement_params`` 走 SetOptions
+  配置通道,requestId 由驱动生成、只在响应里读回 —— 它已不是驱动认得的靶子。
+* floor ``>=5.1``:``execute_async`` / ``abort_query`` 是 5.x 的公开接口;4.x 的
+  ``conn._cancel_query(sql, requestId)`` 在 5.x 已不存在(升级是 filelock 安全
+  公告逼出来的:4.x 钉 ``filelock<4``,与 ``filelock>=4.2.1`` 的约束不可共存)。
 
 Introspection via information_schema:两次查询(TABLES 带 ROW_COUNT + COLUMNS
 一次取全按表分组)。**不与 MySQL 同构地逐表查列** —— 这里每个往返都是 REST
@@ -38,7 +44,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from trove.core.types import (
@@ -57,13 +63,6 @@ from trove.services.datasource.adapters.base import (
 )
 
 logger = get_logger(__name__)
-
-#: 驱动在 ``execute`` 里认的注入名(``statement_params`` 含它 → ``self._request_id``
-#: 采用这个值,并校验是合法 uuid4)。用字面量而不是 import:常量住在
-#: ``snowflake.connector._utils``(私有模块),而值就是这一个字符串。哪天它变了,
-#: 后果是 abort 打到一个服务端不认识的名字上 → 服务端回 ``success: false`` →
-#: 我们如实报 False —— 响亮失败,不是静默的谎。
-_REQUEST_ID_PARAM = "requestId"
 
 #: 出错后**可以重发**的语句头(只读,幂等)。刻意不含 ``WITH``:Snowflake 的 CTE
 #: 可以冠在 INSERT / UPDATE / DELETE / MERGE 前面,同一个前缀既可能是读也可能是
@@ -106,6 +105,19 @@ def _forget_interrupt(task: Any) -> None:
             delattr(task, _INTERRUPT_OUTCOME_ATTR)
         except AttributeError:
             pass
+
+
+@dataclass
+class _InflightQuery:
+    """本任务在飞的一条查询:提交之后才有 ``query_id``,那之前 abort 无从下手。
+
+    单列为对象而非元组,是因为 ``query_id`` 由工作线程在 ``execute_async`` 返回
+    那一刻填进来 —— 事件循环侧读到的必须是**同一个**可变登记,而不是建账时的
+    快照。
+    """
+
+    sql: str
+    query_id: str | None = None
 
 
 def _get_driver():
@@ -184,10 +196,10 @@ class SnowflakeAdapter(DatabaseAdapter):
         super().__init__(name, config or {})
         self._conn: Any = None
         self._conn_lock = asyncio.Lock()
-        # 在飞查询:{asyncio 任务 → (sql, request_id)}。**按任务键**,不按适配器键:
+        # 在飞查询:{asyncio 任务 → _InflightQuery}。**按任务键**,不按适配器键:
         # 终止服务晚一点来问时必须只杀**本任务**那条查询。锁已经把同一时刻的查询
         # 数压到 1,但「只杀自己」这件事应该由结构保证,而不是由锁的时序保证。
-        self._inflight: dict[Any, tuple[str, uuid.UUID]] = {}
+        self._inflight: dict[Any, _InflightQuery] = {}
 
     @staticmethod
     def dialect() -> str:
@@ -220,9 +232,10 @@ class SnowflakeAdapter(DatabaseAdapter):
         port = self.config.get("port")
         if port:
             kwargs["port"] = int(port)
-        # DB 侧兜底闸随**登录请求**一起装(session_parameters 是登录体的一部分):
-        # 不存在「连上了但闸还没装」的窗口,重连也自动重装 —— 这是选连接参数
-        # 形式、而非「连上后再发一条 ALTER SESSION」的全部理由。
+        # DB 侧兜底闸随**登录请求**一起装(5.x 在 connection_init 之前把
+        # session_parameters 交给驱动内核,随登录生效):不存在「连上了但闸还没装」
+        # 的窗口,重连也自动重装 —— 这是选连接参数形式、而非「连上后再发一条
+        # ALTER SESSION」的全部理由。
         kwargs.update(self.statement_timeout_connect_kwargs())
         return kwargs
 
@@ -299,12 +312,14 @@ class SnowflakeAdapter(DatabaseAdapter):
             ) from e
 
     def _connection_unusable(self) -> bool:
-        """连接是否已不可信(**纯属性读,零往返**)。
+        """连接是否已不可信(**读驱动内核状态,零服务端往返**)。
 
-        * ``is_closed()`` —— 驱动把 rest 置空(客户端主动关 / 会话级失败);
-        * ``expired``     —— 驱动在**主令牌过期**(GS 码 390114)时打的标;
-          会话过期(390112)驱动自己会续期,不打这个标。两者都是驱动给的
-          **事实**,不是我们从错误文本里猜的措辞。
+        * ``is_closed()`` —— 驱动内核的权威状态(客户端主动关 / 会话级失败);
+          5.x 里是本地 FFI 查询,出错按「已关闭」处理(fail closed);
+        * ``expired``     —— **主令牌过期**(GS 码 390114)时驱动内核给的标;
+          会话过期(390112)驱动自己会续期,不打这个标。出错按「已过期」处理。
+        两者都是驱动给的**事实**,不是我们从错误文本里猜的措辞 ——
+        「本地调用」不是「纯属性读」,但也不花服务端往返。
 
         刻意不调 ``is_valid()``:那是每查一次多一个心跳往返,而驱动自己已经在
         维护会话保活 —— 多花的钱换不来等价的信息。
@@ -342,7 +357,7 @@ class SnowflakeAdapter(DatabaseAdapter):
     # ── 终止(§7.3 / I4)──────────────────────────────────
 
     async def interrupt(self) -> bool:
-        """按 ``requestId`` abort 在飞查询(有界、绝不抛)。
+        """按**服务端查询 id** abort 在飞查询(有界、绝不抛)。
 
         只杀**本任务**在飞的那条(登记见 ``_inflight``);问过一次就把结果记在
         本任务上(见 ``_INTERRUPT_OUTCOME_ATTR``),不再发第二次(§10 不重试 kill)。
@@ -356,37 +371,50 @@ class SnowflakeAdapter(DatabaseAdapter):
         if entry is None:
             # 本任务名下没有在飞的查询 —— 「本就无可取消」,与基类契约一致。
             return True
-        sql, request_id = entry
+        query_id = entry.query_id
+        if not query_id:
+            # 取消落在「已提交、id 还没回到 Python」的窗口里。此时**没有靶子**:
+            # 报 True 等于谎称已终止,报 False 才是如实(附 WARNING 让人看见)。
+            logger.warning(
+                "Snowflake interrupt arrived before the query id was known; "
+                "the submitted statement could not be aborted",
+            )
+            return _remember_interrupt(task, False)
         try:
             sent = await asyncio.wait_for(
-                asyncio.to_thread(self._abort, sql, request_id),
+                asyncio.to_thread(self._abort, query_id),
                 timeout=INTERRUPT_TIMEOUT_S,
             )
         except Exception as e:
             logger.warning("Snowflake interrupt failed: %s", e)
             return _remember_interrupt(task, False)
         if not sent:
-            # 发得出去、服务端没收(拒了/认不得这个 requestId)—— 与「发不出去」
+            # 发得出去、服务端没收(查询已结束/认不得这个 id)—— 与「发不出去」
             # 同一条处置:如实报 False,但**必须留下 WARNING**。证据链的价值全在
             # 它不说谎:这里静默的话,`kill_failed` 在日志里查不到任何原因。
             logger.warning(
-                "Snowflake abort for request %s was not accepted by the server",
-                request_id,
+                "Snowflake abort for query %s was not accepted by the server",
+                query_id,
             )
         return _remember_interrupt(task, bool(sent))
 
-    def _abort(self, sql: str, request_id: uuid.UUID) -> bool:
+    def _abort(self, query_id: str) -> bool:
         """在工作线程里发 abort;返回「服务端是否接下了这次终止」。
 
-        ``conn._cancel_query`` 是驱动**自己**的取消实现(超时定时器与 SIGINT
-        处理器都走它):POST ``/queries/v1/abort-request``,带原始 SQL 与
-        requestId。没有连接可发 → False(「发不出去」,与「无可取消」不同)。
+        ``cursor.abort_query(qid)`` 是驱动 5.x 的公开终止接口:按连接句柄 +
+        服务端查询 id 打 ``connection_abort_query``,只有服务端回 ``ABORTED``
+        才算接下。**另开一个游标**发它 —— 原游标正被工作线程用于轮询结果,
+        不共享对象就不共享状态。没有连接可发 → False(「发不出去」,与
+        「无可取消」不同)。
         """
         conn = self._conn
         if conn is None:
             return False
-        ret = conn._cancel_query(sql, request_id)
-        return bool(ret.get("success")) if isinstance(ret, dict) else False
+        cursor = conn.cursor()
+        try:
+            return bool(cursor.abort_query(query_id))
+        finally:
+            cursor.close()
 
     # ── 执行 ─────────────────────────────────────────────
 
@@ -430,15 +458,17 @@ class SnowflakeAdapter(DatabaseAdapter):
     async def _run_query(self, sql: str) -> QueryResult:
         """在**当前**连接上跑一条语句(调用方已持锁、已确保连接可用)。
 
-        游标生命周期整段在工作线程里:开游标 → 执行 → 取数 → 关游标(与 MySQL
-        同:取消解栈先 abort 再让那次关闭尽快失败)。``requestId`` 由我们生成并
-        经 ``_statement_params`` 注入 —— abort 才有一个双方都认识的名字。
+        游标生命周期整段在工作线程里:开游标 → 提交 → 等结果 → 取数 → 关游标
+        (与 MySQL 同:取消解栈先 abort 再让那次关闭尽快失败)。提交走
+        ``execute_async``:它一返回就把**服务端查询 id** 填进本任务的在飞登记
+        —— 这是 ``interrupt()`` 唯一的靶子(同步 ``execute`` 要等结果回来才
+        知道 id,那时已经没有可终止的查询了)。
         """
         start = time.monotonic()
-        request_id = uuid.uuid4()
+        inflight = _InflightQuery(sql=sql)
         task = asyncio.current_task()
         if task is not None:
-            self._inflight[task] = (sql, request_id)
+            self._inflight[task] = inflight
             # 上一次终止的结论属于**上一条查询**,新查询一开始就作废(不清的话,
             # 同一任务重试第二条查询时,``interrupt()`` 会拿着旧结论回话)。
             _forget_interrupt(task)
@@ -446,9 +476,18 @@ class SnowflakeAdapter(DatabaseAdapter):
         def _run() -> tuple[list[str], list[list[Any]]]:
             cursor = self._conn.cursor()
             try:
-                cursor.execute(
-                    sql, _statement_params={_REQUEST_ID_PARAM: str(request_id)},
-                )
+                info = cursor.execute_async(sql)
+                query_id = str((info or {}).get("queryId") or "")
+                if not query_id:
+                    # 没有 id 就没有终止靶子:后面照跑,但如实报出去,别让
+                    # 一条无法终止的查询悄悄混过去。
+                    raise RuntimeError(
+                        "driver returned no query id for the submitted statement",
+                    )
+                inflight.query_id = query_id
+                # 驱动自己的轮询等待器:等到终态再取结果;abort 之后这里会
+                # 以 ABORTED 抛错(那次异常落在已取消的 to_thread 上,无人读取)。
+                cursor.get_results_from_sfqid(query_id)
                 rows = cursor.fetchall()
                 columns = [d[0] for d in cursor.description] if cursor.description else []
                 return columns, [list(row) for row in rows]
@@ -459,8 +498,8 @@ class SnowflakeAdapter(DatabaseAdapter):
             columns, rows = await asyncio.to_thread(_run)
         except asyncio.CancelledError:
             # 客户端中止/超时取消:``to_thread`` 收不回那个线程,同步驱动会继续
-            # 等一个不会再被读取的响应 —— 从另一个线程按 requestId 打 abort,
-            # 正是驱动自己的超时定时器做的事(同一 REST 客户端、同一接口)。
+            # 等一个不会再被读取的响应 —— 从另一个线程按服务端查询 id 打 abort,
+            # 正是驱动 5.x 异步查询生命周期给出的那条公开路径。
             await self.interrupt()
             raise
         except Exception as e:

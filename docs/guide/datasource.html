@@ -224,8 +224,9 @@ uv sync --extra bigquery                 # BigQuery</code></pre>
 
     <p>
       两者都支持主动终止（<code>supports_interrupt</code>）：云仓的查询跑在服务端，
-      客户端只是无状态 REST 包装，停下来只能靠服务端手段——Snowflake 按我们注入的
-      requestId 反查后 abort，BigQuery 直接用 job 句柄 <code>job.cancel()</code>。
+      客户端只是无状态 REST 包装，停下来只能靠服务端手段——Snowflake 走驱动的公开
+      异步查询生命周期（<code>execute_async</code> 提交即拿到服务端查询 id，abort 按它打；
+      代价是每条语句多一两次状态往返），BigQuery 直接用 job 句柄 <code>job.cancel()</code>。
     </p>
 
     <p>
