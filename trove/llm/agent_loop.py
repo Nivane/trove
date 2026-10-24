@@ -840,6 +840,26 @@ async def run_agent_loop(
         for tc in rest:
             results.append(await _run_one(tc))
 
+        # 请求侧记录:按 ``results`` 顺序(生成顺序,不是完成顺序)捕获本轮
+        # 全部工具,含 ``finish`` 与下面的自动 check_result。``finish`` 定稿
+        # 后立即返回、不再回喂 —— 它只有 tool 事件、没有 tool_model 事件,
+        # 这本身就是「模型没看到这条观测」的证据。
+        if run_id:
+            try:
+                from trove.tracing.run_record import capture_tool
+                for res in results:
+                    tc = res["tc"]
+                    capture_tool(
+                        run_id, name=tc.get("name", ""),
+                        tool_call_id=tc.get("id", ""),
+                        arguments=res.get("arguments") or {},
+                        observation=res.get("observation", ""),
+                        elapsed_ms=res.get("elapsed_ms", 0.0),
+                        error=res.get("error"),
+                    )
+            except Exception:
+                pass
+
         finish_ok = next((r for r in results if r["finish_ok"]), None)
         if finish_ok is not None:
             # finish 定稿:载荷即为最终答案,立即终止,不再消耗下一轮
@@ -876,10 +896,20 @@ async def run_agent_loop(
                 transcript_parts.append(
                     f"[tool:check_result] {str(res['arguments'])[:150]} -> {res['observation'][:150]}"
                 )
+                model_obs = _model_observation(res, registry)
+                if run_id:
+                    try:
+                        from trove.tracing.run_record import capture_tool_model
+                        capture_tool_model(
+                            run_id, tool_call_id=res["tc"]["id"],
+                            content=model_obs,
+                        )
+                    except Exception:
+                        pass
                 messages.append({
                     "role": "tool",
                     "tool_call_id": res["tc"]["id"],
-                    "content": _model_observation(res, registry),
+                    "content": model_obs,
                 })
                 return _finish_result(round_no, answered=True)
 
@@ -902,10 +932,19 @@ async def run_agent_loop(
                            res["elapsed_ms"], res["error"], run_id)
                 except Exception:
                     pass
+            model_obs = _model_observation(res, registry)
+            if run_id:
+                try:
+                    from trove.tracing.run_record import capture_tool_model
+                    capture_tool_model(
+                        run_id, tool_call_id=tc["id"], content=model_obs,
+                    )
+                except Exception:
+                    pass
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": _model_observation(res, registry),
+                "content": model_obs,
             })
             recent_sigs.append(
                 f"{tc['name']}|"

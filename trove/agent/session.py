@@ -128,6 +128,12 @@ class SessionManager:
         aiosqlite 的 worker 线程是常驻非 daemon——不关闭,进程退出会挂住。
         应用生命周期与测试 teardown 都应调用。
         """
+        # 请求记录先排空(有界、不抛),再关存储连接。
+        try:
+            from trove.tracing.run_record import drain_run_records
+            await drain_run_records()
+        except Exception:
+            pass
         await self._store.dispose()
         for task_store in self._task_stores.values():
             await task_store.dispose()
@@ -554,7 +560,7 @@ class SessionManager:
             topic=topic,
         )
         self._begin_trace(state)
-        self._trace_run_start(state)
+        self._trace_run_start(state, workflow_name)
 
         # 精确结果缓存:同会话同问句直接返回上次结果(0 LLM)。命中跳过
         # HITL 确认——首次运行该问题已人工确认过。
@@ -576,7 +582,17 @@ class SessionManager:
         # pydantic 输入的 None 默认值不会覆盖前一轮 checkpoint 残留(如旧
         # refusal),导致同会话下一问被错误短路到 refuse。dict 全量写入所有
         # 通道(含 refusal=None),保证每问都是干净起点。
-        result = await graph.ainvoke(state.model_dump(), config)
+        try:
+            result = await graph.ainvoke(state.model_dump(), config)
+        except asyncio.CancelledError:
+            from trove.tracing.run_record import capture_cancel
+            capture_cancel(run_id)
+            raise
+        except Exception as e:
+            # 记录后原样上抛:异常呈现由调用方/会话边界负责,记录层不改路径。
+            from trove.tracing.run_record import capture_error
+            capture_error(run_id, error=str(e))
+            raise
 
         if self._is_interrupted(result):
             # HITL 门:图在执行前暂停,返回确认请求。调用方展示后
@@ -766,7 +782,16 @@ class SessionManager:
         # append-only、无 metadata 更新通道,失效规则「只认最后一条」,零写改
         # 历史)。双击/重放的第二次 resume 因而落到上面的「无待确认」响亮报错;
         # 续跑失败/中断则书签仍是末条,天然可重试,无需回滚。
-        result = await graph.ainvoke(Command(resume=decision), config)
+        try:
+            result = await graph.ainvoke(Command(resume=decision), config)
+        except asyncio.CancelledError:
+            from trove.tracing.run_record import capture_cancel
+            capture_cancel(run_id)
+            raise
+        except Exception as e:
+            from trove.tracing.run_record import capture_error
+            capture_error(run_id, error=str(e))
+            raise
         final = WorkflowState.model_validate(
             {k: v for k, v in result.items() if k != "__interrupt__"}
         )
@@ -938,7 +963,7 @@ class SessionManager:
             topic=topic,
         )
         self._begin_trace(state)
-        self._trace_run_start(state)
+        self._trace_run_start(state, workflow_name)
 
         async for ev in self._stream_graph_run(session, graph, state, workflow_name, run_id):
             yield ev
@@ -1234,6 +1259,8 @@ class SessionManager:
                     await asyncio.wait_for(producer, timeout=5)
         except asyncio.CancelledError:
             self._run_steps.pop(run_id, None)
+            from trove.tracing.run_record import capture_cancel
+            capture_cancel(run_id)
             raise
         except Exception as e:
             # 步骤缓冲随异常清理:不跨 run 泄漏(方案 ① 的泄漏边界)。
@@ -1241,6 +1268,8 @@ class SessionManager:
             # 未捕获异常同样走呈现层:用户看到的是人话,provider 原文/path
             # 只进 detail.raw —— 会话边界是最后一道出口,不能把 str(e) 直出。
             info = present_exception(e, lang=state.lang, node="workflow")
+            from trove.tracing.run_record import capture_error
+            capture_error(run_id, error=info["title"], error_info=info)
             error_summary = {
                 "session_id": session.session_id,
                 "question": state.question,
@@ -1420,8 +1449,26 @@ class SessionManager:
         }
 
     @staticmethod
-    def _trace_run_start(state: WorkflowState) -> None:
+    def _trace_run_start(state: WorkflowState, workflow_name: str = "") -> None:
         """run 事件:活跃 RunTracer 优先(span 树 + run 日志),否则旧扁平事件。"""
+        # run_id contextvar:gateway / agent_loop 的捕获点在调用没带
+        # metadata.run_id 时回读它。**在 tracer 查找之前**设置 —— 请求记录
+        # 不依赖 trace store 是否配置(offline_eval 就不配置)。
+        try:
+            from trove.core.request_id import run_id_var
+            run_id_var.set(state.run_id)
+        except Exception:
+            pass
+        from trove.tracing.run_record import capture_run_start
+        capture_run_start(
+            state.run_id,
+            session_id=state.session_id,
+            user_id=state.user_id or "",
+            question=state.question,
+            workflow=workflow_name,
+            datasource=state.datasource or "",
+            lang=state.lang,
+        )
         from trove.tracing.runlog import get_tracer
         tracer = get_tracer(state.run_id)
         if tracer is not None:
@@ -1463,11 +1510,19 @@ class SessionManager:
         if stats:
             summary.update(stats)
         tracer = get_tracer(run_id)
-        if tracer is not None:
-            # 装配 dump:随 run 收尾的**单一写点**落盘(见 tracing/assembly),
-            # 与 .log 同款——同一 run_id 覆盖、按 MAX_RUN_LOGS 一起裁剪。
+        from trove.tracing.run_record import capture_finish, is_run_records_enabled
+
+        # 装配 dump:随 run 收尾的**单一写点**(见 tracing/assembly)。请求
+        # 记录与 .log 共用这一份 —— 同一 run 不 build 两遍。
+        assembly = None
+        if tracer is not None or is_run_records_enabled():
             from trove.tracing.assembly import build_report
-            tracer.finish(summary, assembly=build_report(final))
+            assembly = build_report(final)
+        capture_finish(
+            run_id, final=final, summary=summary, assembly=assembly, model=model,
+        )
+        if tracer is not None:
+            tracer.finish(summary, assembly=assembly or {})
         else:
             try:
                 from trove.tracing.local import add_event
@@ -1701,6 +1756,10 @@ class SessionManager:
         # KB 指纹快照(设计 2026-10-09 §3.3):归因增强 ——「这条回答是哪
         # 一版 KB 给的」在管理端审计里可查。best-effort,取不到不盖键。
         kb_snap = await self._kb_rev_snapshot(final)
+        # 请求记录:复用同一份指纹(不重算),finish 记录里「这条回答是哪一
+        # 版 KB 给的」与审计使用同一个值。
+        from trove.tracing.run_record import capture_kb_rev
+        capture_kb_rev(final.run_id, kb_snap)
         # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
         await self._audit_query(session, final, kb=kb_snap)
         # 拒绝审计(独立 action):拒绝轮为什么被拒 —— 报表的可靠信号。
@@ -1756,6 +1815,15 @@ class SessionManager:
             role="assistant", content=content, metadata=metadata,
         ))
         await self._store.save_session(session)
+        # 请求记录:HITL 待确认先落一次 status=pending_hitl / finished_at=NULL,
+        # resume 后同一 header 更新为终态(事件 seq 连续,不重复建行)。
+        from trove.tracing.run_record import capture_hitl
+        capture_hitl(
+            run_id,
+            sql=str(summary.get("sql") or ""),
+            question=str(summary.get("question") or ""),
+            summary=summary,
+        )
 
     @staticmethod
     def _hitl_bookmark_message(session: Session) -> Message | None:
@@ -2434,7 +2502,7 @@ class SessionManager:
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],
         )
         self._begin_trace(state)
-        self._trace_run_start(state)
+        self._trace_run_start(state, workflow_name)
 
         interrupted = False
         terminal: dict[str, Any] | None = None

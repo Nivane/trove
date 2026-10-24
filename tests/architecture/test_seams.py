@@ -164,11 +164,13 @@ FROZEN_SETTINGS: dict[str, tuple[str, str, object]] = {
     "retention.active_grace_min": ("retention.active_grace_min", "int", 0),
     "retention.max_checkpoints_per_thread": ("retention.max_checkpoints_per_thread", "int", 0),
     "retention.sweep_interval_hours": ("retention.sweep_interval_hours", "int", 0),
+    "retention.run_record_retention_days": ("retention.run_record_retention_days", "int", 0),
     "app.result_display_rows": ("result_display_rows", "range", (1, 500)),
     "app.result_max_rows": ("result_max_rows", "range", (1, 50000)),
     "app.api_rate_per_minute": ("api_rate_per_minute", "range", (0, 1000)),
     "app.api_daily_quota": ("api_daily_quota", "range", (0, 100000)),
     "extensions.org_extensions_enabled": ("extensions.org_extensions_enabled", "bool", None),
+    "observability.run_records": ("tracing.run_records", "bool", None),
 }
 
 
@@ -304,6 +306,7 @@ def test_settings_providers_round_trip_masks_secrets():
 DISPOSED_KEYS = {
     "question_coverage", "connector_registry", "jobs", "actions", "oidc",
     "verdicts", "memory", "user_facts", "session_store", "settings", "auth",
+    "run_records",
 }
 
 TRANSIENT_KEYS = {
@@ -374,8 +377,10 @@ def test_dispose_order_keeps_load_bearing_relations():
     assert order.index("question_coverage") < order.index("session_store"), (
         "background maintenance must stop before its storage is released"
     )
-    assert order[-1] == "auth", (
-        "auth is disposed last so audit writes during teardown still resolve"
+    assert order[-1] == "run_records", (
+        "run_records is disposed last: _dispose_components drains in-flight "
+        "flushes first, and every other component's teardown may still emit "
+        "one last capture"
     )
     for name, method in DISPOSE_PLAN:
         assert name in DISPOSED_KEYS

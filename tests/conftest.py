@@ -155,6 +155,20 @@ def _reset_trace_store(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+async def _reset_run_records():
+    """请求记录器同样是进程级全局。
+
+    capture 之后 flush 是后台任务;不 drain 就进下一条用例,任务会带着
+    上一条的 buffer/store 继续跑(并行写同一 tmp 库、或把 fake store 的
+    阻塞写拖进无关用例)。先有界 drain(最多 1s),再 reset 取消残留任务。
+    """
+    from trove.tracing.run_record import drain_run_records, reset_run_records
+    yield
+    await drain_run_records(timeout=1.0)
+    reset_run_records()
+
+
 @pytest.fixture
 def tmp_home(tmp_path):
     """A temporary trove home directory."""

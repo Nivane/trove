@@ -1,0 +1,394 @@
+"""``RunRecorder`` — synchronous capture, asynchronous single-flight flush.
+
+The answer path must never await (or fail because of) its own evidence
+trail; these tests pin that at the recorder level: capture never touches the
+store, flush is bounded and warning-only, the switch turns everything off,
+and overflow gives up evidence in a defined order instead of silently
+dropping the run.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+import trove.tracing.run_record as run_record
+from trove.tracing.run_record import (
+    MAX_LLM_OUTPUT_BYTES,
+    MAX_TOOL_OBSERVATION_BYTES,
+    RunRecorder,
+    configure_run_records,
+    get_run_recorder,
+    is_run_records_enabled,
+    reset_run_records,
+)
+
+
+class FakeStore:
+    """Records (header, events) snapshots; optional gate blocks the write."""
+
+    def __init__(self, *, gate: asyncio.Event | None = None,
+                 fail: bool = False):
+        self.writes: list[tuple[dict, list[dict]]] = []
+        self.gate = gate
+        self.fail = fail
+
+    async def write(self, header, events):
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail:
+            raise RuntimeError("store down")
+        self.writes.append((dict(header), [dict(e) for e in events]))
+        return len(events)
+
+
+def _final(**over):
+    base = {"sql": "SELECT 1", "verdict": "OK", "row_count": 1, "error": ""}
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+class TestCaptureBasics:
+    async def test_run_start_flushes_run_event(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start(
+            "r1", session_id="s1", question="q?", workflow="reflection",
+            datasource="test_db", lang="zh",
+        )
+        await rec.drain()
+
+        assert len(store.writes) == 1
+        header, events = store.writes[0]
+        assert header["run_id"] == "r1"
+        assert header["status"] == "running"
+        assert header["session_id"] == "s1"
+        assert [e["kind"] for e in events] == ["run"]
+        assert events[0]["seq"] == 0
+        assert events[0]["payload"]["workflow"] == "reflection"
+
+    async def test_capture_is_synchronous(self):
+        """capture returns before the (gated) store write completes."""
+        gate = asyncio.Event()
+        rec = RunRecorder(FakeStore(gate=gate))
+        rec.capture_run_start("r1", question="q?")
+        # No await since capture — the flush task exists but is blocked.
+        assert getattr(rec, "_buffers")["r1"].task is not None
+        gate.set()
+        await rec.drain()
+
+    async def test_capture_snapshots_mutable_arguments(self):
+        """log-as-truth: the record is what the model saw *at that call*.
+
+        The agent loop hands the gateway its live ``messages`` list and
+        appends tool results to it afterwards; storing the reference would
+        make round-1 LLM events show later turns once the buffer flushes.
+        The same applies to tool ``arguments`` dicts.
+        """
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        messages = [{"role": "user", "content": "q?"}]
+        rec.capture_llm("r1", messages=messages, output="SELECT 1")
+        messages.append({"role": "tool", "content": "later turn"})
+        args = {"sql": "SELECT 1"}
+        rec.capture_tool("r1", name="probe_query", arguments=args)
+        args["sql"] = "SELECT 2"  # mutation must not reach the record
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+
+        _, events = store.writes[-1]
+        llm = next(e for e in events if e["kind"] == "llm")
+        assert llm["payload"]["messages"] == [
+            {"role": "user", "content": "q?"}]
+        tool = next(e for e in events if e["kind"] == "tool")
+        assert tool["payload"]["arguments"] == {"sql": "SELECT 1"}
+
+    async def test_finish_writes_projection_and_status(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q?")
+        rec.capture_llm("r1", node="gen_sql", model="m",
+                        messages=[{"role": "user", "content": "q?"}],
+                        output="SELECT 1")
+        rec.capture_finish("r1", final=_final(), assembly={"blocks": []})
+        await rec.drain()
+
+        header, events = store.writes[-1]
+        assert header["status"] == "done"
+        assert header["finish_json"]
+        assert '"SELECT 1"' in header["finish_json"]
+        assert header["assembly_json"]
+        assert [e["kind"] for e in events] == ["run", "llm"]
+        assert header["finished_at"]
+
+    async def test_finish_projection_omits_and_caps_rows(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish(
+            "r1", summary={
+                "sql": "SELECT 1",
+                "rows_preview": [[i] for i in range(80)],
+                "chart": {"type": "bar"},
+                "steps": [{"n": 1}],
+            },
+        )
+        await rec.drain()
+        header, _ = store.writes[-1]
+        import json
+        finish = json.loads(header["finish_json"])
+        assert len(finish["rows_preview"]) == 50
+        assert "chart" in finish["omitted"]
+        assert "steps" in finish["omitted"]
+
+    async def test_finish_with_error_marks_failed(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", final=_final(error="boom"))
+        await rec.drain()
+        header, _ = store.writes[-1]
+        assert header["status"] == "failed"
+        assert header["error"] == "boom"
+
+    async def test_hitl_then_finish_updates_one_header(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q?")
+        rec.capture_hitl("r1", sql="SELECT 1", question="q?",
+                         summary={"sql": "SELECT 1"})
+        await rec.drain()
+        assert store.writes[-1][0]["status"] == "pending_hitl"
+        assert store.writes[-1][0]["finished_at"] is None
+
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        header, events = store.writes[-1]
+        assert header["status"] == "done"
+        assert [e["kind"] for e in events] == ["run", "hitl"]
+
+    async def test_error_and_cancel_are_terminal(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_error("r1", error="boom", error_info={"title": "boom"})
+        await rec.drain()
+        assert store.writes[-1][0]["status"] == "error"
+
+        rec.capture_cancel("r1")
+        await rec.drain()
+        assert store.writes[-1][0]["status"] == "cancelled"
+
+
+class TestSwitch:
+    async def test_disabled_recorder_never_buffers(self):
+        store = FakeStore()
+        rec = RunRecorder(store, enabled=False)
+        rec.capture_run_start("r1", question="q?")
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        assert store.writes == []
+        assert rec._buffers == {}
+
+    async def test_enabled_callable_is_read_per_capture(self):
+        store = FakeStore()
+        flag = {"on": False}
+        rec = RunRecorder(store, enabled=lambda: flag["on"])
+        rec.capture_run_start("r1", question="q?")
+        assert rec._buffers == {}
+        flag["on"] = True
+        rec.capture_run_start("r1", question="q?")
+        await rec.drain()
+        assert len(store.writes) == 1
+
+    async def test_enabled_callable_failure_is_off(self):
+        rec = RunRecorder(FakeStore(), enabled=lambda: 1 / 0)
+        assert rec.enabled() is False
+
+    async def test_store_none_is_off(self):
+        rec = RunRecorder(None)
+        assert rec.enabled() is False
+
+
+class TestFailureIsolation:
+    async def test_store_failure_does_not_raise_or_retry(self, caplog):
+        store = FakeStore(fail=True)
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q?")
+        await rec.drain()  # never raises
+        assert store.writes == []
+        assert any("run-record flush failed" in r.message for r in caplog.records)
+
+    async def test_single_flight_marks_dirty(self):
+        gate = asyncio.Event()
+        store = FakeStore(gate=gate)
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q?")  # first write in flight
+        rec.capture_llm("r1", output="SELECT 1")
+        rec.schedule_flush("r1")  # in-flight → dirty
+        await asyncio.sleep(0)
+        gate.set()
+        await rec.drain()
+
+        assert len(store.writes) == 2
+        assert [e["kind"] for e in store.writes[-1][1]] == ["run", "llm"]
+
+
+class TestCaps:
+    async def test_llm_output_and_messages_are_capped(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_llm(
+            "r1",
+            messages=[{"role": "user", "content": "x" * 200_000},
+                      {"role": "assistant", "content": "y" * 200_000}],
+            output="z" * (MAX_LLM_OUTPUT_BYTES + 100),
+        )
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        header, events = store.writes[-1]
+        llm = next(e for e in events if e["kind"] == "llm")
+        payload = llm["payload"]
+        assert len(payload["output"].encode()) <= MAX_LLM_OUTPUT_BYTES
+        assert payload["output_truncated_bytes"] > 0
+        assert "messages_truncated_bytes" in payload
+        assert llm["truncated"] is True
+        assert header["truncated"] == 1
+        assert "llm_messages_truncated" in header["truncation_json"]
+
+    async def test_tool_observation_is_capped(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_tool(
+            "r1", name="probe_query",
+            observation="r" * (MAX_TOOL_OBSERVATION_BYTES + 10),
+        )
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        _, events = store.writes[-1]
+        tool = next(e for e in events if e["kind"] == "tool")
+        assert len(tool["payload"]["observation"].encode()) <= MAX_TOOL_OBSERVATION_BYTES
+        assert tool["payload"]["observation_truncated_bytes"] > 0
+
+    async def test_tool_model_is_capped_tighter(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_tool_model("r1", tool_call_id="c1", content="m" * 20_000)
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        _, events = store.writes[-1]
+        tm = next(e for e in events if e["kind"] == "tool_model")
+        assert len(tm["payload"]["content"].encode()) <= run_record.MAX_TOOL_MODEL_BYTES
+        assert tm["payload"]["truncated_bytes"] > 0
+
+    async def test_event_count_overflow_drops_oldest_tool_model(self, monkeypatch):
+        monkeypatch.setattr(run_record, "MAX_RUN_EVENTS", 3)
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")  # run (seq 0)
+        rec.capture_tool_model("r1", tool_call_id="c1", content="seen")  # seq 1
+        rec.capture_tool("r1", name="t1", observation="o1")  # seq 2
+        rec.capture_tool("r1", name="t2", observation="o2")  # overflow → drop tm
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        header, events = store.writes[-1]
+        kinds = [e["kind"] for e in events]
+        assert kinds == ["run", "tool", "tool"]
+        assert "tool_model_dropped" in header["truncation_json"]
+
+    async def test_byte_overflow_drops_new_observation_not_old_evidence(
+            self, monkeypatch):
+        monkeypatch.setattr(run_record, "MAX_RUN_BYTES", 1500)
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q?")
+        rec.capture_tool("r1", name="t1", observation="small")
+        rec.capture_tool("r1", name="t2", observation="z" * 5000)
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        header, events = store.writes[-1]
+        tool2 = [e for e in events if e["kind"] == "tool"][-1]
+        assert "observation" not in tool2["payload"]
+        assert tool2["payload"].get("observation_dropped") is True
+        assert "tool_observations_dropped" in header["truncation_json"]
+        # The older evidence survives: new raw observations yield first.
+        first_tool = [e for e in events if e["kind"] == "tool"][0]
+        assert first_tool["payload"]["observation"] == "small"
+
+    async def test_process_buffer_cap_flushes_the_oldest(self, monkeypatch):
+        monkeypatch.setattr(run_record, "MAX_BUFFERS", 2)
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", question="q1")
+        await asyncio.sleep(0)
+        await rec.drain()
+        rec.capture_run_start("r2", question="q2")
+        await rec.drain()
+        rec.capture_run_start("r3", question="q3")  # evicts r1 (already flushed)
+        await rec.drain()
+        assert "r1" not in rec._buffers
+        assert set(rec._buffers) == {"r2", "r3"}
+
+
+class TestModuleSingleton:
+    async def test_configure_enable_reset(self):
+        store = FakeStore()
+        try:
+            configure_run_records(store, enabled=True)
+            assert is_run_records_enabled() is True
+            from trove.tracing.run_record import capture_run_start
+            capture_run_start("r1", question="q?")
+            rec = get_run_recorder()
+            assert rec is not None
+            await rec.drain()
+            assert len(store.writes) == 1
+        finally:
+            reset_run_records()
+        assert is_run_records_enabled() is False
+        assert get_run_recorder() is None
+
+    async def test_capture_without_recorder_is_a_noop(self):
+        reset_run_records()
+        from trove.tracing.run_record import capture_llm
+        capture_llm("r1", output="x")  # no exception, nothing to drain
+
+
+class TestDrain:
+    async def test_drain_is_bounded_when_the_store_hangs(self):
+        gate = asyncio.Event()  # never set
+        rec = RunRecorder(FakeStore(gate=gate))
+        rec.capture_run_start("r1", question="q?")
+        await rec.drain(timeout=0.01)  # returns without raising
+        rec.reset()  # cancels the hung task
+
+    async def test_reset_cancels_tasks_and_clears(self):
+        gate = asyncio.Event()
+        rec = RunRecorder(FakeStore(gate=gate))
+        rec.capture_run_start("r1", question="q?")
+        rec.reset()
+        assert rec._buffers == {}
+        assert rec._total_bytes == 0
+
+
+@pytest.mark.parametrize("kind", ["run", "llm", "tool", "tool_model", "hitl"])
+def test_capture_methods_need_a_run_id(kind):
+    rec = RunRecorder(FakeStore())
+    # All capture methods tolerate an empty run id (the tracer may call them
+    # before a run is minted); nothing is buffered under "".
+    if kind == "run":
+        rec.capture_run_start("", question="q")
+    elif kind == "llm":
+        rec.capture_llm("", output="x")
+    elif kind == "tool":
+        rec.capture_tool("", name="t")
+    elif kind == "tool_model":
+        rec.capture_tool_model("", tool_call_id="c", content="x")
+    else:
+        rec.capture_hitl("", sql="", question="")
+    assert rec._buffers == {}

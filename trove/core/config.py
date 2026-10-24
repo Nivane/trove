@@ -66,6 +66,11 @@ class TracingConfig:
     # (搜索顺序见 CONFIG_SEARCH_PATHS)。
     enabled: bool = True
 
+    # 请求侧完整记录(``trove/tracing/run_record.py`` → ``RunRecordStore``):
+    # 「模型看到什么、系统做了什么」的持久副本。与上面的 enabled 无关 ——
+    # Langfuse 关掉时本地记录仍可开(事故复盘不依赖外部观测服务)。
+    run_records: bool = True
+
 
 @dataclass
 class RetentionConfig:
@@ -75,6 +80,8 @@ class RetentionConfig:
     active_grace_min: int = 10  # 最近有更新的会话豁免窗口(分钟)
     max_checkpoints_per_thread: int = 50  # 单线程 checkpoint 深度上限
     sweep_interval_hours: int = 24  # 周期清理间隔;<=0 = 关闭周期清理
+    # 请求记录保留天数;0 = 永久保留(证据不因默认值悄悄消失)。
+    run_record_retention_days: int = 30
 
 
 @dataclass
@@ -752,7 +759,10 @@ class ConfigLoader:
         # 形态就是不报错地什么都不记。
         obs = agent_section.get("observability", {})
         tracing_raw = obs.get("tracing", {})
-        tracing = TracingConfig(enabled=tracing_raw.get("enabled", True))
+        tracing = TracingConfig(
+            enabled=tracing_raw.get("enabled", True),
+            run_records=tracing_raw.get("run_records", True),
+        )
 
         # Parse retention
         retention_raw = agent_section.get("retention", {})
@@ -761,6 +771,8 @@ class ConfigLoader:
             active_grace_min=int(retention_raw.get("active_grace_min", 10)),
             max_checkpoints_per_thread=int(retention_raw.get("max_checkpoints_per_thread", 50)),
             sweep_interval_hours=int(retention_raw.get("sweep_interval_hours", 24)),
+            run_record_retention_days=max(
+                0, int(retention_raw.get("run_record_retention_days", 30))),
         )
 
         # Parse memory subsystem

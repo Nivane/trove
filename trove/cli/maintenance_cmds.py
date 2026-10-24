@@ -9,11 +9,43 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 
 from trove.core.logging import get_logger
 from trove.services.maintenance import MaintenanceService, SweepStats
 
 logger = get_logger(__name__)
+
+#: A cutoff no stored ``started_at`` can reach (used only for status totals;
+#: ``count_before`` is the same query the purge leg uses).
+_HORIZON = "9999-12-31T23:59:59+00:00"
+
+
+async def _run_record_retention(home: str, config, *, dry_run: bool) -> dict:
+    """Request-record retention leg of ``maintenance run``.
+
+    ``run_record_retention_days <= 0`` = 永久保留 (skip). ``has_data()``
+    avoids materializing an empty database for deployments that never
+    recorded anything. The store is disposed in a ``finally``: these CLI
+    commands are one-shot processes and a live aiosqlite worker keeps them
+    from exiting.
+    """
+    from trove.storage.run_record_store import RunRecordStore
+
+    days = int(getattr(config.retention, "run_record_retention_days", 0) or 0)
+    store = RunRecordStore(home)
+    try:
+        if days <= 0:
+            return {"skipped": "retention_disabled"}
+        if not await store.has_data():
+            return {"runs": 0, "events": 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(
+            timespec="seconds")
+        if dry_run:
+            return await store.count_before(cutoff)
+        return await store.purge_before(cutoff)
+    finally:
+        await store.dispose()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,17 +81,23 @@ async def _run_maintenance(home: str, config, dry_run: bool, purge_orphans: bool
                 "sessions": preview["sessions"],
                 "candidates": sum(preview["candidates"].values()),
                 "skipped_active": sum(preview["skipped_active"].values()),
+                "run_records": await _run_record_retention(
+                    home, config, dry_run=True),
             }
         if purge_orphans:
-            return await svc.run_all()
-        # 默认:配额 sweep + 深度修剪,不含孤儿清理;与 run_all 同款错误隔离
-        pruned = await svc.prune_thread_depth()
-        try:
-            sweep = await svc.sweep()
-        except Exception as e:
-            logger.warning("sweep failed in maintenance run: %s", e)
-            sweep = SweepStats(errors=1)
-        return {"orphans": 0, "pruned": pruned, "sweep": sweep}
+            stats = await svc.run_all()
+        else:
+            # 默认:配额 sweep + 深度修剪,不含孤儿清理;与 run_all 同款错误隔离
+            pruned = await svc.prune_thread_depth()
+            try:
+                sweep = await svc.sweep()
+            except Exception as e:
+                logger.warning("sweep failed in maintenance run: %s", e)
+                sweep = SweepStats(errors=1)
+            stats = {"orphans": 0, "pruned": pruned, "sweep": sweep}
+        stats["run_records"] = await _run_record_retention(
+            home, config, dry_run=False)
+        return stats
 
 
 async def main_maintenance(argv: list[str]) -> None:
@@ -86,6 +124,21 @@ async def main_maintenance(argv: list[str]) -> None:
         )
         for user, group in sorted(by_user.items()):
             print(f"  {user}: {len(group)}")
+        # 请求记录:只报数,不建库(没录过的部署不留空文件)。
+        from trove.storage.run_record_store import RunRecordStore
+        run_records = RunRecordStore(config.home)
+        try:
+            totals = (
+                await run_records.count_before(_HORIZON)
+                if await run_records.has_data() else {"runs": 0, "events": 0}
+            )
+        finally:
+            await run_records.dispose()
+        days = config.retention.run_record_retention_days
+        print(
+            f"run_records={totals['runs']} events={totals['events']} "
+            f"retention_days={days}{' (permanent)' if days <= 0 else ''}"
+        )
         return
 
     if args.subcommand == "run":
