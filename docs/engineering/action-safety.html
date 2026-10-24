@@ -246,7 +246,7 @@ flowchart LR
     <p>
       不是每个环境都愿意开一个 webhook 入口。所以外送之外还有<strong>拉</strong>：
       对端系统（Agent、内网工具）通过 MCP 主动来取
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L302">server.py:302 <span class="ref-line">trove://proposals</span></a>——
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L341">server.py:341 <span class="ref-line">trove://proposals</span></a>——
       资源 <code>trove://proposals</code> 是「已批准且未过期」提案的只读索引，
       详情走 <code>fetch_proposal</code>，行动真的执行完之后用 <code>ack_proposal</code> 回执
       （落一条 <code>channel="ack"</code> 的投递行并置 <code>delivered</code>）。
@@ -366,7 +366,7 @@ action:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 211ae86</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5c4f9bf</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

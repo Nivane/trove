@@ -43,9 +43,9 @@ trove mcp --transport sse --port 8001
 trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1089">main.py:1089 <span class="ref-line">main_mcp</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L974">main.py:974 <span class="ref-line">--transport</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L82">server.py:82 <span class="ref-line">FastMCP</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1146">main.py:1146 <span class="ref-line">main_mcp</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L989">main.py:989 <span class="ref-line">--transport</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L94">server.py:94 <span class="ref-line">FastMCP</span></a>
     </p>
 
     <div class="table-wrap">
@@ -72,7 +72,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1003">main.py:1003 <span class="ref-line">_LOOPBACK_HOSTS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1018">main.py:1018 <span class="ref-line">_LOOPBACK_HOSTS</span></a>
     </p>
 
     <p>
@@ -82,12 +82,43 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1037">main.py:1037 <span class="ref-line">_build_mcp_auth_middleware</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1052">main.py:1052 <span class="ref-line">_build_mcp_auth_middleware</span></a>
     </p>
 
     <p>
-      HTTP 传输下带 Bearer 中间件，<strong>连 health 端点也不豁免</strong>——
-      未授权的客户端应当快速失败，而不是从一个开放的探活端点推断出服务存在。
+      HTTP 传输挂一层 <strong>纯 ASGI 的 Bearer 门</strong>（不是
+      <code>BaseHTTPMiddleware</code>——SSE / streamable-http 的长连接不能被缓冲）。
+      <strong>连 health 端点也不豁免</strong>：未授权的客户端应当快速失败，
+      而不是从一个开放的探活端点推断出服务存在。
+    </p>
+
+    <ul>
+      <li>
+        <strong>每请求重新解析</strong>：先常量时间比对配置的 token，再问
+        <code>AuthService.resolve_token</code> 换成当前用户。
+        撤销 token、禁用用户、删除用户在<strong>下一次请求</strong>就生效，
+        不需要重启进程。
+      </li>
+      <li>
+        <strong>不泄露 token 是否有效</strong>：缺失 / 格式错 / 错误 / 已撤销
+        一律返回同一个 401（<code>{"detail": "unauthorized"}</code> +
+        <code>WWW-Authenticate: Bearer</code>），错误 token 在比对阶段就被拒，
+        不会打到数据库。
+      </li>
+      <li>
+        <strong>鉴权服务不可用 = 503，不是放行</strong>：解析抛错或
+        <code>AuthService</code> 未装配时 fail-closed。
+      </li>
+      <li>
+        <strong>身份随请求走</strong>：工具执行、会话归属、数据源授权判定
+        全部用<strong>本次请求</strong>解析出的用户，而不是进程启动时的那一个；
+        两个调用方即使传同一个 <code>session_id</code>，也各自得到自己的会话。
+      </li>
+    </ul>
+
+    <p>
+      回环地址 + 不传 token 的开发形态不变：不挂中间件，行为与以前一致。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/http_auth.py#L71">http_auth.py:71 <span class="ref-line">MCPBearerAuthMiddleware</span></a>
     </p>
 
     <h3>身份语义</h3>
@@ -113,7 +144,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L141">server.py:141 <span class="ref-line">_authorize_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L179">server.py:179 <span class="ref-line">_authorize_datasource</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
     </p>
 
@@ -171,9 +202,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L349">server.py:349 <span class="ref-line">ask_data</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L398">server.py:398 <span class="ref-line">list_datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L405">server.py:405 <span class="ref-line">kb_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L388">server.py:388 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L439">server.py:439 <span class="ref-line">list_datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L446">server.py:446 <span class="ref-line">kb_status</span></a>
     </p>
 
     <p>
@@ -188,8 +219,8 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L61">server.py:61 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L197">server.py:197 <span class="ref-line">_ds_name_safe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L65">server.py:65 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L235">server.py:235 <span class="ref-line">_ds_name_safe</span></a>
     </p>
 
     <h2 id="resources">三个 resource</h2>
@@ -208,9 +239,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L219">server.py:219 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L239">server.py:239 <span class="ref-line">schema</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L245">server.py:245 <span class="ref-line">semantics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L257">server.py:257 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L277">server.py:277 <span class="ref-line">schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L283">server.py:283 <span class="ref-line">semantics</span></a>
     </p>
 
     <p>
@@ -235,8 +266,8 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L323">server.py:323 <span class="ref-line">datasource_guide</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L338">server.py:338 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L362">server.py:362 <span class="ref-line">datasource_guide</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L377">server.py:377 <span class="ref-line">ask_data</span></a>
     </p>
 
     <h2 id="visible">语义优先也在这里生效</h2>
@@ -246,7 +277,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L152">server.py:152 <span class="ref-line">_datasources_visible</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L190">server.py:190 <span class="ref-line">_datasources_visible</span></a>
     </p>
 
     <p>
@@ -291,7 +322,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 47f4928</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5c4f9bf</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
