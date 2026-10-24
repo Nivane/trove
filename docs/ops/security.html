@@ -240,7 +240,7 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L234">deps.py:234 <span class="ref-line">check_api_rate</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L523">config.py:523 <span class="ref-line">api_rate_per_minute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L530">config.py:530 <span class="ref-line">api_rate_per_minute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/ratelimit.py#L24">ratelimit.py:24 <span class="ref-line">TokenBucket</span></a>
     </p>
 
@@ -258,7 +258,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L356">app.py:356 <span class="ref-line">auth is None</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L385">app.py:385 <span class="ref-line">auth is None</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L88">deps.py:88 <span class="ref-line">get_current_user</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L178">deps.py:178 <span class="ref-line">require_scope</span></a>
     </p>
@@ -408,7 +408,7 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/auth.py#L149">auth.py:149 <span class="ref-line">oidc_callback</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L359">service.py:359 <span class="ref-line">resolve_oidc_user</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L39">service.py:39 <span class="ref-line">map_oidc_role</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L161">config.py:161 <span class="ref-line">OidcConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L168">config.py:168 <span class="ref-line">OidcConfig</span></a>
     </p>
 
     <h2 id="enforce">执行前的授权门</h2>
@@ -451,7 +451,7 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L215">semantic_query.py:215 <span class="ref-line">authorize_and_scope</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L251">semantic_query.py:251 <span class="ref-line">build_masker</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L236">semantic_query.py:236 <span class="ref-line">execute</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L109">config.py:109 <span class="ref-line">require_principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L116">config.py:116 <span class="ref-line">require_principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L200">enforcer.py:200 <span class="ref-line">require_principal</span></a>
     </p>
 
@@ -741,8 +741,8 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L153">gateway.py:153 <span class="ref-line">_check_egress</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L132">config.py:132 <span class="ref-line">EgressConfig</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1998">session.py:1998 <span class="ref-line">_audit_egress</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L139">config.py:139 <span class="ref-line">EgressConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L2066">session.py:2066 <span class="ref-line">_audit_egress</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L275">metrics.py:275 <span class="ref-line">record_llm_egress_denied</span></a>
     </p>
 
@@ -847,8 +847,8 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L43">chat.py:43 <span class="ref-line">_replay_subject</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L202">session.py:202 <span class="ref-line">_replay_wire</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L240">session.py:240 <span class="ref-line">scopes</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L208">session.py:208 <span class="ref-line">_replay_wire</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L246">session.py:246 <span class="ref-line">scopes</span></a>
     </p>
 
     <p>
@@ -931,7 +931,7 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1323">gen_sql.py:1323 <span class="ref-line">sql_audit</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1828">session.py:1828 <span class="ref-line">_audit_query</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1896">session.py:1896 <span class="ref-line">_audit_query</span></a>
     </p>
 
     <p>
@@ -1031,7 +1031,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 5c4f9bf</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: b788a7c</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
