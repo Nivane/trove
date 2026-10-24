@@ -4202,6 +4202,20 @@ class TestSemanticPromptGuards:
                 assert "get_table_columns" not in text
                 assert "get_column_stats" not in text
 
+    def test_attribution_prompt_requires_verbatim_declared_names(self):
+        """归因计划的指标/维度必须**逐字复制**声明名。
+
+        planner 写简写(loan amount)时,编译器按精确名解析不到 → 归因
+        整段做不了。提示词必须说清「只从声明清单取、逐字复制」,并给出
+        「找不到就省略 attribution 块」的出口(绝不编造名字)。
+        """
+        en = render("query_sketch/attribution", lang="en")
+        zh = render("query_sketch/attribution", lang="zh")
+        assert "copied verbatim" in en
+        assert "omit the attribution object" in en
+        assert "逐字复制" in zh
+        assert "省略 attribution 块" in zh
+
     def test_query_sketch_prompt_carries_analysis_guidance(self):
         """窗口分析(share/running_total/mom/yoy/pct_change/rank)指引:
         query_sketch 要能产出 analysis 字段给编译器。"""

@@ -1,12 +1,20 @@
 本问题是「为什么/归因/根因」类业务问题。除正常查询计划外,还必须在 JSON
 里输出一个 "attribution" 对象(归因计划),结构:
 "attribution": {
-  "target_metric": "已声明度量名(如 loan amount / 贷款金额,必须能在语义模型解析)",
-  "dimensions": ["维度字段", ...],   // 下钻顺序,1~2 个;必须是已声明字段
+  "target_metric": "已声明度量名",       // 必须逐字复制,见下
+  "dimensions": ["维度字段", ...],       // 下钻顺序,1~2 个;逐字复制字段名
   "baseline": "prev_period | yoy | share",  // 环比 / 同比 / 占比(无时间则 share)
   "depth": 1 或 2,                       // 2 = 对 top 贡献者再下钻一层
   "focus": "可选:限定某个分项(如 华东),没有则省略"
 }
+target_metric 的取法(必须遵守):
+- 只从 schema context 中已声明的度量里选,即 "Relevant metrics:" 行,或某个
+  Dataset 下 "Metrics:" 行里形如 "- <度量名> = <表达式>" 的条目。
+- 取 "=" 前面的**完整名字**,逐字复制:不要缩短、翻译、改写大小写、去掉
+  前缀,也不要改写成聚合表达式。例如声明行是
+  "- average Loan amount = AVG(loan.amount)" 时写 "average Loan amount",
+  不要写 "loan amount" 或 "AVG(loan.amount)"。
+- 找不到对应度量时省略 attribution 块(主线查询照常输出),不要编造名字。
+dimensions 同理:逐字复制字段名;解析不到的名字会让整段归因做不了。
 同时照常输出查询计划的 tables/aggregation/answer_columns 等——主线 SQL 回答
-指标本身,归因计划交给归因节点做多跳下钻。target_metric 与 dimensions 必须
-引用语义模型中真实存在的度量与字段,不要编造。
+指标本身,归因计划交给归因节点做多跳下钻。

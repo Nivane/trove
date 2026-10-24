@@ -44,6 +44,8 @@ from trove.services.analysis.engine import (
     AnalysisLimits,
     AnalysisRequest,
     analysis_payload,
+    resolve_dim_ref,
+    resolve_metric_name,
 )
 from trove.services.analysis.expr_tree import metric_ratio_parts as _metric_ratio_parts
 from trove.services.analysis.render import (
@@ -148,6 +150,46 @@ def _skipped_hypotheses(reason: str) -> dict[str, Any]:
     }
 
 
+#: 归因不可交付的确定性分因(闭集;``output`` 按它选文案)。
+#: 计划在、执行没成 —— 区别于「不是归因问题」的静默跳过(无计划 /
+#: 未启用 / 无连接器):后者本来就不该出区块,前者必须让读者看见。
+_UNDELIVERABLE = {
+    "metric_unresolved",   # 目标指标名在语义模型里找不到
+    "metric_ambiguous",    # 目标指标名命中多个声明口径(不猜)
+    "dimensions_unresolved",  # 计划的首个维度解析不到
+    "analysis_unavailable",   # 指标/维度都在,但一跳也没编译/执行成
+}
+
+
+def _degraded_attribution(
+    reason: str, *, metric: str = "", baseline: str = "share",
+    candidates: list[str] | None = None,
+) -> dict[str, Any]:
+    """不可交付 → 带原因的可见降级产物(不是 `{}`)。
+
+    ``output`` 的 ``_build_attribution_section`` 对 ``degraded`` 渲染一行
+    如实解释;``reason`` 让它说清是「指标没声明」「口径有歧义」还是
+    「编译/取数没成」—— 只说「没能完成」会把可修的问题写成不可修。
+    """
+    if reason not in _UNDELIVERABLE:
+        # 内部拼写错误:仍是可见降级(增强不阻断主链),但必须留痕。
+        logger.warning("Unknown attribution degradation reason: %r", reason)
+        reason = "analysis_unavailable"
+    result: dict[str, Any] = {
+        "table": [],
+        "hops": [],
+        "narrative": "",
+        "baseline": baseline,
+        "degraded": True,
+        "reason": reason,
+    }
+    if metric:
+        result["metric"] = metric
+    if candidates:
+        result["candidates"] = list(candidates[:8])
+    return {"attribution": result, "attribution_hops": []}
+
+
 async def _hypothesis_round(
     *,
     llm: Any,
@@ -222,18 +264,52 @@ def make_attribution(
             return {}
 
         plan = state.attribution_plan
-        metric_name = str(plan.get("target_metric") or "").strip()
+        raw_metric = str(plan.get("target_metric") or "").strip()
         dims = [
             str(d).strip()
             for d in (plan.get("dimensions") or [])
             if str(d or "").strip()
         ][: config.attribution.max_dimensions]
-        if not metric_name or not dims:
+        if not raw_metric or not dims:
             return {}
         baseline = str(plan.get("baseline") or "prev_period").strip().lower()
         if baseline not in ("prev_period", "yoy", "share"):
             baseline = "prev_period"
         depth = min(int(plan.get("depth") or 1), config.attribution.max_hops)
+
+        # 目标指标名解析(确定性):planner 常写简写 / 翻译 / 带下划线的变体
+        # (「loan amount」对已声明的「average Loan amount」),编译器只认精确
+        # 名字。唯一归一命中 → 用规范名继续;解析不到 → **可见**降级。旧行为
+        # 是返回 {},归因做没做读者无从得知(「静默跳过」比降级更糟)。
+        resolution = resolve_metric_name(semantic_layer, raw_metric)
+        if resolution.name is None:
+            logger.info(
+                "Attribution target metric unresolved (%s): %r candidates=%s",
+                resolution.reason, raw_metric,
+                list(resolution.candidates)[:8],
+            )
+            return _degraded_attribution(
+                "metric_ambiguous" if resolution.reason == "ambiguous"
+                else "metric_unresolved",
+                metric=raw_metric,
+                baseline=baseline,
+                candidates=list(resolution.candidates),
+            )
+        metric_name = resolution.name
+        if resolution.strategy != "exact":
+            logger.info(
+                "Attribution target metric normalized (%s): %r → %r",
+                resolution.strategy, raw_metric, metric_name,
+            )
+
+        # 首个维度解析不到时引擎会在开跳前返回 None;这里先判,把分因说清。
+        if resolve_dim_ref(
+            semantic_layer, list(state.matched_tables), dims[0],
+        ) is None:
+            logger.info(
+                "Attribution primary dimension unresolved: %r", dims[0])
+            return _degraded_attribution(
+                "dimensions_unresolved", metric=metric_name, baseline=baseline)
 
         request = AnalysisRequest(
             question=state.question,
@@ -281,7 +357,15 @@ def make_attribution(
         engine = AnalysisEngine(semantic_layer, _runner, _limits_from_config(config))
         outcome = await engine.run(request)
         if outcome is None:
-            return {}
+            # 指标/维度都解析到了,却一跳也没成(编译 MISS / 取数失败 /
+            # 无数据)。静默返回 {} 会让读者以为「没有变化可归因」——
+            # 这是「分析没做成」,必须可见。
+            logger.info(
+                "Attribution produced no hops (metric=%r, dims=%r)",
+                metric_name, dims,
+            )
+            return _degraded_attribution(
+                "analysis_unavailable", metric=metric_name, baseline=baseline)
 
         # 异常中途降级(表未产出):保持旧形状(表空、只有 hops),外加
         # ``degraded`` 标记 —— output 靠它把空标题换成一句如实的解释(ANS-4)。
@@ -467,6 +551,10 @@ def make_attribution(
             "metric": metric_name,
             "kind": "ratio" if is_ratio else "additive",
         }
+        if raw_metric != metric_name:
+            # 归一命中的原始写法留档:回放/评测要能分清「模型写对了」与
+            # 「我们替它归一了」。
+            result["metric_raw"] = raw_metric
         if effects is not None:
             result["effects"] = effects
         # 下钻表并入(有则挂到 result,供前端分析面板/后续洞察复用)

@@ -431,6 +431,11 @@ class TestAttributionNode:
         assert out == {}
 
     async def test_unresolvable_metric_degrades(self, attr_registry):
+        """指标名解析不到 → **可见**降级(不是静默 {})。
+
+        旧行为返回 {}:答案里连归因标题都没有,读者无从知道「归因没做成」。
+        降级产物带分因与原始指标名,output 据此渲染一行可操作的说明。
+        """
         llm = RecordingLLM([])
         node = make_attribution(
             llm, on_config(), connectors=attr_registry,
@@ -444,7 +449,97 @@ class TestAttributionNode:
                 "depth": 1,
             },
         ))
-        assert out == {}
+        attr = out["attribution"]
+        assert attr["degraded"] is True
+        assert attr["reason"] == "metric_unresolved"
+        assert attr["metric"] == "nonexistent metric"
+        assert attr["table"] == [] and attr["hops"] == []
+        assert out["attribution_hops"] == []
+        assert len(llm.calls) == 0
+
+    async def test_ambiguous_metric_degrades_with_candidates(self, attr_registry):
+        """简写命中多个已声明口径 → 不猜,列候选并可见降级。"""
+        llm = RecordingLLM([])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        # 测试模型为数值列生成 SUM/AVG/MIN/MAX 四个度量,共享后缀
+        # students.grade —— 正是「loan amount」式的简写歧义。
+        out = await node(make_attr_state(
+            attribution_plan={
+                "target_metric": "students.grade",
+                "dimensions": ["students.county"],
+                "baseline": "share",
+                "depth": 1,
+            },
+        ))
+        attr = out["attribution"]
+        assert attr["degraded"] is True
+        assert attr["reason"] == "metric_ambiguous"
+        assert attr["metric"] == "students.grade"
+        assert len(attr["candidates"]) >= 2
+        assert len(llm.calls) == 0
+
+    async def test_shorthand_metric_is_normalized(self, attr_registry):
+        """唯一归一命中 → 用规范名继续(产物留原始写法)。"""
+        llm = RecordingLLM(["叙事"])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        out = await node(make_attr_state(
+            attribution_plan={
+                "target_metric": "sum_of_students.grade",
+                "dimensions": ["students.county"],
+                "baseline": "share",
+                "depth": 1,
+            },
+        ))
+        attr = out["attribution"]
+        assert attr["table"]  # 解析成功,分解表照常产出
+        assert attr["metric"] == "sum of students.grade"
+        assert attr["metric_raw"] == "sum_of_students.grade"
+
+    async def test_unresolvable_dimension_degrades(self, attr_registry):
+        llm = RecordingLLM([])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        out = await node(make_attr_state(
+            attribution_plan={
+                "target_metric": "sum of students.grade",
+                "dimensions": ["students.nonexistent"],
+                "baseline": "share",
+                "depth": 1,
+            },
+        ))
+        attr = out["attribution"]
+        assert attr["degraded"] is True
+        assert attr["reason"] == "dimensions_unresolved"
+        assert attr["table"] == []
+        assert len(llm.calls) == 0
+
+    async def test_no_hops_degrades_visibly(self, attr_registry, monkeypatch):
+        """指标/维度都在,但一跳没成 → 可见降级(旧行为静默 {})。"""
+        import trove.workflow.nodes.attribution as mod
+
+        async def _no_outcome(self, request):
+            return None
+
+        monkeypatch.setattr(mod.AnalysisEngine, "run", _no_outcome)
+        llm = RecordingLLM([])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        out = await node(make_attr_state())
+        attr = out["attribution"]
+        assert attr["degraded"] is True
+        assert attr["reason"] == "analysis_unavailable"
+        assert attr["metric"] == "sum of students.grade"
+        assert len(llm.calls) == 0
 
     async def test_narrative_failure_degrades_with_table(self, attr_registry):
         class Boom:
