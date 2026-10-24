@@ -27,6 +27,7 @@ from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.demo_setup import setup_demo_datasource
 from trove.workflow.graphs import GraphServices, build_graphs
 from trove.agent.session import SessionManager
+from trove.mcp.http_auth import MCPBearerAuthMiddleware
 
 logger = get_logger(__name__)
 
@@ -733,6 +734,36 @@ async def _run_index(argv: list[str]) -> None:
     await main_index(argv)
 
 
+#: Every component that owns a backend connection, in teardown order.
+#: ``tests/architecture/test_seams.py`` asserts this set partitions the
+#: components returned by ``create_app_components`` — a new component must be
+#: classified here (or as transient) instead of leaking a worker thread.
+DISPOSE_PLAN: tuple[tuple[str, str], ...] = (
+    # 先收掉后台体检任务,再释放连接(与 serve 原清理顺序同源)。
+    ("question_coverage", "dispose"),
+    ("connector_registry", "close_all"),
+    # jobs / actions 的后端连接挂在各自的 store 上。
+    ("jobs", "store.dispose"),
+    ("actions", "store.dispose"),
+    ("oidc", "dispose"),
+    ("verdicts", "dispose"),
+    ("memory", "dispose"),
+    ("user_facts", "dispose"),
+    ("session_store", "dispose"),
+    ("settings", "dispose"),
+    ("auth", "dispose"),
+)
+
+
+def _resolve_method(obj, path: str):
+    """Resolve ``"store.dispose"`` against ``obj``; None if absent/not callable."""
+    for part in path.split("."):
+        if obj is None:
+            return None
+        obj = getattr(obj, part, None)
+    return obj if callable(obj) else None
+
+
 async def _dispose_components(components: dict) -> None:
     """Best-effort release of every component holding a backend connection.
 
@@ -742,30 +773,14 @@ async def _dispose_components(components: dict) -> None:
     ``--print`` path printed its payload and then hung. Each disposal is
     isolated — a failing store must not leave the rest holding the process.
     """
-    async def _best_effort(name: str, obj, method: str) -> None:
-        fn = getattr(obj, method, None) if obj is not None else None
+    for name, method in DISPOSE_PLAN:
+        fn = _resolve_method(components.get(name), method)
         if fn is None:
-            return
+            continue
         try:
             await fn()
         except Exception as e:
             logger.warning("Component cleanup failed (%s): %s", name, e)
-
-    # 先收掉后台体检任务,再释放连接(与 serve 原清理顺序同源)。
-    await _best_effort(
-        "question_coverage", components.get("question_coverage"), "dispose")
-    await _best_effort(
-        "connector_registry", components.get("connector_registry"), "close_all")
-    # jobs / actions 的后端连接挂在各自的 store 上。
-    for name in ("jobs", "actions"):
-        service = components.get(name)
-        await _best_effort(
-            f"{name}.store", getattr(service, "store", None), "dispose")
-    for name in (
-        "oidc", "verdicts", "memory", "user_facts",
-        "session_store", "settings", "auth",
-    ):
-        await _best_effort(name, components.get(name), "dispose")
 
 
 async def async_main_cli():
@@ -1034,19 +1049,50 @@ async def _mcp_identity_for(
     return identity
 
 
-def _build_mcp_auth_middleware(token: str | None):
+def _build_mcp_auth_middleware(token: str | None, auth):
     """Bearer-token gate for MCP HTTP transports.
 
-    Returns a Starlette middleware that enforces 'Authorization: Bearer
-    <token>' on every request when ``token`` is set; passes through
-    untouched when no token is configured. Network binds are required to
-    set ``--token`` (see async_main_mcp), and the token must resolve to a
-    real Trove user so the server can enforce per-user datasource grants.
-    health/metadata endpoints are not exempted so that unauthorized
-    clients fail fast.
+    Returns a Starlette ``Middleware`` enforcing ``Authorization: Bearer
+    <token>`` on every request when ``token`` is set; passes through
+    untouched when no token is configured. ``auth`` is the process-wide
+    AuthService, so the middleware can resolve the credential to a live user
+    per request (revocation applies immediately, not at restart).
     """
     if not token:
         return None
+    from starlette.middleware import Middleware
+
+    return Middleware(MCPBearerAuthMiddleware, token=token, auth=auth)
+
+
+def _mcp_http_kwargs(
+    transport: str,
+    host: str,
+    port: int,
+    path: str | None,
+    token: str | None,
+    auth,
+) -> dict[str, Any]:
+    """Keyword arguments for ``FastMCP.run_http_async``.
+
+    Kept as a pure function so the structural seam test can assert there is
+    exactly one construction site and that the auth middleware is always
+    part of it when a token is configured.
+    """
+    middleware = _build_mcp_auth_middleware(token, auth)
+    kwargs: dict[str, Any] = {
+        # "http" is a CLI alias; fastmcp only knows "streamable-http".
+        "transport": "streamable-http" if transport == "http" else transport,
+        "host": host,
+        "port": port,
+    }
+    if path:
+        kwargs["path"] = path
+    if middleware is not None:
+        kwargs["middleware"] = [middleware]
+    return kwargs
+
+
 async def async_main_mcp(argv: list[str]) -> None:
     """Async main for 'trove mcp' (MCP server over stdio / sse / streamable-http)."""
     args = mcp_parser().parse_args(argv)
@@ -1061,21 +1107,30 @@ async def async_main_mcp(argv: list[str]) -> None:
         identity = await _mcp_identity_for(
             transport, args.host, args.token, components.get("auth"),
         )
-        server = build_mcp_server(components, identity=identity)
+        server = build_mcp_server(
+            components,
+            identity=identity,
+            # On a token-protected HTTP transport every request must carry its
+            # own resolved identity; a request that reaches a tool without one
+            # is an error, not an invitation to use the startup identity.
+            require_request_identity=bool(args.token) and transport != "stdio",
+        )
         try:
             if transport == "stdio":
                 await server.run_stdio_async()
             else:
-                middleware = _build_mcp_auth_middleware(args.token)
-                http_kwargs: dict[str, Any] = {
-                    "transport": "streamable-http" if transport == "http" else transport,
-                    "host": args.host,
-                    "port": args.port,
-                }
-                if args.path:
-                    http_kwargs["path"] = args.path
-                if middleware is not None:
-                    http_kwargs["middleware"] = [middleware]
+                http_kwargs = _mcp_http_kwargs(
+                    transport, args.host, args.port, args.path, args.token,
+                    components.get("auth"),
+                )
+                if args.token and not http_kwargs.get("middleware"):
+                    # Unreachable through the builder above; kept as a
+                    # fail-closed guard so a future refactor cannot silently
+                    # ship a token-protected endpoint with no gate.
+                    raise SystemExit(
+                        "MCP --token was set but no auth middleware was built — "
+                        "refusing to start an ungated HTTP endpoint."
+                    )
                 if args.token:
                     logger.info(
                         "MCP %s listening on %s:%s (bearer auth required)",
@@ -1083,7 +1138,9 @@ async def async_main_mcp(argv: list[str]) -> None:
                     )
                 await server.run_http_async(**http_kwargs)
         finally:
-            await components["connector_registry"].close_all()
+            # Not just connectors: aiosqlite worker threads are non-daemon and
+            # keep the process alive. Same plan as the CLI entry points.
+            await _dispose_components(components)
 
 
 def main_mcp(argv: list[str] | None = None) -> None:

@@ -32,9 +32,12 @@
 transport 启动(供 Claude Code / 其他 MCP 客户端本地挂载)。
 
 **权限边界**:MCP 通道默认不带用户身份——stdio 本地挂载视作本机可信
-(等价 admin);HTTP transport 由 ``main.py`` 把 ``--token`` 解析为真实
-用户 token 后传入 ``identity``,本模块据此做数据源 grant 校验。identity
-缺失时保持旧行为(不设限)。
+(等价 admin)。HTTP transport 上 ``Bearer`` 中间件
+(``trove/mcp/http_auth.py``)每请求把 token 解析成真实用户,写进
+``request.state.mcp_identity``;本模块的工具据此做数据源 grant 校验并
+把会话挂在该用户名下。**每次请求重新读身份**(同一进程可服务多个用户);
+HTTP 请求若没有带身份,在 ``require_request_identity=True`` 时直接报错,
+绝不回落到进程启动时的身份。identity 缺失(stdio)时保持旧行为(不设限)。
 
 grant 判定的实现**不在本模块** —— 唯一实现在
 ``services/authz/policy.py``,与 ``api/deps.require_datasource`` 共用同一份。
@@ -47,6 +50,7 @@ from datetime import datetime
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
 
 from trove.services.action.models import PROPOSAL_STATUSES
 from trove.services.authz.policy import (
@@ -67,12 +71,20 @@ _PULL_STATUS = "approved"
 
 
 def build_mcp_server(
-    components: dict, identity: dict[str, Any] | None = None,
+    components: dict,
+    identity: dict[str, Any] | None = None,
+    *,
+    require_request_identity: bool = False,
 ) -> FastMCP:
     """components(create_app_components 产物)→ 已注册工具的 FastMCP server。
 
-    ``identity`` — 调用者用户 dict(``{"id", "role", ...}``);None/role=admin
-    → 不设限(本地 stdio 等价 admin);非 admin → 数据源按 grants 过滤。
+    ``identity`` — 启动时的调用者用户 dict(``{"id", "role", ...}``);
+    None/role=admin → 不设限(本地 stdio 等价 admin)。HTTP transport 上它
+    只是**无请求上下文**时的回退值(测试直调 / stdio)。
+
+    ``require_request_identity`` — HTTP 请求经过鉴权中间件却读不到身份时,
+    直接报错而不是回退到 ``identity``。带 ``--token`` 启动的 HTTP 通道必须
+    为 True:否则中间件一旦被绕过,所有请求都会以启动时那个用户的名义执行。
     """
     session_manager = components["session_manager"]
     connector_registry = components["connector_registry"]
@@ -93,28 +105,53 @@ def build_mcp_server(
             identity.get("id"),
         )
 
-    # 进程内会话注册表:session_id → Session(ask_data 多轮复用)
-    sessions: dict[str, Any] = {}
+    def _call_identity() -> dict[str, Any] | None:
+        """本次调用的身份:HTTP 上下文优先,否则回退到构建时的 ``identity``。
 
-    async def _get_session(session_id: str | None) -> tuple[str, Any]:
-        """返回 (effective_session_id, Session)。传入的 id 已注册 → 复用。
+        - stdio / 测试直调:没有 HTTP 请求上下文 → 回退(旧行为)。
+        - HTTP:读中间件写进 ``request.state.mcp_identity`` 的用户。
+        - HTTP 但读不到身份:``require_request_identity`` 时抛错(fail
+          closed)。回落到启动身份会让一个未被鉴权的请求以别人的名义执行。
+        """
+        try:
+            request = get_http_request()
+        except RuntimeError:
+            return identity
+        current = getattr(request.state, "mcp_identity", None)
+        if current is not None:
+            return current
+        if require_request_identity:
+            raise RuntimeError(
+                "MCP request carries no authenticated identity; refusing to "
+                "fall back to the process-level identity"
+            )
+        return identity
 
-        **会话挂在调用者名下**(``identity["id"]``),不是默认的 ``"local"``:
+    # 进程内会话注册表:(owner, session_id) → Session(ask_data 多轮复用)。
+    # owner 是身份的一部分:两个用户传同一个 session_id 时不能互相复用会话
+    # (那会把对方的 user_id / 历史带进本次请求的执行期授权判定)。
+    sessions: dict[tuple[str, str], Any] = {}
+
+    async def _get_session(
+        session_id: str | None, *, owner: str,
+    ) -> tuple[str, Any]:
+        """返回 (effective_session_id, Session)。同 owner 的 id 已注册 → 复用。
+
+        **会话挂在调用者名下**(本次请求的身份 id),不是默认的 ``"local"``:
         执行前的授权门在 ``execute_sql`` 里读 ``state.principal``,而主体正是
         会话层从 ``session.user_id`` 现算的。挂错人,那道门判的就是另一个人 ——
         今天 A2 已经在工具边界上用真身份判过、看不出差别,但任何**将来**依赖
         身份的执行期判定(表级 / 行级 / 脱敏)会被静默绕过,且看不出绕过。
 
-        ``identity=None``(stdio 本地挂载)落到 ``LOCAL_SUBJECT`` —— 与
+        身份缺失(stdio 本地挂载)落到 ``LOCAL_SUBJECT`` —— 与
         :meth:`Policy.local_admin` 同口径,即本机可信身份。
         """
-        if session_id and session_id in sessions:
-            return session_id, sessions[session_id]
-        session = await session_manager.start_session(
-            user_id=str(identity["id"]) if identity else LOCAL_SUBJECT,
-        )
+        key = (owner, session_id) if session_id else None
+        if key is not None and key in sessions:
+            return session_id, sessions[key]
+        session = await session_manager.start_session(user_id=owner)
         sid = session_id or session.session_id
-        sessions[sid] = session
+        sessions[(owner, sid)] = session
         # 容量保护:超出后丢弃最旧(会话在 SessionStore 仍可 load_session 找回)
         while len(sessions) > _SESSION_CACHE_MAX:
             sessions.pop(next(iter(sessions)), None)
@@ -134,9 +171,10 @@ def build_mcp_server(
     policy = Policy(components.get("auth"))
 
     async def _principal() -> Principal:
-        if identity is None:
+        current = _call_identity()
+        if current is None:
             return Policy.local_admin()
-        return await policy.principal_for(identity)
+        return await policy.principal_for(current)
 
     async def _authorize_datasource(datasource: str | None) -> str | None:
         """解析并授权目标数据源;不允许 → None(调用方给友好拒绝)。"""
@@ -255,7 +293,8 @@ def build_mcp_server(
     actions = components.get("actions")
 
     def _actor() -> str:
-        return str(identity["id"]) if identity else LOCAL_SUBJECT
+        current = _call_identity()
+        return str(current["id"]) if current else LOCAL_SUBJECT
 
     async def _allowed(p: Any) -> bool:
         """提案的数据源对当前身份可见 —— 与 ask_data 走同一份策略判定。"""
@@ -361,7 +400,9 @@ def build_mcp_server(
         question = (question or "").strip()
         if not question:
             return {"error": "question is required"}
-        sid, session = await _get_session(session_id)
+        current = _call_identity()
+        owner = str(current["id"]) if current else LOCAL_SUBJECT
+        sid, session = await _get_session(session_id, owner=owner)
         target = await _authorize_datasource(datasource)
         if target is None:
             requested = (datasource or "").strip() or connector_registry.default_name
@@ -376,7 +417,7 @@ def build_mcp_server(
             state = await session_manager.ask(
                 session=session, question=question, datasource=target,
                 # 凭证上的 scopes 随请求走(identity=None 时无凭证层,不传)
-                scopes=(identity or {}).get("scopes"),
+                scopes=(current or {}).get("scopes"),
             )
         except Exception as e:
             return {"session_id": sid, "error": f"ask failed: {e}"}
