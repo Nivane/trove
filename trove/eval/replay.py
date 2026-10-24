@@ -472,6 +472,23 @@ def scorecard_metrics(score: dict[str, Any]) -> dict[str, float]:
 # ── 录制条目落地 ─────────────────────────────────────────────
 
 
+def path_of(final: Any) -> str:
+    """答案来源档位:refused 最先判(拒绝轮没有 SQL,残留标记不算数)。
+
+    offline_eval 与 evalset_run **共用这一份** —— 两处手抄的判定迟早漂移,
+    而 ``ex_by_path`` 只在每一行都有非空 ``path`` 时才输出。
+    """
+    if final is None:
+        return "llm"
+    if getattr(final, "refusal", None):
+        return "refused"
+    if getattr(final, "compile_partial", False):
+        return "partial"
+    if getattr(final, "compiled", False):
+        return "compiled"
+    return "llm"
+
+
 def format_entry(
     run_id: str, question: str, *,
     pred_sql: str = "", row_count: int | None = None,
@@ -482,13 +499,14 @@ def format_entry(
     gold_sql: str = "", kb_hits: list | None = None,
     qid: str = "",
     kb_rev: str = "", kb_files: dict | None = None,
+    path: str = "",
 ) -> dict[str, Any]:
     """把一次运行折叠成回放条目(录制侧最小契约)。
 
     ``kb_rev``/``kb_files``:本 run 的 KB 内容指纹(设计 2026-10-09
     §3.3);老调用点不传 → 空值(旧条目无键的缺席容忍由消费侧负责)。
     """
-    return {
+    entry = {
         "run_id": run_id, "question": question,
         "pred_sql": pred_sql, "row_count": row_count, "verdict": verdict,
         "retry_count": retry_count, "consensus": consensus,
@@ -500,6 +518,10 @@ def format_entry(
         "kb_hits": kb_hits or [], "qid": qid,
         "kb_rev": kb_rev, "kb_files": kb_files or {},
     }
+    # 老调用点不传 path → 形状逐字节不变(路径分桶是录制侧的新维度)。
+    if path:
+        entry["path"] = path
+    return entry
 
 
 def append_entry(path: str | Path, entry: dict[str, Any]) -> None:

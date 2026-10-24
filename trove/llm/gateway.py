@@ -671,7 +671,25 @@ def _record_local_call(
     per question and surfaced in the run summary)."""
     run_id = (metadata or {}).get("run_id", "")
     if not run_id:
+        # Most pipeline call sites do not stamp metadata (only two did when
+        # run records landed). The session sets ``run_id_var`` for the whole
+        # run, so the same accumulator finally accounts those calls too.
+        try:
+            from trove.core.request_id import run_id_var
+            run_id = run_id_var.get() or ""
+        except Exception:
+            run_id = ""
+    if not run_id:
         return
+    try:
+        from trove.tracing.run_record import capture_llm
+        capture_llm(
+            run_id, node=(metadata or {}).get("node", ""), model=model,
+            messages=messages, output=output, reasoning=reasoning,
+            usage=usage, elapsed_ms=elapsed_ms, temperature=temperature,
+        )
+    except Exception:
+        pass
     try:
         from trove.llm.token_accounting import add
         add(run_id, usage or {})
@@ -805,6 +823,22 @@ def _record_failed_generation(
     The error text lands in both status_message and output so the failure
     reason is traceable from the UI and the trace API.
     """
+    run_id = (metadata or {}).get("run_id", "")
+    if not run_id:
+        try:
+            from trove.core.request_id import run_id_var
+            run_id = run_id_var.get() or ""
+        except Exception:
+            run_id = ""
+    if run_id:
+        try:
+            from trove.tracing.run_record import capture_llm_error
+            capture_llm_error(
+                run_id, node=(metadata or {}).get("node", ""), model=model,
+                messages=messages, error=str(error),
+            )
+        except Exception:
+            pass
     client = get_client()
     if client is None:
         return

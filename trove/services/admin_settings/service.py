@@ -47,11 +47,15 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     "app.conclusion": ("conclusion", "bool", None),
     "app.result_cache": ("result_cache", "bool", None),
     "app.decompose_llm_judge": ("decompose_llm_judge", "bool", None),
+    # 请求侧完整记录(默认开;false = 不捕获、不建库,下一问生效)
+    "observability.run_records": ("tracing.run_records", "bool", None),
     # Retention
     "retention.max_sessions_per_user": ("retention.max_sessions_per_user", "int", 0),
     "retention.active_grace_min": ("retention.active_grace_min", "int", 0),
     "retention.max_checkpoints_per_thread": ("retention.max_checkpoints_per_thread", "int", 0),
     "retention.sweep_interval_hours": ("retention.sweep_interval_hours", "int", 0),
+    # 请求记录保留天数;0 = 永久(证据不因默认值悄悄消失)
+    "retention.run_record_retention_days": ("retention.run_record_retention_days", "int", 0),
     # Results (范例:答案表格展示行数 / 查询结果行数上限)
     "app.result_display_rows": ("result_display_rows", "range", (1, 500)),
     "app.result_max_rows": ("result_max_rows", "range", (1, 50000)),

@@ -548,6 +548,63 @@ async def list_audit(
     return {"audit": entries, "total": total}
 
 
+# ── 请求记录(模型看到什么 / 系统做了什么) ─────────────────
+
+#: 默认读取面**不含工具原文**:它可能含业务数据/内部错误文本,只给
+#: 「名称/参数/耗时/错误」这些结构化字段。原文要显式 ``include_raw=true``,
+#: 且那次读取写审计 —— 看原文是一个可追溯的行为,不是一次静默浏览。
+_RUN_RECORD_RAW_ACTION = "admin.run_record.read_raw"
+
+
+def _strip_raw(record: dict[str, Any]) -> dict[str, Any]:
+    events = []
+    for event in record.get("events") or []:
+        if event.get("kind") != "tool":
+            events.append(event)
+            continue
+        payload = dict(event.get("payload") or {})
+        payload.pop("observation", None)
+        events.append({**event, "payload": payload})
+    return {**record, "events": events}
+
+
+@router.get("/admin/runs/{run_id}/record")
+async def get_run_record(
+    run_id: str,
+    request: Request,
+    include_raw: bool = Query(default=False),
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """One durable request record: header, finish projection, and events.
+
+    Missing store → 503 (feature not assembled); unknown run → **drain the
+    recorder once and retry** before 404 — a just-finished answer can still
+    have its finish flush in flight, and a false 404 immediately after the
+    answer is exactly when an operator looks.
+    """
+    store = getattr(request.app.state, "run_records", None)
+    if store is None:
+        raise HTTPException(
+            status_code=503, detail="run records are not configured")
+    record = await store.get(run_id)
+    if record is None:
+        try:
+            from trove.tracing.run_record import drain_run_records
+            await drain_run_records()
+        except Exception:
+            pass
+        record = await store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"run record not found: {run_id}")
+    if not include_raw:
+        return _strip_raw(record)
+    try:
+        await _audit(request, _RUN_RECORD_RAW_ACTION, admin, 200, {"run_id": run_id})
+    except Exception as e:  # 审计失败不阻断读取,但留痕在服务日志
+        logger.warning("run-record raw-read audit failed: %s", e)
+    return record
+
+
 # ── 拒绝频率报表(query.refused 的只读投影) ────────────────
 
 #: 关系未声明类的 compile_miss(文案与名单的唯一权威 = workflow/miss_copy.py,

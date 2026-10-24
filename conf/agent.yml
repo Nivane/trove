@@ -123,6 +123,9 @@ agent:
   observability:
     tracing:
       enabled: true
+      # 请求侧完整记录(模型输入/输出、工具原文、最终投影)落 run_records.sqlite;
+      # 与管理端只读端点配套。false = 不捕获、不建库(下一问生效,无需重启)。
+      run_records: true
   # 会话保留策略(配额清理):每用户会话数超限时删最旧。
   # 0 = 关闭对应机制;periodic 需 schedule daemon 或 serve 长驻才生效。
   # serve 与 daemon 建议单实例运行(双进程并发 sweep 由 SQLite 锁+幂等兜底,最坏多删一次)。
@@ -131,6 +134,8 @@ agent:
     active_grace_min: 10
     max_checkpoints_per_thread: 50
     sweep_interval_hours: 24
+    # 请求记录保留天数;0 = 永久保留。挂同一 periodic sweep,按 started_at 清理。
+    run_record_retention_days: 30
   # 定时任务调度 tick 轮询间隔(秒);serve 内置后台 tick 执行到期 job。
   # <=0 = 关闭内置调度(此时需另起 `trove-cli schedule --daemon`)。注意:
   # 内置 tick 与 CLI daemon 二选一,别同时跑(会双跑到期 job)。

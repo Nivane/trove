@@ -14,7 +14,7 @@ import contextlib
 import re
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -95,6 +95,34 @@ async def _purge_verdicts(app: FastAPI) -> None:
             logger.info("[decision] verdict retention: purged %d row(s)", purged)
     except Exception as e:
         logger.warning("[decision] verdict retention failed: %s", e)
+
+
+async def _purge_run_records(app: FastAPI) -> None:
+    """Request-record retention — off at ``run_record_retention_days <= 0``.
+
+    ``has_data()`` first: a deployment that turned recording off must not
+    have the sweep *create* an empty database just to discover there is
+    nothing to purge. The switch does **not** gate cleanup — old evidence
+    still ages out on its own clock after capture stops.
+    """
+    store = getattr(app.state, "run_records", None)
+    days = getattr(getattr(app.state, "config", None), "retention", None)
+    days = getattr(days, "run_record_retention_days", 0)
+    if store is None or not isinstance(days, int) or days <= 0:
+        return
+    try:
+        if not await store.has_data():
+            return
+        # 写入侧用 UTC(store.utc_now),cutoff 必须同钟 —— 本地时区会把
+        # 保留窗口整体平移一个偏移量。
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(
+            timespec="seconds")
+        purged = await store.purge_before(cutoff)
+        if purged.get("runs") or purged.get("events"):
+            logger.info("[run_records] retention: purged %s run(s) / %s event(s)",
+                        purged.get("runs", 0), purged.get("events", 0))
+    except Exception as e:
+        logger.warning("[run_records] retention failed: %s", e)
 
 
 async def _expire_actions(app: FastAPI) -> None:
@@ -249,6 +277,7 @@ async def _periodic_sweep(app: FastAPI) -> None:
                 logger.warning("[memory] lifecycle sweep failed: %s", e)
         await _purge_auth(app)
         await _purge_verdicts(app)
+        await _purge_run_records(app)
         await _expire_actions(app)
         await _measure_outcomes(app)
 

@@ -490,6 +490,24 @@ async def create_app_components(
     # 两者分家会出现"历史里有判定、日程里没有那次运行"的悬空引用。
     verdicts = VerdictStore(config.home)
 
+    # 请求侧完整记录(②):「模型看到什么、系统做了什么」的持久副本。
+    # 构造不建库(has_data/purge 同样不建);开关是 callable,现读活 config ——
+    # 管理端切到 false 后**下一问**停止捕获,无需重启。证据层故障绝不阻断
+    # 启动:schema 在第一次写入时才建,这里只可能因 backend 解析失败出错。
+    from trove.storage.run_record_store import RunRecordStore
+    from trove.tracing.run_record import configure_run_records
+
+    try:
+        run_records = RunRecordStore(config.home)
+        configure_run_records(
+            run_records, enabled=lambda: bool(config.tracing.run_records),
+        )
+    except Exception as e:
+        logger.warning(
+            "Run records unavailable (%s): %s", type(e).__name__, e)
+        run_records = None
+        configure_run_records(None)
+
     # 决策规则的执行预算与交互管线同源(budget.timeout_ms):定时任务没有
     # 人在等,无界查询会把 job 的 schedule 永远吊住。具名变量 + 进 components,
     # 是因为装配点**有两处**(serve 的 lifespan 与 CLI `schedule --daemon`)——
@@ -590,6 +608,7 @@ async def create_app_components(
         "decision": decision,
         "scans": scans,
         "verdicts": verdicts,
+        "run_records": run_records,
         "actions": actions,
         "subscriptions": subscriptions,
         "action_templates": action_templates,
@@ -752,6 +771,9 @@ DISPOSE_PLAN: tuple[tuple[str, str], ...] = (
     ("session_store", "dispose"),
     ("settings", "dispose"),
     ("auth", "dispose"),
+    # 请求记录最后关:查询装配的 capture/flush 可能在任一组件收尾期间仍在
+    # 落盘;``_dispose_components`` 先 drain 再走到这里。
+    ("run_records", "dispose"),
 )
 
 
@@ -773,6 +795,13 @@ async def _dispose_components(components: dict) -> None:
     ``--print`` path printed its payload and then hung. Each disposal is
     isolated — a failing store must not leave the rest holding the process.
     """
+    # 请求记录先排空(有界、不抛):finish 的 flush 可能还在飞。排在所有
+    # dispose 之前 —— 记录库自己的连接在循环最后才关。
+    try:
+        from trove.tracing.run_record import drain_run_records
+        await drain_run_records()
+    except Exception as e:
+        logger.warning("Run-record drain failed: %s", e)
     for name, method in DISPOSE_PLAN:
         fn = _resolve_method(components.get(name), method)
         if fn is None:

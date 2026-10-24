@@ -265,3 +265,47 @@ class TestCliModelPrecedence:
         config = AgentConfig(target="openai/gpt-4o")
         apply_runtime_overrides(config, SimpleNamespace(model=None), None)
         assert config.target == "openai/gpt-4o"
+
+
+class TestRunRecordSettings:
+    """请求记录的两个运行时开关:默认开 / 30 天,0 = 永久。"""
+
+    def test_defaults(self):
+        config = AgentConfig()
+        assert config.tracing.run_records is True
+        assert config.retention.run_record_retention_days == 30
+
+    def test_validate_coerces(self):
+        coerced, errors = validate_values({
+            "observability.run_records": "false",
+            "retention.run_record_retention_days": "0",
+        })
+        assert errors == []
+        assert coerced["observability.run_records"] is False
+        assert coerced["retention.run_record_retention_days"] == 0
+
+    def test_negative_retention_is_rejected(self):
+        _, errors = validate_values({"retention.run_record_retention_days": "-1"})
+        assert errors == ["retention.run_record_retention_days must be >= 0"]
+
+    def test_apply_and_read_back(self):
+        config = AgentConfig()
+        apply_overrides(config, {
+            "observability.run_records": False,
+            "retention.run_record_retention_days": 0,
+        })
+        assert config.tracing.run_records is False
+        assert config.retention.run_record_retention_days == 0
+        values = effective_values(config)
+        assert values["observability.run_records"] is False
+        assert values["retention.run_record_retention_days"] == 0
+
+    def test_recorder_switch_reads_live_config(self):
+        """管理端改值 → 下一问生效:recorder 每次 capture 现读 callable。"""
+        from trove.tracing.run_record import RunRecorder
+
+        config = AgentConfig()
+        rec = RunRecorder(object(), enabled=lambda: config.tracing.run_records)
+        assert rec.enabled() is True
+        apply_overrides(config, {"observability.run_records": False})
+        assert rec.enabled() is False

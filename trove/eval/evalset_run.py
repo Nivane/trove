@@ -33,7 +33,7 @@ from typing import Any
 
 from trove.eval.gate import metrics_from_entries
 from trove.eval.graph_runner import build_eval_graph, run_question
-from trove.eval.replay import JUDGED_VERDICTS, format_entry
+from trove.eval.replay import JUDGED_VERDICTS, format_entry, path_of
 from trove.eval.text import classify_pred_error, normalize_rows
 from trove.services.evalset.models import (
     EvalsetDoc,
@@ -291,19 +291,6 @@ def _pop_tokens(run_id: str) -> dict[str, int]:
         return {}
 
 
-def _path_of(final: Any) -> str:
-    """答案来源档位:refused 最先判(拒绝轮没有 SQL,残留标记不算数)。"""
-    if final is None:
-        return "llm"
-    if getattr(final, "refusal", None):
-        return "refused"
-    if getattr(final, "compile_partial", False):
-        return "partial"
-    if getattr(final, "compiled", False):
-        return "compiled"
-    return "llm"
-
-
 def _leakage_suspect(kb_hits: list[Any]) -> bool:
     """``kb_hits`` 里出现 example/template = 疑似答案泄漏(运行时第二道防线)。"""
     for hit in kb_hits or []:
@@ -419,6 +406,7 @@ async def _judge_one(
         qid=item.qid,
         kb_rev=snapshot.get("rev", ""),
         kb_files=snapshot.get("files"),
+        path=path_of(final),
     )
     # 参考 SQL 放 reference_sql,不放 gold_sql:避免 gate 的 gold_match
     # (SQL 文本结构比对)被读成准确率。
@@ -430,7 +418,6 @@ async def _judge_one(
         "reference_sql": item.reference_sql,
         "evalset_rev": evalset_fingerprint,
         "match": item.match,
-        "path": _path_of(final),
         "compile_meta": (getattr(final, "compile_meta", {}) or {})
         if final is not None else {},
         "selection": (getattr(final, "selection", {}) or {})

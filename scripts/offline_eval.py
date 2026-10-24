@@ -113,13 +113,24 @@ def _load_gold(path: str | None) -> dict[str, str]:
 
 async def cmd_record(args) -> int:
     from trove.core.config import ConfigLoader
-    from trove.eval.replay import append_entry, format_entry
+    from trove.eval.replay import append_entry, format_entry, path_of
     from trove.llm.gateway import LLMGateway
     from trove.llm.token_accounting import pop as pop_tokens
     from trove.services.authz import Policy, principal_to_wire
     from trove.services.datasource.catalog import CatalogService
     from trove.services.datasource.registry import ConnectorRegistry
     from trove.services.kb.service import KbService
+    from trove.storage.run_record_store import RunRecordStore
+    from trove.tracing.assembly import build_report
+    from trove.tracing.run_record import (
+        capture_error,
+        capture_finish,
+        capture_kb_rev,
+        capture_run_start,
+        configure_run_records,
+        drain_run_records,
+        reset_run_records,
+    )
     from trove.tracing.runlog import create_tracer
     from trove.workflow.graphs import GraphServices, build_graphs
     from trove.workflow.state import WorkflowState
@@ -160,53 +171,74 @@ async def cmd_record(args) -> int:
     )
     graph = build_graphs(services)["reflection"]
 
-    for i, question in enumerate(questions, 1):
-        run_id = f"replay-{i}-{int(time.time())}"
-        state = WorkflowState(
-            session_id=f"replay-{i}", question=question, run_id=run_id,
-            lang=config.language,
-            # 主体:直驱图绕过 SessionManager 的主体现算,authz A1 缺主体即
-            # 拒绝 —— 与其 no-auth 分支同口径兜本机可信身份(同 eval_bird)。
-            principal=principal_to_wire(Policy.local_admin()),
-        )
-        tracer = create_tracer(run_id, verbose=False)
-        tracer.start_run({"question": question, "gold_sql": gold.get(question, "")})
-        t0 = time.monotonic()
-        try:
-            final = await graph.ainvoke(state)
-        except Exception as e:
-            tracer.finish({"verdict": "CRASH", "error": str(e)[:120]})
-            append_entry(args.output, format_entry(
-                run_id, question, verdict="ERROR", gold_sql=gold.get(question, ""),
+    # 请求记录(证据层):离线录制直驱图、不经过 SessionManager,所以在这里
+    # 补上同一份 recorder 的起止捕获 —— 录制产物因此也能从 run record 复核。
+    # 构造不建库;真正落盘发生在首次 flush,开关在这里显式开启(录制即证据)。
+    run_records = RunRecordStore(config.home)
+    configure_run_records(run_records, enabled=True)
+    try:
+        for i, question in enumerate(questions, 1):
+            run_id = f"replay-{i}-{int(time.time())}"
+            state = WorkflowState(
+                session_id=f"replay-{i}", question=question, run_id=run_id,
+                lang=config.language,
+                # 主体:直驱图绕过 SessionManager 的主体现算,authz A1 缺主体即
+                # 拒绝 —— 与其 no-auth 分支同口径兜本机可信身份(同 eval_bird)。
+                principal=principal_to_wire(Policy.local_admin()),
+            )
+            capture_run_start(
+                run_id, session_id=state.session_id, question=question,
+                workflow="offline_eval", datasource=registry.default_name or "",
+                lang=config.language,
+            )
+            capture_kb_rev(run_id, kb_snap)
+            tracer = create_tracer(run_id, verbose=False)
+            tracer.start_run({"question": question, "gold_sql": gold.get(question, "")})
+            t0 = time.monotonic()
+            final = None
+            try:
+                final = await graph.ainvoke(state)
+            except Exception as e:
+                capture_error(run_id, error=str(e)[:500])
+                tracer.finish({"verdict": "CRASH", "error": str(e)[:120]})
+                append_entry(args.output, format_entry(
+                    run_id, question, verdict="ERROR", gold_sql=gold.get(question, ""),
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    path=path_of(final),
+                    **kb_kw,
+                ))
+                print(f"  [{i}/{len(questions)}] CRASH: {e}", flush=True)
+                continue
+            capture_finish(run_id, final=final, assembly=build_report(final))
+            tracer.finish({"verdict": final.verdict})
+            tokens = pop_tokens(run_id) or {}
+            entry = format_entry(
+                run_id, question,
+                pred_sql=final.sql or "",
+                row_count=final.row_count,
+                verdict=final.verdict,
+                retry_count=final.retry_count,
+                consensus=final.consensus,
+                confidence=final.confidence,
+                validation_hits=final.validation_hits or [],
+                rollback_target=final.rollback_target or "",
+                fix_mode=final.fix_mode or "",
+                n_candidates=len(final.candidates or []),
+                tokens=tokens,
                 elapsed_ms=int((time.monotonic() - t0) * 1000),
+                gold_sql=gold.get(question, ""),
+                kb_hits=final.kb_hits or [],
+                qid=qids.get(question, ""),
+                path=path_of(final),
                 **kb_kw,
-            ))
-            print(f"  [{i}/{len(questions)}] CRASH: {e}", flush=True)
-            continue
-        tracer.finish({"verdict": final.verdict})
-        tokens = pop_tokens(run_id) or {}
-        entry = format_entry(
-            run_id, question,
-            pred_sql=final.sql or "",
-            row_count=final.row_count,
-            verdict=final.verdict,
-            retry_count=final.retry_count,
-            consensus=final.consensus,
-            confidence=final.confidence,
-            validation_hits=final.validation_hits or [],
-            rollback_target=final.rollback_target or "",
-            fix_mode=final.fix_mode or "",
-            n_candidates=len(final.candidates or []),
-            tokens=tokens,
-            elapsed_ms=int((time.monotonic() - t0) * 1000),
-            gold_sql=gold.get(question, ""),
-            kb_hits=final.kb_hits or [],
-            qid=qids.get(question, ""),
-            **kb_kw,
-        )
-        append_entry(args.output, entry)
-        print(f"  [{i}/{len(questions)}] {entry['verdict']} "
-              f"retry={entry['retry_count']} tok={entry['tokens'].get('total', 0)}", flush=True)
+            )
+            append_entry(args.output, entry)
+            print(f"  [{i}/{len(questions)}] {entry['verdict']} "
+                  f"retry={entry['retry_count']} tok={entry['tokens'].get('total', 0)}", flush=True)
+    finally:
+        await drain_run_records()
+        await run_records.dispose()
+        reset_run_records()
     print("录制完成。离线打分: python scripts/offline_eval.py replay", flush=True)
     return 0
 
