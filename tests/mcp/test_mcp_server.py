@@ -6,65 +6,14 @@ import asyncio
 
 import pytest
 
-from trove.core.config import AgentConfig
-from trove.services.kb.service import KbService
-from trove.storage.session_store import SessionStore
-
-
-@pytest.fixture
-async def mcp_components(tmp_path, sqlite_registry):
-    """真实 components(可答 students 的 graph + 可查状态的 KB)。"""
-    from tests.conftest import ScriptedGateway, make_test_semantic_provider
-
-    from trove.workflow.graphs import GraphServices, build_graphs
-
-    kb = KbService(tmp_path / "kb")
-    # 用与 fixture 相同的确定性语义模型写入 kb(供 kb_status/list_datasources)
-    await make_test_semantic_provider(sqlite_registry, tmp_path / "kb")
-
-    config = AgentConfig(home=str(tmp_path / "home"), target="mock/model")
-    llm = ScriptedGateway([
-        "query", "```sql\nSELECT name FROM students;\n```", "OK",
-        "query", "```sql\nSELECT name FROM students;\n```", "OK",
-    ])
-    services = GraphServices(
-        llm=llm,
-        connectors=sqlite_registry,
-        semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
-        kb=kb,
-        config=config,
-    )
-    from trove.agent.session import SessionManager
-
-    manager = SessionManager(
-        config=config,
-        session_store=SessionStore(home_dir=str(tmp_path / "home")),
-        graphs=build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False),
-        llm_gateway=llm,
-        kb=kb,
-        connectors=sqlite_registry,
-    )
-    try:
-        yield {
-            "session_manager": manager,
-            "connector_registry": sqlite_registry,
-            "kb": kb,
-            "config": config,
-        }
-    finally:
-        await manager.dispose()
-
-
-async def _invoke(server, name: str, **args):
-    """直接调用工具底层函数(fastmcp call_tool 需要 request context,测试用 fn 直调)。
-
-    工具函数可能 async(ask_data)或 sync(kb_status/list_datasources)。
-    """
-    tool = await server.get_tool(name)
-    result = tool.fn(**args)
-    if asyncio.iscoroutine(result):
-        return await result
-    return result
+# 共享 fixture 在 conftest.py;替身与调用助手在 helpers.py(身份隔离用例共用)。
+from tests.mcp.helpers import (
+    FakeAuth as _FakeAuth,
+    TokenAuth as _TokenAuth,
+    invoke as _invoke,
+    server_with_identity as _server_with_identity,
+    wire_auth as _wire_auth,
+)
 
 
 async def test_list_tools(mcp_components):
@@ -278,42 +227,6 @@ async def test_ask_data_prompt(mcp_components):
 
 # ── 权限:非 admin identity 按数据源 grants 过滤 ──────────────────
 
-class _FakeAuth:
-    """最小 auth 替身:grants 表 + 用户表(`store` 走同一个对象)。
-
-    用户表可以留空 —— 那就等价于「这个人查不到」,会话层据此判定**没有主体**。
-    """
-
-    def __init__(self, grants_by_user: dict, users: dict | None = None,
-                 topic_grants_by_user: dict | None = None):
-        self._grants = grants_by_user
-        self._users = users or {}
-        self._topic_grants = topic_grants_by_user or {}
-        self.store = self
-
-    async def get_datasources(self, user_id):
-        return list(self._grants.get(user_id, []))
-
-    async def get_topic_grants(self, user_id):
-        raw = self._topic_grants.get(user_id)
-        return None if raw is None else {k: list(v) for k, v in raw.items()}
-
-    async def get_row_grants(self, user_id):
-        return None
-
-    async def get_column_denials(self, user_id):
-        return None
-
-    async def get_user_by_id(self, uid):
-        return self._users.get(uid)
-
-
-def _server_with_identity(components, auth, identity):
-    from trove.mcp.server import build_mcp_server
-
-    return build_mcp_server({**components, "auth": auth}, identity=identity)
-
-
 async def test_non_admin_with_grants_can_query_granted_only(mcp_components):
     """非 admin 身份:ask_data 只能查 grants 允许的数据源。"""
     auth = _FakeAuth({1: ["test_db"]})
@@ -418,11 +331,6 @@ async def test_identity_without_auth_denies_everything(mcp_components):
 
 # ── 通道鉴权:trove mcp --token 解析(fail-closed)────────────────
 
-class _TokenAuth:
-    async def resolve_token(self, raw):
-        return {"id": 1, "role": "admin"} if raw == "valid" else None
-
-
 async def test_mcp_identity_for():
     from trove.main import _mcp_identity_for
 
@@ -450,12 +358,6 @@ async def test_mcp_identity_for():
 # 于是 MCP 这条链路有一个容易漏的地方:MCP 自己有一个 ``identity``,但会话是
 # ``start_session()`` 造的 —— 不把身份传下去,会话就挂在 ``"local"`` 这个
 # 「本机可信」哨兵上,执行层那道门判的是**另一个人**。
-
-
-def _wire_auth(components, auth):
-    """把 auth 接到 session_manager 上 —— 生产里 main.py 就是这么接的。"""
-    components["session_manager"]._auth = auth
-    return auth
 
 
 async def test_ask_data_session_is_opened_for_the_caller(mcp_components):
