@@ -7,7 +7,7 @@ I/O 全部 ``asyncio.to_thread`` 包住,事件循环不被阻塞。asyncio 的�
 
 * 每条查询就是一个**服务端 job**(``client.query(sql)`` 返回 ``QueryJob``,
   提交的那一刻我们手里就有它);``job.cancel()`` 是官方 API(``jobs.cancel``
-  REST)。**不需要**雪花那种"自己注入 requestId 再按它对号入座"的机制 ——
+  REST)。**不需要**雪花那种"先拿到驱动给的查询 id、再按 id abort"的机制 ——
   job 对象本身就是双方都认得的名字,也不存在"查询在飞时 id 还拿不到"。
 
 与雪花适配器的三处结构差异,都是同一个 job 模型带来的:

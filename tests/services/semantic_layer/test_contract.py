@@ -143,22 +143,32 @@ class TestWireTransport:
         assert contract_from_wire(restored["contract"]) == contract
 
     def test_serde_would_destroy_the_native_extractor_shape(self):
-        """反证:抽取器的原生形状(frozenset 套元组)过 serde 就没了。
+        """反证:抽取器的原生形状(frozenset 套元组)过 serde 就变了。
 
         这不是"契约必须绕开"的教条,是那个静默丢失的**可执行证据** ——
-        哪天 langgraph 修好了,这条会红,那时才可以把 wire 转换删掉。
+        哪天 langgraph 能原样还原,这条会红,那时才可以把 wire 转换删掉。
+
+        4.3.0 的现状:不再静默解成 ``None``,退化成 ``list[list]`` 并留
+        WARNING("Could not reconstruct builtins.frozenset ... returning its
+        serialized data instead")。**类型仍然变了** —— frozenset 与 tuple
+        都成了可变 list,读端拿不到原生形状 —— wire 转换依然必要。
         """
         from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
         serde = JsonPlusSerializer()
         native = frozenset({("account", "account_id"), ("loan", "account_id")})
-        assert serde.loads_typed(serde.dumps_typed(native)) is None
+        restored = serde.loads_typed(serde.dumps_typed(native))
+        assert restored != native
+        assert not isinstance(restored, frozenset)
+        # 顺序由 frozenset 迭代决定(字符串哈希随机化),不比字面顺序。
+        assert sorted(restored) == [["account", "account_id"], ["loan", "account_id"]]
 
     def test_wire_holds_only_json_scalars_and_containers(self):
         """形状守卫:wire 里不许出现 tuple/set/frozenset/自定义类型。
 
-        tuple 会被序列化成 list(类型变了)、set/frozenset 会被清空、
-        自定义类型会被严格模式拦截 —— 三者都别进 state。
+        tuple 会被序列化成 list(类型变了)、set/frozenset 会退化成可变列表
+        (4.3.0 起带 WARNING,更早的 4.2 静默解成 None)、自定义类型会被严格
+        模式拦截 —— 三者都别进 state。
         """
         wire = contract_to_wire(self._sample())
 

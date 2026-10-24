@@ -5,12 +5,13 @@ python 没有 asyncio 变体),五个方法全靠 ``asyncio.to_thread`` 包住。
 第一件要钉的就是那条包装真的成立 —— 工作线程卡住时事件循环必须还能推进;
 否则"取消只是放弃等待"这句话之下,整个进程会陪着那条查询一起卡住。
 
-第二件钉的是终止(§7.3 / I4):abort 按**我们注入的 requestId** 打。为什么
-不用 ``cursor.sfqid`` —— 同步 ``execute`` 的 sfqid 要等 ``cmd_query`` 返回才被
-驱动赋值(4.8.0 源码 cursor.py:1039 实测),查询在飞时它是 ``None``:拿不到的
-就是拿不到。所以假连接**不提供 sfqid**("想拿也拿不到"与真驱动同一形状),
-``_cancel_query(sql, request_id)`` 才是它认得的那条路(驱动自己的超时定时器与
-SIGINT 处理器就走的这一条)。
+第二件钉的是终止(§7.3 / I4):执行路径走 5.x 的**异步查询生命周期** ——
+``execute_async`` 立即返回服务端查询 id,``get_results_from_sfqid`` 等结果,
+``fetchall`` 取数,abort 打 ``cursor.abort_query(qid)``。为什么不用同步
+``execute``:它的 sfqid 要等结果返回才被驱动赋值,查询在飞时是 ``None`` ——
+拿不到的就是拿不到,没有靶子就 abort 不动。假游标因此按真 5.x 的这个形状说话
+(提交即给 id,等待发生在取结果那一步)。4.x 的
+``conn._cancel_query(sql, requestId)`` 在 5.x 已不存在。
 
 **服务端语义本地验不了** —— abort 是否真让查询停下、STATEMENT_TIMEOUT 是否真
 生效,都只有 env-gated 的 ``SNOWFLAKE_TEST_URL`` 集成用例(CI 不跑),文档里
@@ -24,7 +25,6 @@ import logging
 import os
 import sys
 import threading
-import uuid
 
 import pytest
 
@@ -46,11 +46,13 @@ DEFAULT_CONFIG = {
 
 
 class FakeCursor:
-    """真驱动游标的**我们用到的**那一面:execute / fetchall / description / close。
+    """真驱动游标的**我们用到的**那一面(5.x 形状)。
 
-    ``execute`` 的 ``_statement_params`` 是**位置之后的关键字**——真驱动签名里
-    它叫这个名字(cursor.py:667 实测),requestId 就从这里进。description 照
-    真形状给 7 元组的前两列足够(适配器只取 ``d[0]``)。
+    * 内省走同步 ``execute``(与真驱动同:两条 information_schema 查询);
+    * 执行走异步生命周期:``execute_async`` **立即**给服务端查询 id,
+      ``get_results_from_sfqid`` 等结果(假连接在这里模拟等待/失败),
+      ``fetchall`` 取数。
+    description 照真形状给 7 元组的前两列足够(适配器只取 ``d[0]``)。
     """
 
     def __init__(self, conn: "FakeConn"):
@@ -59,11 +61,8 @@ class FakeCursor:
         self.description = None
         self._rows: list = []
 
-    def execute(self, sql, _statement_params=None):
-        self.conn.statements.append((sql, _statement_params))
-        self.conn.started.set()
-        if self.conn.blocking is not None:
-            self.conn.blocking.wait(timeout=10)
+    def _settle(self):
+        """结果就绪(或失败)—— 真驱动在等待结束之后才走到这里。"""
         if self.conn.error is not None:
             if self.conn.die_on_error:
                 self.conn.closed = True   # 连接"当场死掉"
@@ -74,32 +73,57 @@ class FakeCursor:
             self.description = self.conn.default_description
             self._rows = list(self.conn.default_rows)
 
+    def execute(self, sql):
+        self.conn.statements.append(sql)
+        self._settle()
+
+    def execute_async(self, sql):
+        self.conn.statements.append(sql)
+        qid = f"qid-{len(self.conn.statements)}"
+        self.conn.query_ids.append(qid)
+        self.conn.started.set()
+        return {"queryId": qid}
+
+    def get_results_from_sfqid(self, sfqid):
+        self.conn.retrieved.append(sfqid)
+        if self.conn.blocking is not None:
+            self.conn.blocking.wait(timeout=10)
+        self._settle()
+
     def fetchall(self):
         return list(self._rows)
+
+    def abort_query(self, qid):
+        self.conn.aborts.append(qid)
+        if self.conn.abort_error is not None:
+            raise self.conn.abort_error
+        return bool(self.conn.abort_result)
 
     def close(self):
         self.closed = True
 
 
 class FakeConn:
-    """连接受控的假雪花连接。刻意**没有** ``sfqid``(见模块 docstring)。"""
+    """连接受控的假雪花连接(5.x:提交即给服务端查询 id,等待在取结果那一步)。"""
 
     def __init__(self, *, scripted=None, default_description=None,
                  default_rows=None, error=None, die_on_error=False,
-                 blocking=None, abort_result=None, abort_error=None):
-        # scripted: [(description, rows)] 每次 execute 弹一条;弹完用 default
+                 blocking=None, abort_result=True, abort_error=None):
+        # scripted: [(description, rows)] 每次执行弹一条;弹完用 default
         self.scripted = list(scripted or [])
         self.default_description = default_description
         self.default_rows = list(default_rows or [])
         self.error = error
         self.die_on_error = die_on_error
         self.blocking = blocking
-        self.abort_result = {"success": True} if abort_result is None else abort_result
+        self.abort_result = bool(abort_result)
         self.abort_error = abort_error
 
-        self.statements: list[tuple] = []   # (sql, _statement_params)
+        self.statements: list[str] = []     # 发出去的语句(按顺序)
+        self.query_ids: list[str] = []      # execute_async 返回的服务端查询 id
+        self.retrieved: list[str] = []      # get_results_from_sfqid 的实参
         self.started = threading.Event()
-        self.aborts: list[tuple] = []       # (sql, request_id)
+        self.aborts: list[str] = []         # abort_query 的实参(服务端查询 id)
         self.close_args: list = []          # close() 的 retry 实参
         self.closed = False
         self.expired = False
@@ -114,12 +138,6 @@ class FakeConn:
     def close(self, retry=True):
         self.close_args.append(retry)
         self.closed = True
-
-    def _cancel_query(self, sql, request_id):
-        self.aborts.append((sql, request_id))
-        if self.abort_error is not None:
-            raise self.abort_error
-        return self.abort_result
 
 
 class FakeDriver:
@@ -249,20 +267,22 @@ class TestExecute:
         assert result.row_count == 2
         assert result.datasource == "test"
 
-    async def test_execute_injects_a_uuid4_request_id(self, monkeypatch):
-        """abort 的靶子就是这个 id —— 形状必须是 uuid4(驱动会校验,见适配器
-        docstring 的版本 floor 说明)。"""
+    async def test_execute_uses_the_async_query_lifecycle(self, monkeypatch):
+        """执行 = 提交拿 id → 按 id 等结果 → 取数:abort 的靶子就是那个 id。
+
+        同步 ``execute`` 拿不到在飞查询的 id,终止就无从下手 —— 这条钉的是
+        整条执行路径确实走了 5.x 的可终止形态。
+        """
         conn = FakeConn(default_description=[("X", 0)], default_rows=[[1]])
         adapter, _ = make_adapter(monkeypatch, driver=FakeDriver([conn]))
         await adapter.connect()
 
-        await adapter.execute("SELECT 1")
+        result = await adapter.execute("SELECT 1")
 
-        sql, params = conn.statements[0]
-        assert sql == "SELECT 1"
-        assert set(params) == {"requestId"}
-        injected = uuid.UUID(params["requestId"])
-        assert injected.version == 4
+        assert result.rows == [[1]]
+        assert conn.statements == ["SELECT 1"]
+        assert conn.query_ids == ["qid-1"]           # 提交返回了服务端查询 id
+        assert conn.retrieved == ["qid-1"]           # 并按它取的结果
 
     async def test_the_event_loop_advances_while_the_driver_works(self, monkeypatch):
         """同步驱动被包在线程里 —— 工作线程卡住时事件循环还能跑别的协程。
@@ -426,12 +446,12 @@ class TestTermination:
         assert await adapter.interrupt() is True
         assert conn.aborts == []
 
-    async def test_a_cancelled_query_is_aborted_by_its_own_request_id(self, monkeypatch):
+    async def test_a_cancelled_query_is_aborted_by_its_own_query_id(self, monkeypatch):
         """取消栈上那次 ``interrupt()`` 必须打中**本任务正在飞**的那条查询:
 
-        * abort 带的是**我们注入的那个 requestId**(假连接没有 sfqid 可给 ——
-          与真驱动同一形状:查询在飞时它还不存在);
-        * abort 带的是那条语句的原文(驱动自己的取消接口要求两样都给)。
+        * abort 带的是**提交时拿到的服务端查询 id**(同步 execute 拿不到在飞
+          查询的 id —— 拿不到就 abort 不动);
+        * 只打一次(§10 不重试 kill)。
         """
         release = threading.Event()
         conn = FakeConn(blocking=release)
@@ -439,19 +459,37 @@ class TestTermination:
         await adapter.connect()
 
         task = asyncio.create_task(adapter.execute("SELECT sleep(30)"))
-        while not conn.statements:
+        # 等 ``retrieved``(取结果那一步)而不是 ``query_ids``:前者严格晚于
+        # 适配器把 id 填进在飞登记,取消时靶子一定已经就位。
+        while not conn.retrieved:
             await asyncio.sleep(0.01)
-        sql, params = conn.statements[0]
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         release.set()
 
-        assert len(conn.aborts) == 1
-        aborted_sql, aborted_id = conn.aborts[0]
-        assert aborted_sql == sql
-        assert str(aborted_id) == params["requestId"]   # 打的就是注入的那个 id
+        assert conn.aborts == [conn.query_ids[0]]
+
+    async def test_an_interrupt_before_the_query_id_is_known_fails_loudly(
+        self, monkeypatch, caplog,
+    ):
+        """取消落在「已提交、id 还没回到 Python」的窗口:没有靶子。
+
+        报 True 等于谎称已终止 —— 如实报 False,并留下 WARNING(否则这个窗口
+        在日志里完全不可见)。
+        """
+        conn = FakeConn()
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver([conn]))
+        await adapter.connect()
+        adapter._inflight[asyncio.current_task()] = sf_module._InflightQuery(
+            sql="SELECT sleep(30)",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert await adapter.interrupt() is False
+        assert conn.aborts == []
+        assert any("before the query id" in r.message for r in caplog.records)
 
     async def test_a_rejected_abort_is_not_reported_as_sent_when_asked_later(
         self, monkeypatch, caplog,
@@ -468,7 +506,7 @@ class TestTermination:
         调用形态逐字一致,连"谁来问"这个任务身份都不差。
         """
         release = threading.Event()
-        conn = FakeConn(blocking=release, abort_result={"success": False})
+        conn = FakeConn(blocking=release, abort_result=False)
         adapter, _ = make_adapter(monkeypatch, driver=FakeDriver([conn]))
         await adapter.connect()
 
@@ -496,7 +534,7 @@ class TestTermination:
 
         with caplog.at_level(logging.WARNING):
             task = asyncio.create_task(adapter.execute("SELECT sleep(30)"))
-            while not conn.statements:
+            while not conn.retrieved:
                 await asyncio.sleep(0.01)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -518,15 +556,21 @@ class TestTermination:
         """abort 卡住 → ``INTERRUPT_TIMEOUT_S`` 后报 False,**绝不悬挂**终止路径。"""
         monkeypatch.setattr(sf_module, "INTERRUPT_TIMEOUT_S", 0.05)
 
-        class _SlowConn(FakeConn):
-            def _cancel_query(self, sql, request_id):
-                self.aborts.append((sql, request_id))
+        class _SlowCursor(FakeCursor):
+            def abort_query(self, qid):
+                self.conn.aborts.append(qid)
                 threading.Event().wait(timeout=0.5)   # 比界长,但不拖整轮
-                return {"success": True}
+                return True
+
+        class _SlowConn(FakeConn):
+            def cursor(self):
+                return _SlowCursor(self)
 
         conn = _SlowConn(blocking=threading.Event())
         adapter, _ = make_adapter(monkeypatch, driver=FakeDriver([conn]))
-        adapter._inflight[asyncio.current_task()] = ("SELECT sleep(30)", uuid.uuid4())
+        adapter._inflight[asyncio.current_task()] = sf_module._InflightQuery(
+            sql="SELECT sleep(30)", query_id="qid-slow",
+        )
 
         assert await adapter.interrupt() is False
 
@@ -537,7 +581,7 @@ class TestTermination:
         回话:一条正在飞的查询会因为"上一条 abort 被拒"被判死刑。
         """
         release = threading.Event()
-        conn = FakeConn(blocking=release, abort_result={"success": False},
+        conn = FakeConn(blocking=release, abort_result=False,
                         default_rows=[[2]], default_description=[("X", 0)])
         adapter, _ = make_adapter(monkeypatch, driver=FakeDriver([conn]))
         await adapter.connect()
@@ -594,7 +638,7 @@ class TestGetSchema:
 
         # 两次往返:TABLES 带 ROW_COUNT + COLUMNS 一次取全(不逐表查)
         assert len(conn.statements) == 2
-        tables_sql, columns_sql = (sql for sql, _ in conn.statements)
+        tables_sql, columns_sql = conn.statements
         assert "FIN.INFORMATION_SCHEMA.TABLES" in tables_sql
         assert "FIN.INFORMATION_SCHEMA.COLUMNS" in columns_sql
         # 服务端把未加引号标识符折成大写 —— 比较字面量跟着折
