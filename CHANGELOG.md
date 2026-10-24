@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   questions like "how many clients are there for each gender", `GROUP BY
   gender` is the requested dimension rather than a missing `WHERE gender = …`
   filter. Grouping by any other dimension still requires the gender filter.
+- Attribution no longer skips silently when the query plan's `target_metric`
+  uses a shorthand for a declared metric (e.g. "loan amount" when the model
+  declares "average Loan amount"). Unique normalized / expression matches
+  resolve to the declared name; ambiguous or unknown names now render an
+  explicit, reason-specific "attribution could not be completed" line instead
+  of returning an empty result. The query-sketch attribution prompt now
+  requires copying declared metric and field names verbatim.
 
 ## [0.1.0] - 2026-10-23
 

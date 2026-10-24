@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -122,6 +123,135 @@ def resolve_metric(semantic_layer: Any, metric_name: str) -> Any:
         return SemanticCompiler(model)._metric_by_name(metric_name)
     except Exception:
         return None
+
+
+# ── 目标指标名解析(LLM 计划 → 唯一已声明度量)────────────────────
+
+#: 归一化时剥掉的边缘标点(名字内部的不动 —— 内部符号可能承重)。
+_METRIC_EDGE_PUNCT = " \t\r\n.;:,，。；：?!？！"
+_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9_]")
+
+
+@dataclass(frozen=True)
+class MetricNameResolution:
+    """``resolve_metric_name`` 的产物(确定性,零 LLM)。
+
+    ``name`` 非空 = 唯一解析成功;``strategy`` 记录命中的层级。
+    ``name`` 为空 = 解析失败:``reason`` ∈ ``("unknown", "ambiguous")``,
+    ``ambiguous`` 带候选清单 —— **多命中绝不猜**(猜错聚合口径比不归因更糟)。
+    """
+
+    name: str | None
+    strategy: str = ""       # exact | normalized | expression | containment
+    reason: str = ""         # unknown | ambiguous
+    candidates: tuple[str, ...] = ()
+
+
+def _metric_key(name: str) -> str:
+    """名字归一:大小写/引号/下划线/连字符/多余空白差异不算差异。"""
+    s = str(name or "").strip().strip("`'\"“”‘’")
+    s = re.sub(r"[_\-]+", " ", s.casefold())
+    s = re.sub(r"\s+", " ", s)
+    return s.strip(_METRIC_EDGE_PUNCT)
+
+
+def _expr_key(expr: str) -> str:
+    """整段聚合表达式归一:只吃空白差异(其余字符全部承重)。"""
+    return re.sub(r"\s+", "", str(expr or "").casefold())
+
+
+def _ascii_word_bounded(haystack: str, needle: str) -> bool:
+    """``needle`` 在 ``haystack`` 中按**ASCII 词边界**命中。
+
+    CJK 字符不算词字符 —— 「贷款金额」应能在「平均贷款金额」里命中;
+    而 ``amount`` 不应命中 ``amounts``。``\\b`` 两者都做不到(Unicode
+    ``\\w`` 把 CJK 也算词字符),所以这里手写边界。
+    """
+    if not needle or not haystack:
+        return False
+    start = 0
+    while True:
+        i = haystack.find(needle, start)
+        if i < 0:
+            return False
+        before_ok = i == 0 or not _ASCII_WORD_RE.match(haystack[i - 1])
+        j = i + len(needle)
+        after_ok = j >= len(haystack) or not _ASCII_WORD_RE.match(haystack[j])
+        if before_ok and after_ok:
+            return True
+        start = i + 1
+
+
+def resolve_metric_name(
+    semantic_layer: Any, raw: str | None,
+) -> MetricNameResolution:
+    """LLM 给的目标指标名 → **唯一的**已声明度量名。
+
+    四级,全部确定性(零 LLM、零查询):
+      1. 精确(大小写不敏感)—— 与编译器 ``_metric_by_name`` 同口径;
+      2. 归一后唯一相等(引号/下划线/连字符/空白差异);
+      3. 整段聚合表达式唯一相等(去掉空白后);
+      4. 词边界包含(任一方含另一方)后**唯一**命中。
+
+    任何一级多命中都停为 ``ambiguous``(带候选),零命中为 ``unknown``
+    —— 调用方据此响亮降级,绝不静默跳过。
+    """
+    name = str(raw or "").strip()
+    if not name:
+        return MetricNameResolution(name=None, reason="unknown")
+    try:
+        model = semantic_layer.model() if semantic_layer is not None else None
+    except Exception:
+        model = None
+    if model is None:
+        return MetricNameResolution(name=None, reason="unknown")
+    metrics = [m for m in (getattr(model, "metrics", None) or []) if str(m.name or "").strip()]
+    if not metrics:
+        return MetricNameResolution(name=None, reason="unknown")
+
+    lowered = name.lower()
+    for m in metrics:
+        if m.name.strip().lower() == lowered:
+            return MetricNameResolution(name=m.name, strategy="exact")
+
+    key = _metric_key(name)
+    if not key:
+        return MetricNameResolution(name=None, reason="unknown")
+
+    same = [m.name for m in metrics if _metric_key(m.name) == key]
+    if len(same) == 1:
+        return MetricNameResolution(name=same[0], strategy="normalized")
+    if len(same) > 1:
+        return MetricNameResolution(
+            name=None, reason="ambiguous", candidates=tuple(same))
+
+    if "(" in name:
+        ekey = _expr_key(name)
+        expr_hits = [
+            m.name for m in metrics
+            if _expr_key(getattr(m, "expression", "")) == ekey
+        ]
+        if len(expr_hits) == 1:
+            return MetricNameResolution(name=expr_hits[0], strategy="expression")
+        if len(expr_hits) > 1:
+            return MetricNameResolution(
+                name=None, reason="ambiguous", candidates=tuple(expr_hits))
+
+    if len(key) >= 3:
+        hits = [
+            m.name for m in metrics
+            if len(_metric_key(m.name)) >= 3 and (
+                _ascii_word_bounded(_metric_key(m.name), key)
+                or _ascii_word_bounded(key, _metric_key(m.name))
+            )
+        ]
+        if len(hits) == 1:
+            return MetricNameResolution(name=hits[0], strategy="containment")
+        if len(hits) > 1:
+            return MetricNameResolution(
+                name=None, reason="ambiguous", candidates=tuple(hits))
+
+    return MetricNameResolution(name=None, reason="unknown")
 
 
 # ── 层级消费 / 显示名(E7;零声明 → 全部恒等,老路径逐字节不变)────────

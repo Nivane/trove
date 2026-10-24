@@ -85,6 +85,55 @@ class TestDriverTreeSection:
         assert "归因分析" in out["final_response"]
 
 
+class TestAttributionDegradedReasons:
+    """不可交付的归因:分因文案 —— 可修的问题不能被写成不可修的。"""
+
+    def _degraded(self, **kw):
+        attr = {"degraded": True, "table": [], "hops": [], "narrative": ""}
+        attr.update(kw)
+        return _state(attribution=attr)
+
+    def test_metric_unresolved_names_the_metric_and_the_fix(self):
+        section = _build_attribution_section(self._degraded(
+            reason="metric_unresolved", metric="loan amount"))
+        assert "loan amount" in section
+        assert "未在语义模型中声明" in section
+        assert "声明该指标后重问" in section
+
+    def test_metric_ambiguous_lists_candidates(self):
+        section = _build_attribution_section(self._degraded(
+            reason="metric_ambiguous", metric="loan amount",
+            candidates=["average Loan amount", "total Loan amount"]))
+        assert "多个可能的声明" in section
+        assert "average Loan amount" in section
+        assert "total Loan amount" in section
+
+    def test_dimensions_unresolved(self):
+        section = _build_attribution_section(self._degraded(
+            reason="dimensions_unresolved"))
+        assert "维度未能在语义模型中解析" in section
+
+    def test_analysis_unavailable(self):
+        section = _build_attribution_section(self._degraded(
+            reason="analysis_unavailable"))
+        assert "分解查询未能编译或执行成功" in section
+
+    def test_legacy_degraded_text_unchanged(self):
+        # 老路径(引擎在产出分解表前失败)没有 reason —— 文案逐字节不变。
+        section = _build_attribution_section(self._degraded())
+        assert "本次只取得部分证据" in section
+
+    def test_english_reason_line(self):
+        state = _state(
+            lang="en",
+            attribution={"degraded": True, "table": [], "hops": [],
+                         "narrative": "", "reason": "metric_unresolved",
+                         "metric": "loan amount"},
+        )
+        section = _build_attribution_section(state)
+        assert "not declared in the semantic model" in section
+
+
 _SERIES = {
     "grain": "month", "mode": "trailing", "lookback": 12,
     "span": ["2024-01-01", "2024-12-31"],

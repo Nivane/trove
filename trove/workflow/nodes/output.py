@@ -651,6 +651,63 @@ def _noise_band_line(series: dict[str, Any], lang: str) -> str:
     return line
 
 
+def _attribution_degraded_line(attr: dict[str, Any], lang: str) -> str:
+    """不可交付的归因 → 一行如实解释。
+
+    分因决定文案:只说「没能完成」会把可修的问题(指标名没写对 / 口径
+    有歧义)写成不可修。分因闭集见 ``nodes/attribution._UNDELIVERABLE``;
+    无 ``reason`` 的是老路径(引擎产出分解表之前失败的 partial 分析),
+    保持原文案逐字节不变。
+    """
+    reason = str(attr.get("reason") or "")
+    metric = str(attr.get("metric") or "").strip()
+    if reason == "metric_unresolved" and metric:
+        return L(
+            lang,
+            f"> 归因分析未能完成:目标指标「{metric}」未在语义模型中声明,"
+            "无法按维度分解。声明该指标后重问即可。\n",
+            f"> Attribution could not be completed: the target metric "
+            f"\"{metric}\" is not declared in the semantic model. Declare it, "
+            "then ask again.\n",
+        )
+    if reason == "metric_ambiguous" and metric:
+        zh_cands = "、".join(str(c) for c in (attr.get("candidates") or [])[:4])
+        en_cands = ", ".join(str(c) for c in (attr.get("candidates") or [])[:4])
+        return L(
+            lang,
+            f"> 归因分析未能完成:目标指标「{metric}」在语义模型中有多个"
+            f"可能的声明({zh_cands}),无法确定口径。"
+            "请用完整的已声明指标名重问。\n",
+            f"> Attribution could not be completed: the target metric "
+            f"\"{metric}\" matches several declared metrics ({en_cands}), so "
+            "the caliber is ambiguous. Ask again with a full declared metric "
+            "name.\n",
+        )
+    if reason == "dimensions_unresolved":
+        return L(
+            lang,
+            "> 归因分析未能完成:计划中的维度未能在语义模型中解析,"
+            "无法按维度分解。\n",
+            "> Attribution could not be completed: the planned dimension "
+            "could not be resolved in the semantic model, so no breakdown "
+            "is shown.\n",
+        )
+    if reason == "analysis_unavailable":
+        return L(
+            lang,
+            "> 归因分析未能完成:目标指标与维度均已解析,但分解查询未能"
+            "编译或执行成功。\n",
+            "> Attribution could not be completed: the metric and dimension "
+            "resolved, but the breakdown queries could not compile or run.\n",
+        )
+    return L(
+        lang,
+        "> 归因分析未能完成:本次只取得部分证据,无法给出维度分解。\n",
+        "> Attribution could not be completed: only partial evidence was "
+        "available, so no breakdown is shown.\n",
+    )
+
+
 def _build_attribution_section(state: WorkflowState) -> str:
     """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)+ 驱动器树。
 
@@ -666,12 +723,7 @@ def _build_attribution_section(state: WorkflowState) -> str:
     # 降级产物只有 hops、没有表(引擎在产出分解表前失败)。只留一个空标题
     # 等于让读者以为「没有变化可归因」—— 看不见的降级等于没有降级(ANS-4)。
     if attr.get("degraded"):
-        parts.append(L(
-            lang,
-            "> 归因分析未能完成:本次只取得部分证据,无法给出维度分解。\n",
-            "> Attribution could not be completed: only partial evidence was "
-            "available, so no breakdown is shown.\n",
-        ))
+        parts.append(_attribution_degraded_line(attr, lang))
 
     if attr.get("narrative"):
         parts.append(f"{attr['narrative']}\n")

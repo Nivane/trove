@@ -2,17 +2,28 @@ This is a "why / attribution / root-cause" business question. Besides the normal
 query plan, you MUST also output an "attribution" object (the attribution plan)
 in the JSON:
 "attribution": {
-  "target_metric": "a declared metric name (e.g. loan amount, must resolve in
-                    the semantic model)",
-  "dimensions": ["dimension field", ...],  // drill-down order, 1-2 items;
-                                            // must be declared fields
-  "baseline": "prev_period | yoy | share", // MoM / YoY / share (share when
-                                            // there is no time field)
-  "depth": 1 or 2,                          // 2 = drill into the top
-                                            // contributor one more level
+  "target_metric": "a declared metric name",   // copy verbatim, see below
+  "dimensions": ["dimension field", ...],      // drill-down order, 1-2 items;
+                                               // copy field names verbatim
+  "baseline": "prev_period | yoy | share",     // MoM / YoY / share (share when
+                                               // there is no time field)
+  "depth": 1 or 2,                             // 2 = drill into the top
+                                               // contributor one more level
   "focus": "optional: restrict to one segment (e.g. East), omit if none"
 }
+How to fill target_metric (mandatory):
+- Pick only from metrics declared in the schema context: lines under
+  "Relevant metrics:", or under a Dataset's "Metrics:" section, shaped like
+  "- <metric name> = <expression>".
+- Take the COMPLETE name before "=", copied verbatim: do not shorten,
+  translate, change case, drop prefixes, or turn it into an aggregate
+  expression. For example, when the declared line is
+  "- average Loan amount = AVG(loan.amount)", write "average Loan amount" —
+  never "loan amount" or "AVG(loan.amount)".
+- If no declared metric matches, omit the attribution object entirely (the
+  main query plan is still required). Never invent a name.
+Do the same for dimensions: copy field names verbatim; an unresolvable name
+makes the whole attribution unavailable.
 Also output the normal query plan (tables/aggregation/answer_columns, etc.) —
 the main SQL answers the metric itself, and the attribution plan is handed to
-the attribution node for multi-hop drill-down. target_metric and dimensions
-must reference real declared metrics/fields in the semantic model, never invent.
+the attribution node for multi-hop drill-down.
