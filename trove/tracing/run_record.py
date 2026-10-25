@@ -30,6 +30,8 @@ import json
 import logging
 from typing import Any, Callable
 
+from trove.core.run_outcome import classify_run
+
 logger = logging.getLogger(__name__)
 
 # ── caps (all byte budgets are UTF-8) ───────────────────────
@@ -62,6 +64,9 @@ _FINISH_KEEP = (
     "topic", "sql", "model", "row_count", "verdict", "reason",
     "answer_source", "sql_confidence", "confidence", "confidence_evidence",
     "error", "error_info", "refusal", "hitl_status", "final_response",
+    # 运行结局:tracing 里唯一能读出「拒绝/澄清/答复」的区别(header.status
+    # 对三者都是 done)。不可裁剪 —— 见 _FINISH_DROP_ORDER。
+    "outcome",
     "kb_rev", "token_usage", "columns", "matched_tables", "masking_applied",
     "execution_evidence", "rows_preview", "retry_count", "consensus",
     "total_elapsed_ms", "elapsed_ms",
@@ -670,9 +675,21 @@ def _summary_from_final(final: Any) -> dict[str, Any]:
         return {}
     summary: dict[str, Any] = {}
     for key in _FINISH_KEEP:
+        if key == "outcome":
+            continue  # 不是 state 字段,由下面的分类器算(见 docstring)
         value = getattr(final, key, None)
         if value is not None and value != "":
             summary[key] = value
+    # 循环里的 getattr 拿不到 outcome(WorkflowState 没有这个字段),而它
+    # 恒非空 —— 必须显式写出,否则离线评测这条路径的 finish 会静默缺结局。
+    summary["outcome"] = classify_run(
+        error=str(getattr(final, "error", "") or ""),
+        refusal=getattr(final, "refusal", None),
+        clarification_question=str(
+            getattr(final, "clarification_question", "") or ""
+        ),
+        hitl_status=str(getattr(final, "hitl_status", "") or ""),
+    )
     return summary
 
 

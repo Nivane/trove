@@ -10,6 +10,7 @@ dropping the run.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -181,6 +182,74 @@ class TestCaptureBasics:
         rec.capture_cancel("r1")
         await rec.drain()
         assert store.writes[-1][0]["status"] == "cancelled"
+
+
+class TestFinishOutcome:
+    """``finish_json.outcome``：done 的记录里，答复/拒绝/澄清的区别只在这里。
+
+    header.status 对三者都是 ``done``（生命周期终点），拒绝审批也是 done ——
+    结局字段缺席或错分，回看记录的人就分不清这一轮到底交没交出答案。
+    """
+
+    async def test_final_path_carries_the_classified_outcome(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", final=_final())
+        await rec.drain()
+        finish = json.loads(store.writes[-1][0]["finish_json"])
+        assert finish["outcome"] == "answered"
+
+    @pytest.mark.parametrize(
+        ("over", "expected"),
+        [
+            ({"refusal": {"reason": "no_model"},
+              "clarification_question": "?"}, "refused"),
+            ({"clarification_question": "?"}, "clarified"),
+            ({"error": "boom"}, "failed"),
+            ({"hitl_status": "rejected"}, "cancelled"),
+        ],
+    )
+    async def test_terminal_states_stay_distinguishable(self, over, expected):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", final=_final(**over))
+        await rec.drain()
+        header = store.writes[-1][0]
+        finish = json.loads(header["finish_json"])
+        assert finish["outcome"] == expected
+        if expected == "cancelled":
+            # HITL 否决没有执行错误：header 仍是 done，结局是唯一的分辨点。
+            assert header["status"] == "done"
+
+    async def test_summary_path_keeps_the_session_outcome(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", summary={"outcome": "refused", "sql": ""})
+        await rec.drain()
+        finish = json.loads(store.writes[-1][0]["finish_json"])
+        assert finish["outcome"] == "refused"
+
+    async def test_outcome_survives_the_size_cap(self):
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish(
+            "r1",
+            summary={
+                "outcome": "answered",
+                # 先被截到 50 行，仍超 256KB —— 触发整节省略(rows_preview)。
+                "rows_preview": [["x" * 8192] for _ in range(100)],
+            },
+        )
+        await rec.drain()
+        finish = json.loads(store.writes[-1][0]["finish_json"])
+        # rows_preview 被裁剪，结局是头等字段，永不让路。
+        assert "rows_preview" not in finish
+        assert finish["outcome"] == "answered"
+        assert "outcome" not in finish.get("truncated_keys", [])
 
 
 class TestSwitch:

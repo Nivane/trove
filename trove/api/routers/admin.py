@@ -596,6 +596,20 @@ async def get_run_record(
         record = await store.get(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"run record not found: {run_id}")
+    # 结局:done 的差别(答复/拒绝/澄清)只在 finish 里,读端不必自己
+    # 解析;running 尚未结束 → None(三态,不猜)。store 返回
+    # ``{"header": …, "events": …}`` —— 状态与 finish 都在 header 里。
+    from trove.core.run_outcome import record_outcome
+
+    header = record.get("header") or {}
+    finish = header.get("finish")
+    record = {
+        **record,
+        "outcome": record_outcome(
+            str(header.get("status") or ""),
+            finish if isinstance(finish, dict) else None,
+        ),
+    }
     if not include_raw:
         return _strip_raw(record)
     try:

@@ -60,3 +60,10 @@ class TestFormatPrintPayload:
         assert payload["kb_hits"] == hits
         # absent → empty list, still serializable
         assert format_print_payload(SUMMARY, [])["kb_hits"] == []
+
+    def test_outcome_included(self):
+        """--print 也是一条对外出口:拒绝/澄清必须与答复分得开。"""
+        payload = format_print_payload({**SUMMARY, "outcome": "refused"}, [])
+        assert payload["outcome"] == "refused"
+        # 缺席 = 更老的 summary,不按 answered 兜底。
+        assert format_print_payload(SUMMARY, [])["outcome"] is None

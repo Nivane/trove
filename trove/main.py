@@ -645,6 +645,9 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
         "insights": summary.get("insights", []),
         "conclusion": summary.get("conclusion", ""),
         "hitl_status": summary.get("hitl_status", ""),
+        # 运行结局:与 SSE done / 历史回放同一份 summary 字段。缺席(None)
+        # 只可能来自更老的 summary —— 不按 answered 兜底。
+        "outcome": summary.get("outcome"),
         "events": printable_events,
     }
 

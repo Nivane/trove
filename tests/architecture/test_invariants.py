@@ -333,6 +333,23 @@ INVARIANTS: tuple[Invariant, ...] = (
         ),
     ),
     Invariant(
+        id="degradation-is-visible",
+        statement=(
+            "降级/判不了必须显式可见，不得折叠成成功或「无变化」；三态里的 None "
+            "不得被写成 False/0，带降级标记的答复仍是 answered（降级是修饰）。"
+        ),
+        evidence=(
+            "tests/workflow/nodes/test_output_honesty.py::TestDegradedAttributionVisible::"
+            "test_degraded_attribution_explains_instead_of_bare_heading",
+            "tests/services/analysis/test_effect.py::TestMeasureEffect::"
+            "test_zero_scale_is_none_not_false",
+            "tests/services/action/test_action_outcomes_store.py::TestRoundTrip::"
+            "test_outside_band_three_state",
+            "tests/services/decision/test_significance.py::TestGate::"
+            "test_zero_scale_refuses_to_confirm",
+        ),
+    ),
+    Invariant(
         id="semantics-single-write-path",
         statement="语义文档只经白名单写者落盘；agent 不得自行直写主线。",
         evidence=(
@@ -355,6 +372,7 @@ ID_SET = {
     "failures-are-loud",
     "refusal-state-hygiene",
     "one-measurement-one-outcome",
+    "degradation-is-visible",
     "semantics-single-write-path",
 }
 

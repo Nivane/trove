@@ -36,6 +36,7 @@ async def test_ask_data_answers(mcp_components):
     assert payload["sql"]
     assert payload["row_count"] == 5
     assert payload["no_model"] is False
+    assert payload["outcome"] == "answered"
 
 
 async def test_ask_data_multi_turn_session(mcp_components):
@@ -58,6 +59,7 @@ async def test_ask_data_requires_question(mcp_components):
     server = build_mcp_server(mcp_components)
     payload = await _invoke(server, "ask_data", question="   ")
     assert "error" in payload
+    assert payload["outcome"] == "failed"
 
 
 async def test_list_datasources_only_initialized(mcp_components, tmp_path):
@@ -297,6 +299,7 @@ async def test_empty_grants_only_default_datasource(mcp_components):
     blocked = await _invoke(server, "ask_data",
         question="count rows", datasource="other_db")
     assert blocked.get("error") == "datasource not allowed"
+    assert blocked["outcome"] == "refused"
 
 
 async def test_identity_without_auth_denies_everything(mcp_components):
@@ -324,9 +327,11 @@ async def test_identity_without_auth_denies_everything(mcp_components):
     omitted = await _invoke(server, "ask_data",
         question="What students are in Alameda county?")
     assert omitted.get("error") == "datasource not allowed"
+    assert omitted["outcome"] == "refused"
     blocked = await _invoke(server, "ask_data",
         question="count rows", datasource="other_db")
     assert blocked.get("error") == "datasource not allowed"
+    assert blocked["outcome"] == "refused"
 
 
 # ── 通道鉴权:trove mcp --token 解析(fail-closed)────────────────

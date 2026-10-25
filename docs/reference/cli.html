@@ -57,7 +57,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L108">pyproject.toml:108 <span class="ref-line">trove</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1183">main.py:1183 <span class="ref-line">main_repl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1186">main.py:1186 <span class="ref-line">main_repl</span></a>
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -132,7 +132,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L817">main.py:817 <span class="ref-line">sys.argv</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L820">main.py:820 <span class="ref-line">sys.argv</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/schedule_cmds.py#L197">schedule_cmds.py:197 <span class="ref-line">--daemon</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/maintenance_cmds.py#L54">maintenance_cmds.py:54 <span class="ref-line">run</span></a>
     </p>
@@ -142,8 +142,8 @@ flowchart LR
     <pre><code>trove serve [--host 127.0.0.1] [--port 8000]</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L891">main.py:891 <span class="ref-line">--host</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L892">main.py:892 <span class="ref-line">--port</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L894">main.py:894 <span class="ref-line">--host</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L895">main.py:895 <span class="ref-line">--port</span></a>
     </p>
 
     <h3>job / schedule</h3>
@@ -195,7 +195,7 @@ trove validate --packs             # 反作弊：KB 示例 SQL vs 本地 gold �
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1208">main.py:1208 <span class="ref-line">validate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1211">main.py:1211 <span class="ref-line">validate</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L92">validate_cmds.py:92 <span class="ref-line">main_validate</span></a>
     </p>
 
@@ -215,7 +215,7 @@ trove extensions import &lt;目录&gt; [--force]               # 校验并导入
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1227">main.py:1227 <span class="ref-line">extensions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1230">main.py:1230 <span class="ref-line">extensions</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/extensions_cmds.py#L188">extensions_cmds.py:188 <span class="ref-line">main_extensions</span></a>
     </p>
 
@@ -226,7 +226,7 @@ trove preset show &lt;名称&gt;       # 逐段摘要 + 原文
 trove preset apply &lt;名称&gt;      # 套用（只落 pending 草稿，确认后才生效）</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1214">main.py:1214 <span class="ref-line">preset</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1217">main.py:1217 <span class="ref-line">preset</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/preset_cmds.py#L66">preset_cmds.py:66 <span class="ref-line">main_preset</span></a>
     </p>
 
@@ -252,7 +252,7 @@ trove import semantic --source cube --path ./cube-meta.json \
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1234">main.py:1234 <span class="ref-line">import</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1237">main.py:1237 <span class="ref-line">import</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/import_cmds.py#L75">import_cmds.py:75 <span class="ref-line">main_import</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L220">landing.py:220 <span class="ref-line">land_bootstrap</span></a>
     </p>
@@ -419,7 +419,7 @@ trove import semantic --source cube --path ./cube-meta.json \
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b788a7c</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 41f85c6</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

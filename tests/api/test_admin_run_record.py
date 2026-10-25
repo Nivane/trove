@@ -95,6 +95,32 @@ class TestReadEndpoint:
         resp = await client.get("/v1/admin/runs/nope/record")
         assert resp.status_code == 404
 
+    async def test_outcome_is_projected_from_finish_and_status(
+            self, client, record_store):
+        """读端不解析 finish_json:done 的三分别由 ``outcome`` 一次说清。
+
+        ``running``/无 finish 的 ``done`` 是 ``None``(三态,不猜)——
+        把生命周期的 done 冒充成「答复」正是这一层要防的。
+        """
+        await record_store.write(
+            {"run_id": "run-refused", "session_id": "s1", "question": "q?",
+             "workflow": "reflection", "datasource": "test_db",
+             "status": "done", "finish_json": {"outcome": "refused"},
+             "finished_at": "2026-01-01T00:00:02+00:00"}, [])
+        body = (await client.get("/v1/admin/runs/run-refused/record")).json()
+        assert body["outcome"] == "refused"
+
+        await record_store.write(
+            {"run_id": "run-pending", "session_id": "s1", "question": "q?",
+             "workflow": "reflection", "datasource": "test_db",
+             "status": "pending_hitl"}, [])
+        body = (await client.get("/v1/admin/runs/run-pending/record")).json()
+        assert body["outcome"] == "pending_approval"
+
+        # fixture 的记录 status=done 但 finish 里没有 outcome(旧记录)。
+        body = (await client.get(f"/v1/admin/runs/{RUN_ID}/record")).json()
+        assert body["outcome"] is None
+
     async def test_unassembled_store_is_503(self, client):
         # The conftest app has no run_records component.
         resp = await client.get(f"/v1/admin/runs/{RUN_ID}/record")

@@ -95,6 +95,17 @@ export interface RelatedLinkInfo {
 
 import type { MaskingReport } from '../utils/masking'
 
+/** 一次运行的结局（运行轴，后端 `trove/core/run_outcome.py` 的六值闭集）。
+ *  与编译覆盖率无关（那是 steps.ts 里 compile miss 的 `outcome`），也不是
+ *  降级标记：带降级说明的答复仍然是 'answered'。 */
+export type RunOutcome =
+  | 'answered'
+  | 'refused'
+  | 'clarified'
+  | 'pending_approval'
+  | 'cancelled'
+  | 'failed'
+
 export interface DoneSummary {
   session_id?: string
   run_id?: string
@@ -124,6 +135,8 @@ export interface DoneSummary {
   chart_option?: Record<string, unknown> | null
   insights?: unknown[]
   hitl_status?: string
+  /** 运行结局。缺席 = 旧后端/旧记录（不要按 'answered' 兜底渲染）。 */
+  outcome?: RunOutcome
   batched?: boolean
   total_elapsed_ms?: number
   /** 缓存键真报才在(缺席 = 该次运行未测量缓存,不要当 0 命中渲染)。 */
@@ -422,7 +435,7 @@ export interface StepPayload {
 export interface TaskItem {
   task_id: string
   title: string
-  status: 'pending' | 'in_progress' | 'done' | 'failed'
+  status: 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped'
   position: number
 }
 

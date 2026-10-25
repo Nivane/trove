@@ -985,6 +985,8 @@ class SessionManager:
         ``task`` only decorates the assistant-message prefix/metadata and the
         HITL pending-run bookkeeping.
         """
+        from trove.core.run_outcome import classify_run
+
         prefix = ""
         if task is not None and state.task_context:
             tc = state.task_context
@@ -1143,6 +1145,9 @@ class SessionManager:
                                     "insights": [],
                                     "conclusion": "",
                                     "hitl_status": "pending",
+                                    # 手写 summary 不走 _state_summary,结局自行标注;
+                                    # 同一状态下两个出口不能一个有一个没有。
+                                    "outcome": classify_run(hitl_status="pending"),
                                     "final_response": "",
                                 }
                                 # 消耗统计随中断带出:前端确认气泡即可展示 token 数。
@@ -1281,6 +1286,7 @@ class SessionManager:
                 "reason": info["title"],
                 "error": info["title"],
                 "error_info": info,
+                "outcome": classify_run(error=info["title"]),
                 "kb_hits": [],
                 "insights": [],
                 "conclusion": "",
@@ -2773,6 +2779,7 @@ class SessionManager:
             [cap_cell(v) for v in row]
             for row in (final.rows or [])[:ROWS_PREVIEW]
         ]
+        from trove.core.run_outcome import classify_run
         from trove.services.limits import get_result_limits
         # 全量结果(受查询结果上限约束)随 summary 交付:前端"按查询结果下载"
         # 直接用这份数据,而不去解析答案 markdown 里被截断的展示表格。
@@ -2818,6 +2825,16 @@ class SessionManager:
             "conclusion": final.conclusion,
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
+            # 运行结局(一次运行怎么结束的唯一分类,速查表见
+            # trove/core/run_outcome.py):SSE done / 历史回放 / run record
+            # finish 共用这一份 summary。降级不在这里 —— 它是修饰,标记留在
+            # analysis.degraded / error_info / outside_band 各自的载荷里。
+            "outcome": classify_run(
+                error=final.error,
+                refusal=final.refusal,
+                clarification_question=final.clarification_question,
+                hitl_status=final.hitl_status,
+            ),
             "columns": list(final.columns),
             "rows": rows_full,
             "rows_preview": rows_preview,
@@ -2970,6 +2987,19 @@ class SessionManager:
         if not self._cache_enabled():
             return
         if final.error or final.error_feedback:
+            return
+        # 结局门:只有 answered 轮可进缓存。拒绝/澄清的标记活不过
+        # ``_cached_final`` 的字段过滤(WorkflowState 没有 outcome),命中
+        # 路径会把它们重算成一个普通的「答复」—— 缓存里的东西必须是
+        # 重放后仍与原来同一结局的那一种。
+        from trove.core.run_outcome import classify_run
+
+        if classify_run(
+            error=final.error,
+            refusal=final.refusal,
+            clarification_question=final.clarification_question,
+            hitl_status=final.hitl_status,
+        ) != "answered":
             return
         if final.verdict not in CACHEABLE_VERDICTS:
             return

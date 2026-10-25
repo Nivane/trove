@@ -1331,6 +1331,75 @@ class TestResultCache:
         assert llm.calls == calls  # 命中 → 零额外 LLM 调用
         assert len(session.messages) == 4  # user+assistant × 2(交换照常记录)
 
+    async def test_only_answered_runs_enter_the_cache(
+        self, tmp_home, sqlite_registry,
+    ):
+        """缓存写门 = 结局门:拒绝/澄清/错误轮不进缓存。
+
+        ``_cached_final`` 重建时只保留 ``WorkflowState`` 字段,
+        ``clarification_question`` 活不下来 —— 这类轮若进了缓存,命中路径
+        会把「澄清」重算成「答复」。今天靠写门挡住,这条测试钉住它。
+        """
+        from trove.workflow.state import WorkflowState
+
+        manager, _ = self._manager(
+            tmp_home, sqlite_registry, list(self.RESPONSES),
+            query_sketch=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        for final in (
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                refusal={"reason": "no_model"},
+                clarification_question="请先建模",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                clarification_question="哪个地区?",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", hitl_status="rejected",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", verdict="OK", row_count=1, error="boom",
+            ),
+            # 下面四条能通过所有**旧的**门(裁决可缓存 / SQL 非空 / 行数足)——
+            # 结局门是它们唯一的拦截者。
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", verdict="OK", row_count=1,
+                refusal={"reason": "no_model"},
+                clarification_question="请先建模",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", verdict="OK", row_count=1,
+                clarification_question="哪个地区?",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", verdict="OK", row_count=1,
+                hitl_status="rejected",
+            ),
+            WorkflowState(
+                session_id=session.session_id, question="q",
+                sql="SELECT 1", verdict="OK", row_count=1,
+                hitl_status="pending",
+            ),
+        ):
+            manager._maybe_cache_exchange(session, final)
+        assert manager._result_cache == {}
+
+        answered = WorkflowState(
+            session_id=session.session_id, question="q",
+            sql="SELECT 1", verdict="OK", row_count=1,
+        )
+        manager._maybe_cache_exchange(session, answered)
+        assert len(manager._result_cache) == 1
+
     async def test_normalization_equivalence(self, tmp_home, sqlite_registry):
         """标点/大小写/空白变体归一化后命中同一键。"""
         manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
@@ -1915,6 +1984,53 @@ class TestRefusalInSummary:
         # 非拒绝轮 = None(三态:「没有拒绝」不冒充空 dict)
         plain = WorkflowState(session_id="s1", question="q")
         assert SessionManager._state_summary(plain)["refusal"] is None
+
+
+class TestOutcomeInSummary:
+    """P2:一次运行怎么结束的唯一分类,随 summary 交付。
+
+    SSE ``done`` / 历史回放 / run record finish 读的都是这一份 ——
+    降级标记不在这里(它是修饰,留在 analysis/error_info/outside_band 里)。
+    """
+
+    @staticmethod
+    def _outcome(**over):
+        from trove.agent.session import SessionManager
+        from trove.workflow.state import WorkflowState
+
+        state = WorkflowState(session_id="s1", question="q", **over)
+        return SessionManager._state_summary(state)["outcome"]
+
+    def test_answered(self):
+        assert self._outcome() == "answered"
+
+    def test_refusal_is_not_clarified(self):
+        # 拒绝轮同时写 clarification_question —— 判序错了,拒绝就从记录里
+        # 消失成一次「澄清」。这是生产路径里两者唯一同时出现的地方。
+        assert (
+            self._outcome(
+                refusal={"reason": "no_model"},
+                clarification_question="请先建模",
+            )
+            == "refused"
+        )
+
+    def test_clarification(self):
+        assert self._outcome(clarification_question="哪个地区?") == "clarified"
+
+    def test_error(self):
+        assert self._outcome(error="boom") == "failed"
+
+    def test_hitl_states(self):
+        assert self._outcome(hitl_status="pending") == "pending_approval"
+        assert self._outcome(hitl_status="rejected") == "cancelled"
+        assert self._outcome(hitl_status="approved") == "answered"
+
+    def test_value_comes_from_the_closed_set(self):
+        from trove.core.run_outcome import RUN_OUTCOMES
+
+        assert self._outcome() in RUN_OUTCOMES
+        assert "degraded" not in RUN_OUTCOMES
 
 
 class TestObjectColumnsInSummary:
