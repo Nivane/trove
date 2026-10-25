@@ -136,6 +136,31 @@ def constructor_targets(rel: str, tree: ast.Module) -> set[str]:
     return targets
 
 
+def canonical_class(
+    target: str, definitions: Mapping[str, str], sources: Sources
+) -> str | None:
+    """Resolve a re-exported class name to its defining qualified name.
+
+    ``from trove.services.action import ActionStore`` binds the package-level
+    name; the class is defined in ``trove.services.action.store``. One hop of
+    ``__init__.py`` re-export is followed (recursively); anything else is not
+    guessed.
+    """
+    if target in definitions:
+        return target
+    module, _, name = target.rpartition(".")
+    init_rel = module.replace(".", "/") + "/__init__.py"
+    source = sources.get(init_rel)
+    if source is None:
+        return None
+    next_target = import_bindings(init_rel, ast.parse(source)).get(name)
+    if not next_target or next_target == target:
+        return None
+    if next_target in definitions:
+        return next_target
+    return canonical_class(next_target, definitions, sources)
+
+
 def class_definitions(sources: Sources, suffix: str = "Store") -> dict[str, str]:
     """``{qualified class name: defining module}`` for classes named ``*suffix``."""
     found: dict[str, str] = {}

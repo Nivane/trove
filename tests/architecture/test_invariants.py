@@ -406,6 +406,18 @@ class TestResolveImports:
         assert "trove.storage.run_record_store.RunRecordStore" in targets
 
 
+def test_node_exists_rejects_a_missing_evidence_name():
+    """The evidence checker is a real lookup, not an always-true stub."""
+    assert not arch.node_exists(
+        "tests/architecture/test_invariants.py", None, "test_not_a_real_name"
+    )
+    assert arch.node_exists(
+        "tests/architecture/test_invariants.py",
+        None,
+        "test_registry_covers_exactly_the_frozen_ids",
+    )
+
+
 def test_registry_covers_exactly_the_frozen_ids():
     arch.assert_frozen(ID_SET, [item.id for item in INVARIANTS], "invariant id set")
 
