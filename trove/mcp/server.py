@@ -392,14 +392,17 @@ def build_mcp_server(
     ) -> dict[str, Any]:
         """Ask the datasource a natural-language question and get the answer.
 
-        Returns Markdown answer, generated SQL, row count, verdict, and
-        refusal info (semantic-model-first: uncovered questions are refused
-        with a reason, never guessed). Pass an existing ``session_id`` for
-        multi-turn context; omit for a fresh session.
+        Returns Markdown answer, generated SQL, row count, verdict, refusal
+        info (semantic-model-first: uncovered questions are refused with a
+        reason, never guessed), and ``outcome`` (answered / refused /
+        clarified / pending_approval / cancelled / failed). Pass an existing
+        ``session_id`` for multi-turn context; omit for a fresh session.
         """
+        from trove.core.run_outcome import classify_run
+
         question = (question or "").strip()
         if not question:
-            return {"error": "question is required"}
+            return {"error": "question is required", "outcome": "failed"}
         current = _call_identity()
         owner = str(current["id"]) if current else LOCAL_SUBJECT
         sid, session = await _get_session(session_id, owner=owner)
@@ -409,6 +412,7 @@ def build_mcp_server(
             return {
                 "session_id": sid,
                 "error": "datasource not allowed",
+                "outcome": "refused",
                 "refusal": (
                     f"datasource not allowed for the MCP identity: {requested}"
                 ),
@@ -420,7 +424,11 @@ def build_mcp_server(
                 scopes=(current or {}).get("scopes"),
             )
         except Exception as e:
-            return {"session_id": sid, "error": f"ask failed: {e}"}
+            return {
+                "session_id": sid,
+                "error": f"ask failed: {e}",
+                "outcome": "failed",
+            }
         return {
             "session_id": sid,
             "answer": state.final_response,
@@ -433,6 +441,16 @@ def build_mcp_server(
             # 执行期错误(含 [ERR:AUTHZ_*] 拒绝)**必须带回去**:丢掉它,
             # 被拒的调用就是「空 answer + 空 verdict」,读起来像模型没答。
             "error": state.error,
+            "outcome": classify_run(
+                # 结局是标签,不许弄沉一条已经交付的答案:MCP 面允许
+                # 部分状态(测试替身/老会话),缺字段按「没有该信号」算。
+                error=getattr(state, "error", "") or "",
+                refusal=getattr(state, "refusal", None),
+                clarification_question=(
+                    getattr(state, "clarification_question", "") or ""
+                ),
+                hitl_status=getattr(state, "hitl_status", "") or "",
+            ),
         }
 
     @mcp.tool()
