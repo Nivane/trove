@@ -129,6 +129,110 @@ class TestIdempotentWrites:
             await store.dispose()
 
 
+class TestLifecycleGate:
+    async def test_unknown_status_raises_loudly(self, tmp_path):
+        """闭集不许静默：未知生命周期状态不是一条读端猜得出的行。"""
+        store = RunRecordStore(tmp_path)
+        try:
+            with pytest.raises(ValueError, match="unknown status 'weird'"):
+                await store.write(_header("r1", status="weird"), [])
+            assert await store.get("r1") is None, "拒绝发生在任何写入之前"
+        finally:
+            await store.dispose()
+
+    async def test_omitted_status_defaults_to_running(self, tmp_path):
+        store = RunRecordStore(tmp_path)
+        try:
+            header = _header("r1")
+            header.pop("status")
+            await store.write(header, [])
+            assert (await store.get("r1"))["header"]["status"] == "running"
+        finally:
+            await store.dispose()
+
+    async def test_fresh_buffer_cannot_blank_identity(self, tmp_path):
+        """HITL 恢复/淘汰后的新 buffer 身份为空 —— 不能让空值抹掉已存身份。"""
+        store = RunRecordStore(tmp_path)
+        try:
+            await store.write(_header("r1", kb_rev="abc"), [])
+            await store.write(
+                _header("r1", session_id="", user_id="", question="",
+                        workflow="", datasource="", kb_rev="", status="done"),
+                [],
+            )
+            header = (await store.get("r1"))["header"]
+            assert header["session_id"] == "s1"
+            assert header["user_id"] == "u1"
+            assert header["question"] == "q?"
+            assert header["workflow"] == "reflection"
+            assert header["datasource"] == "test_db"
+            assert header["kb_rev"] == "abc"
+            assert header["status"] == "done", "状态仍按最新快照推进"
+        finally:
+            await store.dispose()
+
+    async def test_fresh_buffer_cannot_blank_finish_evidence(self, tmp_path):
+        store = RunRecordStore(tmp_path)
+        try:
+            await store.write(
+                _header("r1", status="pending_hitl",
+                        finish_json={"verdict": "OK"},
+                        assembly_json={"blocks": ["few_shots"]},
+                        truncation_json={"events_truncated": 1}, truncated=1),
+                [],
+            )
+            await store.write(_header("r1", status="running"), [])
+            header = (await store.get("r1"))["header"]
+            assert header["finish"] == {"verdict": "OK"}
+            assert header["assembly"] == {"blocks": ["few_shots"]}
+            assert header["truncation"] == {"events_truncated": 1}
+            assert header["truncated"] is True
+        finally:
+            await store.dispose()
+
+
+class TestSeqReconciliation:
+    """"新 buffer 从 0 重新编号" 不能把后续事件整段丢掉（P3 修复）。"""
+
+    async def test_recreated_buffer_events_are_appended_not_dropped(self, tmp_path):
+        store = RunRecordStore(tmp_path)
+        try:
+            await store.write(_header("r1"), [_event(0, "run", n=0)])
+            n = await store.write(_header("r1"), [
+                _event(0, "llm", n=1),
+                _event(1, "tool", n=2),
+            ])
+            assert n == 2, "两条都是新事件,必须真的写进去"
+            record = await store.get("r1")
+            assert [(e["seq"], e["payload"]["n"]) for e in record["events"]] == [
+                (0, 0), (1, 1), (2, 2)]
+        finally:
+            await store.dispose()
+
+    async def test_repeated_flush_of_a_recreated_buffer_stays_idempotent(
+            self, tmp_path):
+        store = RunRecordStore(tmp_path)
+        try:
+            await store.write(_header("r1"), [_event(0, "run", n=0)])
+            snapshot = [_event(0, "llm", n=1), _event(1, "tool", n=2)]
+            await store.write(_header("r1"), snapshot)
+            again = await store.write(_header("r1"), snapshot)
+            assert again == 0, "同一快照重发不该再长出第三份"
+            record = await store.get("r1")
+            assert [e["seq"] for e in record["events"]] == [0, 1, 2]
+        finally:
+            await store.dispose()
+
+    async def test_written_counts_only_rows_actually_inserted(self, tmp_path):
+        store = RunRecordStore(tmp_path)
+        try:
+            assert await store.write(_header("r1"), [_event(0)]) == 1
+            assert await store.write(_header("r1"), [_event(0)]) == 0
+            assert await store.write(_header("r1"), [_event(0), _event(1)]) == 1
+        finally:
+            await store.dispose()
+
+
 class TestRetention:
     async def test_purge_removes_run_and_events_together(self, tmp_path):
         store = RunRecordStore(tmp_path)
