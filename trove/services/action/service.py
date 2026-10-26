@@ -65,6 +65,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from trove.core.clock import parse_utc, utc_now
 from trove.core.logging import get_logger
 from trove.services.action.dispatcher import ActionDispatcher, classify_failure
 from trove.services.action.guard import (
@@ -192,7 +193,7 @@ class ActionService:
 
     @staticmethod
     def _now() -> datetime:
-        return datetime.now()
+        return utc_now()
 
     async def _entity_spec(
         self, datasource: str, dim_ref: str,
@@ -567,7 +568,10 @@ class ActionService:
         guards = self.guards
         if not self.enabled or int(guards.retry_backoff_base_s or 0) <= 0:
             return 0
-        now_dt = now or self._now()
+        # 归一到 aware UTC:``next_attempt_at`` / ``attempted_at`` 都按
+        # parse_utc 归一(旧行 naive 本地 → 瞬时),这里不归一会在比较处
+        # 抛 TypeError。注入的测试时钟可能是 naive 的 —— 那正是旧纪元形状。
+        now_dt = parse_utc(now or self._now()) or utc_now()
         candidates = await self.store.list_proposals(status="failed", limit=limit)
         retried = 0
         for p in candidates:
@@ -782,9 +786,22 @@ class ActionService:
             (now or self._now()).isoformat(timespec="seconds"))
 
     def _is_expired(self, p: ActionProposal) -> bool:
+        """Expiry across the naive-local / aware-UTC era boundary.
+
+        Legacy proposals stored ``expires_at`` on the local clock with no
+        offset; new ones are aware UTC. A string compare here would keep an
+        expired legacy proposal approvable for the machine's offset (or drop
+        a live one), so both sides are parsed and compared as instants.
+        An unparseable deadline is **not** treated as expired — expiry blocks
+        approval, and a bad row must not be able to make that decision.
+        """
         if not p.expires_at:
             return False
-        return p.expires_at < self._now().isoformat(timespec="seconds")
+        expires = parse_utc(p.expires_at)
+        now = parse_utc(self._now())
+        if expires is None or now is None:
+            return False
+        return expires < now
 
     @staticmethod
     def _envelope(

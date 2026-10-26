@@ -125,6 +125,24 @@ class TestCaptureBasics:
         assert [e["kind"] for e in events] == ["run", "llm"]
         assert header["finished_at"]
 
+    async def test_finish_carries_the_answer_cache_fact(self):
+        """缓存命中是运行事实:finish 里必须能读出「这一轮是命中的」。
+
+        运行账本靠它区分「零成本的一轮」与「跑过但没测到成本的一轮」;
+        False 也是**测到的事实**(跑过、未命中),不能被当成空值丢掉。
+        """
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", final=_final(cached=True))
+        await rec.drain()
+        assert json.loads(store.writes[-1][0]["finish_json"])["cached"] is True
+
+        rec.capture_run_start("r2")
+        rec.capture_finish("r2", final=_final(cached=False))
+        await rec.drain()
+        assert json.loads(store.writes[-1][0]["finish_json"])["cached"] is False
+
     async def test_finish_projection_omits_and_caps_rows(self):
         store = FakeStore()
         rec = RunRecorder(store)
@@ -182,6 +200,44 @@ class TestCaptureBasics:
         rec.capture_cancel("r1")
         await rec.drain()
         assert store.writes[-1][0]["status"] == "cancelled"
+
+
+class TestLifecycleFunnel:
+    """``_transition`` 是 ``status`` / ``finished_at`` 的唯一写点（P3）。
+
+    状态说「终态」而 ``finished_at`` 还空着（或反过来），是一条自相矛盾的
+    记录；两个字段必须由同一次转移一起写。
+    """
+
+    def _buffer(self):
+        rec = RunRecorder(FakeStore())
+        rec.capture_run_start("r1", question="q?")
+        return rec._buffers["r1"]
+
+    def test_hitl_is_a_pause_not_a_finish(self):
+        buf = self._buffer()
+        run_record._transition(buf, "pending_hitl", finished=False)
+        assert buf.header["status"] == "pending_hitl"
+        assert buf.header["finished_at"] is None
+
+    def test_resuming_from_hitl_clears_the_pause(self):
+        # HITL 恢复后 buffer 被淘汰重建时,初始 running 不能带着旧 finished_at。
+        buf = self._buffer()
+        run_record._transition(buf, "pending_hitl", finished=False)
+        run_record._transition(buf, "running", finished=False)
+        assert buf.header["finished_at"] is None
+
+    @pytest.mark.parametrize(
+        "status", ["done", "failed", "error", "cancelled"])
+    def test_every_terminal_state_stamps_finished_at(self, status):
+        buf = self._buffer()
+        run_record._transition(buf, status, finished=True)
+        assert buf.header["finished_at"]
+
+    def test_unknown_status_raises(self):
+        buf = self._buffer()
+        with pytest.raises(ValueError, match="unknown run record status"):
+            run_record._transition(buf, "weird", finished=True)
 
 
 class TestFinishOutcome:
@@ -403,6 +459,75 @@ class TestCaps:
         await rec.drain()
         assert "r1" not in rec._buffers
         assert set(rec._buffers) == {"r2", "r3"}
+
+
+class TestRecoveryFidelity:
+    async def test_identity_survives_buffer_eviction(self, tmp_path):
+        """start 带身份 → 淘汰 → 空身份 finish → 读回身份仍在（P3 修复）。
+
+        HITL 恢复 / 进程重启后 buffer 是全新的（身份为空）；终态落盘只能用
+        既有行补齐，不能把库里已存的 session/user/question 抹掉。
+        """
+        from trove.storage.run_record_store import RunRecordStore
+
+        store = RunRecordStore(tmp_path)
+        try:
+            rec = RunRecorder(store)
+            rec.capture_run_start(
+                "r1", session_id="s1", user_id="u1", question="q?",
+                workflow="reflection", datasource="test_db")
+            await rec.drain()
+            # 模拟进程内驱逐:首轮 flush 已落盘,buffer 没了。
+            rec._buffers.pop("r1")
+            rec._total_bytes = 0
+
+            rec.capture_finish("r1", final=_final())
+            await rec.drain()
+
+            header = (await store.get("r1"))["header"]
+            assert header["session_id"] == "s1"
+            assert header["user_id"] == "u1"
+            assert header["question"] == "q?"
+            assert header["workflow"] == "reflection"
+            assert header["datasource"] == "test_db"
+            assert header["status"] == "done"
+            assert header["finish"]["sql"] == "SELECT 1"
+            assert header["finish"]["outcome"] == "answered"
+        finally:
+            await store.dispose()
+
+    async def test_resumed_buffer_events_are_appended_not_dropped(
+            self, tmp_path):
+        """HITL 恢复后新 buffer 的 seq 从 0 重来,但库里已有 seq 0/1 —— 事件必须追加。
+
+        只做 ``ON CONFLICT DO NOTHING`` 时,恢复后那轮 flush 的 llm/tool 事件
+        会被旧 seq 挡掉,终态记录只剩暂停前那几条（P3 修复）。
+        """
+        from trove.storage.run_record_store import RunRecordStore
+
+        store = RunRecordStore(tmp_path)
+        try:
+            rec = RunRecorder(store)
+            rec.capture_run_start("r1", question="q?")
+            rec.capture_hitl("r1", sql="SELECT 1", question="q?")
+            await rec.drain()
+            assert [e["seq"] for e in (await store.get("r1"))["events"]] == [0, 1]
+
+            rec._buffers.pop("r1")  # HITL 恢复 / 淘汰：buffer 没了
+            rec._total_bytes = 0
+            rec.capture_llm("r1", output="SELECT 1")
+            rec.capture_tool("r1", name="check_result", observation="ok")
+            rec.capture_finish("r1", final=_final())
+            await rec.drain()
+
+            record = await store.get("r1")
+            assert [e["kind"] for e in record["events"]] == [
+                "run", "hitl", "llm", "tool"]
+            assert [e["seq"] for e in record["events"]] == [0, 1, 2, 3]
+            assert record["events"][3]["payload"]["name"] == "check_result"
+            assert record["header"]["status"] == "done"
+        finally:
+            await store.dispose()
 
 
 class TestModuleSingleton:

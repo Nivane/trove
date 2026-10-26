@@ -599,16 +599,26 @@ async def get_run_record(
     # 结局:done 的差别(答复/拒绝/澄清)只在 finish 里,读端不必自己
     # 解析;running 尚未结束 → None(三态,不猜)。store 返回
     # ``{"header": …, "events": …}`` —— 状态与 finish 都在 header 里。
+    from trove.core.run_ledger import build_run_ledger
     from trove.core.run_outcome import record_outcome
 
     header = record.get("header") or {}
     finish = header.get("finish")
-    record = {
-        **record,
-        "outcome": record_outcome(
+    try:
+        outcome = record_outcome(
             str(header.get("status") or ""),
             finish if isinstance(finish, dict) else None,
-        ),
+        )
+    except ValueError:
+        # 写端闭集抛错,读端相反:旧/坏记录不该让管理端 500。
+        # 账本对同一条记录同样给 outcome=None + ``unknown_status``。
+        outcome = None
+    record = {
+        **record,
+        "outcome": outcome,
+        # 运行账本(生命周期 + 代价,见 trove/core/run_ledger.py)。纯派生
+        # 不写回;这里是它唯一的出口 —— SSE、用户回放、CLI 都不带。
+        "ledger": build_run_ledger(record),
     }
     if not include_raw:
         return _strip_raw(record)

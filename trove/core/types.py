@@ -50,6 +50,16 @@ class Session:
 
 # ── Task ─────────────────────────────────────────────────
 
+#: 任务状态闭集（``Task.status``）。状态词汇注册表（P3）的登记项：**只登记，
+#: 不合并** —— 任务的重做/跳过是它自己的域内语义，不和运行结局同义。
+TASK_STATUSES: tuple[str, ...] = (
+    "pending",
+    "in_progress",
+    "done",
+    "failed",
+    "skipped",
+)
+
 
 @dataclass
 class Task:
@@ -63,7 +73,7 @@ class Task:
     task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = ""
     title: str = ""  # 子问题原文(该任务的 question)
-    status: Literal["pending", "in_progress", "done", "failed", "skipped"] = "pending"
+    status: Literal[*TASK_STATUSES] = "pending"
     position: int = 0  # 列表顺序 0..n
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

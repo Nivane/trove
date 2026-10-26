@@ -204,7 +204,11 @@ def _schedule_parser() -> argparse.ArgumentParser:
 
 async def main_schedule(argv: list[str]) -> None:
     args = _schedule_parser().parse_args(argv)
-    from trove.main import build_checkpointer, create_app_components
+    from trove.main import (
+        _dispose_components,
+        build_checkpointer,
+        create_app_components,
+    )
 
     config = await _load_config_with(args)
     async with build_checkpointer(config.home) as checkpointer:
@@ -263,4 +267,7 @@ async def main_schedule(argv: list[str]) -> None:
                     last_sweep = _time.time()
                 await asyncio.sleep(args.poll_seconds)
         finally:
-            await components["connector_registry"].close_all()
+            # 与主入口同一条收尾清单:先 drain 运行记录(终态 capture/flush
+            # 可能还在飞),再按 DISPOSE_PLAN 释放全部连接。只关连接器会让
+            # aiosqlite worker 线程挂住退出,且最后一批运行记录静默丢失。
+            await _dispose_components(components)

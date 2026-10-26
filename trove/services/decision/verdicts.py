@@ -41,6 +41,11 @@ MAX_VERDICT_ROWS = 50
 #: threshold, stated here so the UI and the tests share one number.
 MAGNITUDE_JUMP = 0.10
 
+#: 判定结局闭集（``VerdictRecord.status``）。镜像 jobs 运行行三态，但**这是
+#: 判定自己的域**：错误是一次判不了的事实，仍是一条 verdict。状态词汇注册表
+#: （P3）登记该项，值不变。
+VERDICT_STATUSES: tuple[str, ...] = ("ok", "alert", "error")
+
 
 @dataclass
 class VerdictRecord:

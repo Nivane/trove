@@ -29,6 +29,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from trove.core.clock import utc_now
 from trove.core.logging import get_logger
 from trove.core.serialize import json_safe
 from trove.services.analysis.engine import time_conds
@@ -596,7 +597,7 @@ class DecisionService:
                 "scope 'aggregate' cannot be combined with subject.dimensions "
                 f"({', '.join(rule.subject.dimensions)}) — the query groups, so "
                 "there is no aggregate row to judge")
-        anchor = (now or datetime.now()).date()
+        anchor = (now or utc_now()).date()
         dialect = await self._dialect(datasource)
         model = self._model_for(datasource, dialect)
         cur_window, base_window = self._resolve_window(rule, anchor)
@@ -697,7 +698,7 @@ class DecisionService:
             },
             "times": {
                 "anchor_date": anchor.isoformat(),
-                "evaluated_at": (now or datetime.now()).isoformat(),
+                "evaluated_at": (now or utc_now()).isoformat(),
             },
             "rows": rows,
             "evidence": {

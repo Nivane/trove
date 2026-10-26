@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+from trove.core.clock import utc_now
 from trove.services.action.models import ActionProposal, ActionTemplate
 from trove.services.action.template_render import (
     TEMPLATE_VARIABLES,
@@ -62,7 +63,7 @@ def anchor_of(outcome: Any, now: datetime | None = None) -> str:
     times = (getattr(outcome, "evidence", None) or {}).get("times")
     if isinstance(times, dict) and times.get("anchor_date"):
         return str(times["anchor_date"])
-    return (now or datetime.now()).date().isoformat()
+    return (now or utc_now()).date().isoformat()
 
 
 def proposal_key(
@@ -223,7 +224,7 @@ def build_proposal(
     the caller creates *no* proposal in that case (a half-rendered outbound
     message is worse than a missing one), and the failure is loud.
     """
-    now = now or datetime.now()
+    now = now or utc_now()
     created_at = now.isoformat(timespec="seconds")
     pid = proposal_id or ("p-" + uuid.uuid4().hex[:16])
     rule_digest = str(

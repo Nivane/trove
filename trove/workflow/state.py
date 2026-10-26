@@ -306,6 +306,12 @@ class WorkflowState(BaseModel):
     # 都读这一个字段 —— 各判一次迟早出现两处不一致,而披露的不一致等于没披露。
     answer_source: str = ""
 
+    # 精确结果缓存命中(进程内存,kb 同问句 TTL 内直接复用)。这是**运行事实**
+    # 而不是答案属性:命中轮零 LLM、零执行,缓存里的 summary 由
+    # ``_cached_final`` 重建 —— 在此之前「这轮是命中的」在 state 里没有痕迹,
+    # 运行账本只能看到一次耗时 ~0、没有 token 的普通答复。
+    cached: bool = False
+
     # —— 答案级置信度(output 节点唯一写入,设计 2026-09-30 §6.1)——
     #
     # 两个分数的分工:

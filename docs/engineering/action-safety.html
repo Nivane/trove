@@ -70,7 +70,7 @@
 
     <p>
       <code>ActionService</code> 的构造签名
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L158">service.py:158 <span class="ref-line">ActionService.__init__</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L159">service.py:159 <span class="ref-line">ActionService.__init__</span></a>
       就是这条不变量本身：<code>(store, templates, dispatcher, enabled, approval_ttl_hours,
       max_payload_bytes, max_attempts, lang, verifier)</code>——没有 connectors，没有 session，
       没有任何能执行 SQL 的东西。<code>verifier</code> 是<strong>唯一经评审的例外</strong>：
@@ -123,7 +123,7 @@
     <p>
       提案由判定触发时自动生成（<a href="closed-loop.html">runner 内全 try/except，绝不阻断 schedule</a>），
       幂等键 = <code>sha256(rule_id | rule_digest | anchor_date | template | params)[:32]</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L38">propose.py:38 <span class="ref-line">idempotency_key</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L39">propose.py:39 <span class="ref-line">idempotency_key</span></a>。
       同一锚点日期的同一条判定只可能产生一个提案——job 重跑、sweep 重叠、
       手工补跑都不会发出第二条同样内容的消息（存储层还有唯一索引兜底）。
     </p>
@@ -167,7 +167,7 @@ flowchart LR
     <p>
       v1 单人审批（<code>APPROVALS_REQUIRED_V1 = 1</code>，模板声明别的值直接拒绝——闭集不做半成品）。
       审批动作前可以先<strong>预演</strong>：<code>dry_run</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L688">service.py:688 <span class="ref-line">dry_run</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L692">service.py:692 <span class="ref-line">dry_run</span></a>
       真跑全部前置（通道解析、payload 形状、护栏判定），<strong>不发 POST、不改提案、只落轨迹</strong>。
       预演和真发的唯一区别是那次 POST 本身——两者共用同一个解析入口
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L186">dispatcher.py:186 <span class="ref-line">preflight</span></a>，
@@ -176,7 +176,7 @@ flowchart LR
 
     <p>
       护栏是三道纯函数
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L35">guard.py:35 <span class="ref-line">ActionGuards</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L37">guard.py:37 <span class="ref-line">ActionGuards</span></a>，
       <strong>默认全关</strong>（未配置护栏的部署逐字节走老路径）：
     </p>
 
@@ -246,7 +246,7 @@ flowchart LR
     <p>
       不是每个环境都愿意开一个 webhook 入口。所以外送之外还有<strong>拉</strong>：
       对端系统（Agent、内网工具）通过 MCP 主动来取
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L341">server.py:341 <span class="ref-line">trove://proposals</span></a>——
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L350">server.py:350 <span class="ref-line">trove://proposals</span></a>——
       资源 <code>trove://proposals</code> 是「已批准且未过期」提案的只读索引，
       详情走 <code>fetch_proposal</code>，行动真的执行完之后用 <code>ack_proposal</code> 回执
       （落一条 <code>channel="ack"</code> 的投递行并置 <code>delivered</code>）。
@@ -366,7 +366,7 @@ action:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 5c4f9bf</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e6c3705</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

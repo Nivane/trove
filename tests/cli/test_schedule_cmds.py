@@ -185,6 +185,82 @@ async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
     assert captured["scans"] is components["scans"]
 
 
+@pytest.mark.asyncio
+async def test_daemon_exit_drains_records_and_disposes_store(
+        tmp_path, monkeypatch):
+    """收尾走 ``_dispose_components``:终态记录落盘 + store 释放。
+
+    旧收尾只 ``connector_registry.close_all()``:挂在场上的终态 flush 被丢,
+    aiosqlite worker 线程还会挂住进程退出。
+    """
+    from types import SimpleNamespace
+
+    from trove.cli import schedule_cmds
+    from trove.storage.run_record_store import RunRecordStore
+    from trove.tracing.run_record import (
+        configure_run_records,
+        get_run_recorder,
+        reset_run_records,
+    )
+
+    store = RunRecordStore(tmp_path)
+    configure_run_records(store, enabled=True)
+    rec = get_run_recorder()
+    assert rec is not None
+    components = {
+        "session_manager": object(),
+        "run_records": store,
+        "decision": object(),
+        "verdicts": object(),
+        "actions": object(),
+        "subscriptions": object(),
+        "scans": object(),
+    }
+
+    class _FakeRunner:
+        def __init__(self, sm, jobs, **kw):
+            pass
+
+        async def tick(self):
+            rec.capture_run_start("r1", question="q?")
+            rec.capture_finish("r1", final=SimpleNamespace(
+                sql="SELECT 1", verdict="OK", row_count=1, error=""))
+            return []
+
+    class _FakeCheckpointer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_load_config(args):
+        from trove.core.config import AgentConfig
+
+        return AgentConfig()
+
+    async def fake_create(args, config, checkpointer):
+        return components
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(schedule_cmds, "_load_config_with", fake_load_config)
+    monkeypatch.setattr("trove.main.build_checkpointer",
+                        lambda home: _FakeCheckpointer())
+    monkeypatch.setattr("trove.main.create_app_components", fake_create)
+    monkeypatch.setattr("trove.services.jobs.runner.SchedulerRunner", _FakeRunner)
+    try:
+        await schedule_cmds.main_schedule(["--once"])
+    finally:
+        reset_run_records()
+
+    # 先 drain 再 dispose:终态记录已落盘,连接已释放(读会按需求重连)。
+    assert store._backend._conn is None, "daemon 退出后 store 必须已释放"
+    record = await store.get("r1")
+    assert record is not None
+    assert record["header"]["status"] == "done"
+    await store.dispose()
+
+
 def test_should_sweep():
     """周期判断:间隔内不触发,超过触发,interval<=0 关闭。"""
     from trove.cli.schedule_cmds import should_sweep

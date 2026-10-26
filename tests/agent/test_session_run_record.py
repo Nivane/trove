@@ -54,13 +54,17 @@ class RecordingLLM:
         return {"content": out, "tool_calls": []}
 
 
-def _manager(tmp_home, sqlite_registry, responses, *, hitl=False):
+def _manager(tmp_home, sqlite_registry, responses, *, hitl=False,
+             result_cache=False):
     from langgraph.checkpoint.memory import InMemorySaver
 
     from trove.agent.session import SessionManager
     from trove.storage.session_store import SessionStore
 
-    config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=hitl)
+    config = AgentConfig(
+        home=str(tmp_home), target="mock/model", hitl=hitl,
+        result_cache=result_cache,
+    )
     llm = RecordingLLM(responses)
     graphs = build_graphs(
         GraphServices(
@@ -114,6 +118,10 @@ async def test_ask_writes_a_done_record(tmp_home, sqlite_registry, store):
         assert header["finish"]["sql"] == "SELECT name FROM students;"
         assert header["finish"]["verdict"] == "OK"
         assert header["assembly"]
+        # 非流式路径与流式同一条结算:finish 带耗时与 token 汇总
+        # (此前 ask() 从不调 _run_stats,运行记录缺这两项)。
+        assert isinstance(header["finish"]["total_elapsed_ms"], int)
+        assert header["finish"]["token_usage"]["total"] == 15  # 3 次 × 5
 
         kinds = [e["kind"] for e in record["events"]]
         assert kinds[0] == "run"
@@ -186,6 +194,49 @@ async def test_store_failure_does_not_change_the_answer(
         reset_run_records()
 
 
+async def test_cache_hit_finish_is_marked_and_zero_cost(
+        tmp_home, sqlite_registry, store):
+    """命中轮的可观测事实:零 LLM、无 token、耗时实测、``cached=True``。
+
+    账本靠 finish.cached 区分「零成本的一轮」与「跑过但没测到成本」;
+    这里同时钉住 ask() 的缓存分支也结算 stats。
+    """
+    from trove.core.run_ledger import build_run_ledger
+
+    manager = _manager(
+        tmp_home, sqlite_registry, ["query", _SQL, "OK"], result_cache=True)
+    try:
+        session = await manager.start_session(project_cwd="/tmp/p")
+        first = await manager.ask(session=session, question=_Q)
+        second = await manager.ask(session=session, question=_Q)
+        assert second.cached is True
+        await drain_run_records()
+
+        run_record = await store.get(first.run_id)
+        finish = run_record["header"]["finish"]
+        assert finish["cached"] is False
+        assert finish["token_usage"]["total"] == 15
+        first_ledger = build_run_ledger(run_record)
+        assert first_ledger["cache"]["answer_cached"] is False
+        assert first_ledger["llm"]["calls"] == 3
+        assert first_ledger["llm"]["tokens_source"] == "finish"
+        assert first_ledger["llm"]["tokens"]["total"] == 15
+
+        hit_record = await store.get(second.run_id)
+        finish = hit_record["header"]["finish"]
+        assert finish["cached"] is True
+        assert isinstance(finish["total_elapsed_ms"], int)
+        # 命中轮没调 LLM → 没有 token 事实(不是「测到 0」)。
+        assert "token_usage" not in finish
+        ledger = build_run_ledger(hit_record)
+        assert ledger["cache"]["answer_cached"] is True
+        assert ledger["llm"]["calls"] == 0
+        assert ledger["llm"]["tokens_source"] is None
+        assert "tokens_unmeasured" in ledger["coverage"]
+    finally:
+        await manager.dispose()
+
+
 async def test_switch_off_leaves_no_database(tmp_home, sqlite_registry):
     s = RunRecordStore(tmp_home)
     configure_run_records(s, enabled=False)
@@ -226,6 +277,10 @@ async def test_hitl_updates_one_header_across_resume(
         record = await store.get(run_id)
         assert record["header"]["status"] == "done"
         assert record["header"]["finish"]["sql"] == "SELECT name FROM students;"
+        # 续跑在 finish 之前结算整条 tally(中断前的调用也在其中),而不是
+        # 只把统计塞进 SSE summary。
+        assert isinstance(record["header"]["finish"]["total_elapsed_ms"], int)
+        assert record["header"]["finish"]["token_usage"]["total"] > 0
         seqs_after = [e["seq"] for e in record["events"]]
         assert seqs_after[: len(seqs_before)] == seqs_before
         assert seqs_after == list(range(len(seqs_after)))

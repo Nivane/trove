@@ -41,6 +41,12 @@ RECORD_STATUS_OUTCOME: Mapping[str, str | None] = {
     "cancelled": "cancelled",
 }
 
+#: 运行记录生命周期状态的**唯一闭集**（上面映射的键）。写端（recorder 的
+#: 唯一转移漏斗、store 的 upsert）与读端（本模块、管理端投影）都认这一份；
+#: tracing 侧另有 :data:`trove.tracing.run_record.RUN_RECORD_STATUSES` 镜像
+#: 常量，由机检保证两者逐值相等。
+RECORD_STATUSES: tuple[str, ...] = tuple(RECORD_STATUS_OUTCOME)
+
 
 def classify_run(
     *,

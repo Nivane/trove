@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from trove.core.clock import era_predicate
 from trove.core.logging import get_logger
 from trove.services.decision.verdicts import VerdictRecord
 
@@ -202,11 +203,23 @@ class VerdictStore:
         default is empty, i.e. keep everything (same discipline as
         ``memory.retention_days``: an audit trail that expires by default is
         an audit trail that is missing exactly when it is needed).
+
+        The cutoff is the mixed-era predicate: verdicts written before the UTC
+        clock carry a naive local ``evaluated_at``, and a single string compare
+        would purge (or spare) a whole local offset's worth of history. An
+        unparseable cutoff purges nothing — retention must not act on a bound
+        nobody could read.
         """
+        predicate = era_predicate("evaluated_at", "<", cutoff_iso)
+        if predicate is None:
+            logger.warning("verdict retention: unparseable cutoff %r — skipped",
+                           cutoff_iso)
+            return 0
+        where, params = predicate
         conn = await self._conn()
         try:
             cursor = await conn.execute(
-                "DELETE FROM verdicts WHERE evaluated_at < ?", (cutoff_iso,),
+                f"DELETE FROM verdicts WHERE {where}", params,
             )
             deleted = int(getattr(cursor, "rowcount", 0) or 0)
             await conn.commit()
@@ -227,8 +240,11 @@ class VerdictStore:
         where = ["datasource = ?", "rule_id = ?"]
         params: list[Any] = [datasource, rule_id]
         if since:
-            where.append("evaluated_at >= ?")
-            params.append(since)
+            predicate = era_predicate("evaluated_at", ">=", since)
+            if predicate is not None:          # unreadable → no lower bound
+                cond, cond_params = predicate
+                where.append(cond)
+                params.extend(cond_params)
         params.append(int(limit))
         conn = await self._conn()
         try:

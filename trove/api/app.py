@@ -14,7 +14,7 @@ import contextlib
 import re
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -32,6 +32,7 @@ from trove.api.routers import (
     semantic,
     semantic_query,
 )
+from trove.core.clock import iso_utc, utc_now
 from trove.core.errors import DatasourceError, SessionError
 from trove.core.logging import get_logger
 from trove.services.kb.governance import ExampleCertificationError
@@ -88,8 +89,7 @@ async def _purge_verdicts(app: FastAPI) -> None:
     if store is None or not isinstance(days, int) or days <= 0:
         return
     try:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat(
-            timespec="seconds")
+        cutoff = iso_utc(utc_now() - timedelta(days=days))
         purged = await store.purge_before(cutoff)
         if purged:
             logger.info("[decision] verdict retention: purged %d row(s)", purged)
@@ -115,8 +115,7 @@ async def _purge_run_records(app: FastAPI) -> None:
             return
         # 写入侧用 UTC(store.utc_now),cutoff 必须同钟 —— 本地时区会把
         # 保留窗口整体平移一个偏移量。
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(
-            timespec="seconds")
+        cutoff = iso_utc(utc_now() - timedelta(days=days))
         purged = await store.purge_before(cutoff)
         if purged.get("runs") or purged.get("events"):
             logger.info("[run_records] retention: purged %s run(s) / %s event(s)",

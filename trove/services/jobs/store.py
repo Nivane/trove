@@ -31,6 +31,14 @@ logger = get_logger(__name__)
 
 JOBS_DIR_NAME = "jobs"
 
+#: 一次定时运行的结局闭集（``runs.status``）。此前只活在 schema 注释与写入
+#: 点里；本常量是状态词汇注册表（P3）的登记项，消费面不因此校验——jobs 的
+#: 状态机改造（``start_run`` 先写 ok 的假成功）留给后续批次。
+RUN_STATUSES: tuple[str, ...] = ("ok", "error", "alert")
+
+#: 一次投递尝试的结局闭集（``deliveries.status``）。
+DELIVERY_STATUSES: tuple[str, ...] = ("sent", "failed")
+
 _CREATE_JOBS = """CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

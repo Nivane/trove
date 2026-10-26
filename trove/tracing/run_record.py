@@ -62,7 +62,8 @@ _KIND_DROPPABLE = ("tool_model",)
 _FINISH_KEEP = (
     "run_id", "session_id", "question", "rewritten_question", "datasource",
     "topic", "sql", "model", "row_count", "verdict", "reason",
-    "answer_source", "sql_confidence", "confidence", "confidence_evidence",
+    "answer_source", "cached", "sql_confidence", "confidence",
+    "confidence_evidence",
     "error", "error_info", "refusal", "hitl_status", "final_response",
     # 运行结局:tracing 里唯一能读出「拒绝/澄清/答复」的区别(header.status
     # 对三者都是 done)。不可裁剪 —— 见 _FINISH_DROP_ORDER。
@@ -86,6 +87,36 @@ STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 STATUS_ERROR = "error"
 STATUS_CANCELLED = "cancelled"
+
+#: 生命周期闭集的镜像常量（权威定义在 ``trove.core.run_outcome`` 的
+#: ``RECORD_STATUSES``；tracing 是收口端，不反向定义词汇）。机检钉「集合
+#: 相等」，任何一边增删都会红。顺序 = 生命周期推进顺序，不是优先级。
+RUN_RECORD_STATUSES: tuple[str, ...] = (
+    STATUS_RUNNING,
+    STATUS_PENDING_HITL,
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_ERROR,
+    STATUS_CANCELLED,
+)
+
+
+def _transition(buf: _Buffer, status: str, *, finished: bool) -> None:
+    """**唯一**的生命周期转移：status 与 finished_at 一起写。
+
+    四个 capture 方法都改走这里 —— 状态的「是否终态」与 ``finished_at``
+    有值/为空是同一件事，各写各的迟早不一致（HITL 恢复时把 ``finished_at``
+    留在旧值上，就是一条自相矛盾的记录）。``_Buffer.__init__`` 的初始
+    ``running`` 是唯一例外（还没有一次转移）。机检冻结了这个形状：任何
+    capture 直写 ``header["status"]`` / ``header["finished_at"]`` 都会红。
+
+    未知状态抛错：闭集不许静默兜底（外层 ``capture_*`` 的 ``_safe`` 会把
+    它降级成一条警告，不会让一次运行失败）。
+    """
+    if status not in RUN_RECORD_STATUSES:
+        raise ValueError(f"unknown run record status: {status!r}")
+    buf.header["status"] = status
+    buf.header["finished_at"] = _now() if finished else None
 
 
 def _now() -> str:
@@ -581,8 +612,7 @@ class RunRecorder:
         if not run_id or not self.enabled():
             return
         buf = self._buffer(run_id)
-        buf.header["status"] = STATUS_PENDING_HITL
-        buf.header["finished_at"] = None
+        _transition(buf, STATUS_PENDING_HITL, finished=False)
         self._append(buf, {
             "kind": "hitl",
             "payload": {
@@ -598,9 +628,8 @@ class RunRecorder:
         if not run_id or not self.enabled():
             return
         buf = self._buffer(run_id)
-        buf.header["status"] = STATUS_ERROR
+        _transition(buf, STATUS_ERROR, finished=True)
         buf.header["error"] = error or ""
-        buf.header["finished_at"] = _now()
         self._append(buf, {
             "kind": "error",
             "payload": {"error": error or "", "error_info": error_info or {}},
@@ -611,9 +640,8 @@ class RunRecorder:
         if not run_id or not self.enabled():
             return
         buf = self._buffer(run_id)
-        buf.header["status"] = STATUS_CANCELLED
+        _transition(buf, STATUS_CANCELLED, finished=True)
         buf.header["error"] = reason or "cancelled"
-        buf.header["finished_at"] = _now()
         self._append(buf, {"kind": "cancel", "payload": {"reason": reason}})
         self.schedule_flush(run_id)
 
@@ -653,12 +681,12 @@ class RunRecorder:
                 self._note_truncation(buf, "assembly_truncated")
             buf.header["assembly_json"] = _dump(assembly)
 
-        if error or (final is not None and getattr(final, "error", "")):
-            buf.header["status"] = STATUS_FAILED
+        failed = bool(error or (final is not None
+                                and getattr(final, "error", "")))
+        _transition(buf, STATUS_FAILED if failed else STATUS_DONE,
+                    finished=True)
+        if failed:
             buf.header["error"] = error or str(getattr(final, "error", "") or "")
-        else:
-            buf.header["status"] = STATUS_DONE
-        buf.header["finished_at"] = _now()
         if model:
             buf.header["model"] = model
         self.schedule_flush(run_id)

@@ -17,9 +17,13 @@ One row per run (the header) plus append-only events. The recorder
 flushes asynchronously; this module is the only part that talks SQL.
 
 Write idempotence: events carry their own ``seq`` (assigned at capture time)
-and insert with ``ON CONFLICT (run_id, seq) DO NOTHING``. A retried flush
-therefore rewrites the same rows instead of inventing new sequence numbers —
-``MAX(seq)+1`` would turn a retry into duplicate evidence.
+and a retried flush must rewrite the same rows instead of inventing new
+sequence numbers. The first attempt is ``ON CONFLICT (run_id, seq) DO NOTHING``
+— correct for a re-sent buffer, but *silently lossy* for a **re-created**
+buffer (HITL resume / eviction) that numbers from 0 while the stored run
+continues at N: every later event would collide and vanish. So a conflicting
+seq is disambiguated: byte-identical event already stored → skip; otherwise
+append at ``MAX(seq)+1`` (see :meth:`RunRecordStore._insert_event`).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.core.run_outcome import RECORD_STATUSES
 
 logger = get_logger(__name__)
 
@@ -109,13 +114,46 @@ _HEADER_DEFAULTS: dict[str, Any] = {
     "truncation_json": "{}",
 }
 
-#: Columns the upsert overwrites. ``started_at`` / ``created_at`` are absent
-#: on purpose: they describe when the run started, not the latest flush.
-_UPSERT_UPDATE = (
-    "session_id", "user_id", "question", "workflow", "datasource", "status",
-    "model", "kb_rev", "finished_at", "finish_json", "assembly_json", "error",
-    "record_version", "truncated", "truncation_json", "updated_at",
+#: Identity columns: describe **which run this is**. A fresh buffer (HITL
+#: resume, eviction) starts with them empty, so the upsert must never let an
+#: empty value erase what an earlier buffer already stored — otherwise the
+#: first post-resume flush silently blanks session/user/question/workflow/
+#: datasource and the record stops being findable by the session that owns it.
+_IDENTITY_COLUMNS = (
+    "session_id", "user_id", "question", "workflow", "datasource", "model",
+    "kb_rev",
 )
+
+#: Evidence columns that are empty in a fresh buffer and meaningful once
+#: written: preserve the stored value while the incoming one is still the
+#: default. ``finished_at`` uses NULL; JSON sections use ``''``/``'{}'``.
+_PRESERVE_WHEN_EMPTY_JSON = ("finish_json", "assembly_json", "truncation_json")
+
+#: Columns the upsert always overwrites with the newest snapshot.
+_UPSERT_PLAIN = ("status", "error", "record_version", "updated_at")
+
+#: ``started_at`` / ``created_at`` are absent on purpose: they describe when
+#: the run started, not the latest flush. Every expression is portable across
+#: SQLite and PostgreSQL (``excluded``, ``COALESCE``, ``NULLIF`` and ``CASE``
+#: behave identically on both; ``GREATEST``/``MAX(a,b)`` do not, hence CASE).
+_UPSERT_UPDATE = (
+    tuple(f"{c}=COALESCE(NULLIF(excluded.{c}, ''), run_records.{c})"
+          for c in _IDENTITY_COLUMNS)
+    + ("finished_at=COALESCE(excluded.finished_at, run_records.finished_at)",)
+    + tuple(
+        f"{c}=CASE WHEN excluded.{c} IN ('', '{{}}')"
+        f" THEN run_records.{c} ELSE excluded.{c} END"
+        for c in _PRESERVE_WHEN_EMPTY_JSON)
+    + ("truncated=CASE WHEN excluded.truncated = 1 THEN 1"
+       " ELSE run_records.truncated END",)
+    + tuple(f"{c}=excluded.{c}" for c in _UPSERT_PLAIN)
+)
+
+#: Retries when a seq handed to the DB is already taken by a *different*
+#: event (a re-created buffer numbering from 0 while the stored run continues
+#: at N). Each retry recomputes ``MAX(seq)+1``; the recorder serializes its own
+#: flushes, so more than one is already a race with another writer.
+_SEQ_RETRY_LIMIT = 3
 
 
 def utc_now() -> str:
@@ -240,9 +278,21 @@ class RunRecordStore:
             raw = values.get(key)
             values[key] = raw if isinstance(raw, str) else _dump(raw or {})
 
+        # Closed set, checked **after** defaults (a header without ``status``
+        # is ``running``, never an error) and before any write: an unknown
+        # lifecycle value must fail loudly here rather than become a row the
+        # read side cannot classify. The recorder has its own single funnel
+        # (``_transition``); this is the persistence-side gate.
+        status = str(values.get("status") or "")
+        if status not in RECORD_STATUSES:
+            raise ValueError(
+                f"run_records: unknown status {status!r} for run {run_id!r}; "
+                f"allowed: {', '.join(RECORD_STATUSES)}")
+        values["status"] = status
+
         columns = list(values)
         placeholders = ",".join("?" for _ in columns)
-        updates = ", ".join(f"{c}=excluded.{c}" for c in _UPSERT_UPDATE)
+        updates = ", ".join(_UPSERT_UPDATE)
         sql = (
             f"INSERT INTO run_records ({', '.join(columns)}) "
             f"VALUES ({placeholders}) "
@@ -270,27 +320,88 @@ class RunRecordStore:
                 else:
                     seq = base + 1 + offset
                     offset += 1
-                payload = event.get("payload") or {}
-                payload_json = payload if isinstance(payload, str) else _dump(payload)
-                payload_bytes = len(payload_json.encode("utf-8"))
-                await conn.execute(
-                    "INSERT INTO run_record_events"
-                    " (run_id, seq, kind, node, payload_json, payload_bytes,"
-                    "  truncated, created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT (run_id, seq) DO NOTHING",
-                    (
-                        run_id, seq, str(event.get("kind") or ""),
-                        str(event.get("node") or ""), payload_json,
-                        payload_bytes, 1 if event.get("truncated") else 0,
-                        str(event.get("created_at") or now),
-                    ),
-                )
-                written += 1
+                if await self._insert_event(conn, run_id, event, seq, now):
+                    written += 1
             await conn.commit()
             return written
         finally:
             await conn.close()
+
+    async def _insert_event(self, conn, run_id: str, event: dict[str, Any],
+                            seq: int, now: str) -> bool:
+        """Insert one event; returns **whether a new row was actually written**.
+
+        Three cases, and the difference between them is the whole point:
+
+        * free seq → insert;
+        * seq taken by the *same* event (a buffer re-flushed, or re-sent after
+          a failed flush) → nothing to do, count 0;
+        * seq taken by a **different** event (a fresh buffer after eviction /
+          process restart numbers from 0 while the stored run continues at N)
+          → insert at ``MAX(seq)+1``. ``ON CONFLICT DO NOTHING`` alone would
+          silently drop this evidence — and because the next flush re-sends
+          the whole buffer, it would drop it again every time.
+
+        Identity of "the same event" is ``(kind, node, payload, created_at)``
+        compared across the whole run. Residual risk, accepted: two genuinely
+        distinct events in the same second with byte-identical payloads
+        collapse into one — reporting the same observation twice adds nothing
+        a reviewer can act on, while losing a distinct one is unrecoverable.
+        """
+        payload = event.get("payload") or {}
+        payload_json = payload if isinstance(payload, str) else _dump(payload)
+        row = (
+            run_id, seq, str(event.get("kind") or ""),
+            str(event.get("node") or ""), payload_json,
+            len(payload_json.encode("utf-8")),
+            1 if event.get("truncated") else 0,
+            str(event.get("created_at") or now),
+        )
+        cursor = await conn.execute(
+            "INSERT INTO run_record_events"
+            " (run_id, seq, kind, node, payload_json, payload_bytes,"
+            "  truncated, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)"
+            " ON CONFLICT (run_id, seq) DO NOTHING",
+            row,
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+            return True
+        if await self._event_exists(conn, row):
+            return False
+        for _ in range(_SEQ_RETRY_LIMIT):
+            cursor = await conn.execute(
+                "INSERT INTO run_record_events"
+                " (run_id, seq, kind, node, payload_json, payload_bytes,"
+                "  truncated, created_at)"
+                " SELECT ?, COALESCE((SELECT MAX(seq) FROM run_record_events"
+                "  WHERE run_id = ?), -1) + 1, ?,?,?,?,?,?"
+                " WHERE NOT EXISTS (SELECT 1 FROM run_record_events"
+                "  WHERE run_id = ? AND kind = ? AND node = ?"
+                "  AND payload_json = ? AND created_at = ?)"
+                # A writer that lost the MAX+1 race re-derives instead of
+                # raising: rowcount 0 falls through to the next attempt.
+                " ON CONFLICT (run_id, seq) DO NOTHING",
+                (run_id, run_id) + row[2:]
+                + (run_id, row[2], row[3], row[4], row[7]),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+                return True
+            if await self._event_exists(conn, row):
+                return False
+        logger.warning("run_records: could not append event for run %s "
+                       "(seq contention persists after %d retries)",
+                       run_id, _SEQ_RETRY_LIMIT)
+        return False
+
+    @staticmethod
+    async def _event_exists(conn, row: tuple) -> bool:
+        cursor = await conn.execute(
+            "SELECT 1 FROM run_record_events WHERE run_id = ? AND kind = ?"
+            " AND node = ? AND payload_json = ? AND created_at = ? LIMIT 1",
+            (row[0], row[2], row[3], row[4], row[7]),
+        )
+        return await cursor.fetchone() is not None
 
     # ── read ─────────────────────────────────────────────
 

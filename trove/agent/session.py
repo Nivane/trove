@@ -544,6 +544,11 @@ class SessionManager:
         await self._store.save_session(session)
 
         run_id = str(uuid.uuid4())
+        # 本轮墙钟起点:非流式路径此前不结算耗时/token(运行记录 finish
+        # 因此缺 total_elapsed_ms 与 token_usage)。起点与流式路径同刻 ——
+        # run 创建,不含更早的压缩/历史整理。
+        import time as _time
+        run_start = _time.monotonic()
         state = WorkflowState(
             session_id=session.session_id,
             question=question,
@@ -573,7 +578,13 @@ class SessionManager:
                 cached, run_id, history, self.config.language,
             )
             await self._record_exchange(session, workflow_name, final)
-            self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
+            # 命中轮同样结算:tokens 为空(未调 LLM)是**测到的零**,耗时
+            # 是实测值。``_record_exchange`` 先 peek(消息元数据),这里再
+            # pop —— 顺序反了消息里就没有 token_usage。
+            stats = self._run_stats(run_id, run_start)
+            self._trace_run_finish(
+                run_id, final, stats, model=self._gen_model(self.config, final),
+            )
             return final
 
         config = self._run_config(session, run_id, state, workflow_name)
@@ -585,11 +596,13 @@ class SessionManager:
         try:
             result = await graph.ainvoke(state.model_dump(), config)
         except asyncio.CancelledError:
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_cancel
             capture_cancel(run_id)
             raise
         except Exception as e:
             # 记录后原样上抛:异常呈现由调用方/会话边界负责,记录层不改路径。
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_error
             capture_error(run_id, error=str(e))
             raise
@@ -626,7 +639,12 @@ class SessionManager:
         self._attach_object_columns(final)
 
         await self._record_exchange(session, workflow_name, final)
-        self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
+        # 与流式路径同一条结算:先让 _record_exchange peek 完,再 pop 结算,
+        # finish 因此带上 total_elapsed_ms / token_usage(运行账本读这两个键)。
+        stats = self._run_stats(run_id, run_start)
+        self._trace_run_finish(
+            run_id, final, stats, model=self._gen_model(self.config, final),
+        )
         return final
 
     @staticmethod
@@ -785,10 +803,12 @@ class SessionManager:
         try:
             result = await graph.ainvoke(Command(resume=decision), config)
         except asyncio.CancelledError:
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_cancel
             capture_cancel(run_id)
             raise
         except Exception as e:
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_error
             capture_error(run_id, error=str(e))
             raise
@@ -815,8 +835,14 @@ class SessionManager:
                 )
 
         await self._record_exchange(session, workflow_name, final, task=task, content_prefix=prefix)
+        # 结算前移到 finish 之前(同一份 stats 复用):旧顺序是 finish 先写、
+        # 再在 summary 里补统计 —— 记录里没有耗时/tokens,而 SSE 里有,
+        # 同一轮在两处各说一套。
+        stats = self._run_stats(run_id, resume_start) if run_id else {}
         if run_id:
-            self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
+            self._trace_run_finish(
+                run_id, final, stats, model=self._gen_model(self.config, final),
+            )
 
         if task is not None:
             meta = {
@@ -836,8 +862,9 @@ class SessionManager:
         summary = self._state_summary(final, self._gen_model(self.config, final))
         summary["hitl_status"] = final.hitl_status
         # resume 段统计:token 是该 run_id 的整条 tally(中断前已累计的也在这里,
-        # 中断时只 get 未 pop),_run_stats 一次性 pop 结算。
-        summary.update(self._run_stats(run_id, resume_start))
+        # 中断时只 get 未 pop),上面已在 finish 前一次性 pop 结算 —— 这里
+        # 复用同一份(再调一次会弹出空桶,SSE 的 token_usage 会静默消失)。
+        summary.update(stats)
         if final.error:
             yield {"type": "error", "node": "output", "content": final.final_response, "summary": summary}
         else:
@@ -1264,6 +1291,7 @@ class SessionManager:
                     await asyncio.wait_for(producer, timeout=5)
         except asyncio.CancelledError:
             self._run_steps.pop(run_id, None)
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_cancel
             capture_cancel(run_id)
             raise
@@ -1273,6 +1301,9 @@ class SessionManager:
             # 未捕获异常同样走呈现层:用户看到的是人话,provider 原文/path
             # 只进 detail.raw —— 会话边界是最后一道出口,不能把 str(e) 直出。
             info = present_exception(e, lang=state.lang, node="workflow")
+            # 这一轮不会产出 finish(_run_stats 不会跑到),token tally 不 pop
+            # 就永远留在进程级累加器里。
+            self._discard_tokens(run_id)
             from trove.tracing.run_record import capture_error
             capture_error(run_id, error=info["title"], error_info=info)
             error_summary = {
@@ -2806,6 +2837,10 @@ class SessionManager:
             # 答案来源档位(output 节点判定;设计 §7.3):前端据此做视觉区分,
             # 传输层(``sse.with_answer_source``)还会把它提到事件顶层。
             "answer_source": final.answer_source,
+            # 本轮是否精确缓存命中。运行账本(finish.cached)读它区分
+            # 「零成本的一轮」与「跑过但没测到成本的一轮」—— 两者在
+            # 耗时/tokens 上都可能接近零,没有这个事实就只能靠猜。
+            "cached": final.cached,
             # 答案级置信度(设计 2026-09-30):SSE / 历史回放 / runlog 同源同读。
             # 0.0 = 没有可披露的答案(元数据/反问/错误路径),与 answer_source
             # 的空串同一套三态 —— 不是「置信度 0」。
@@ -3032,6 +3067,10 @@ class SessionManager:
             "run_id": run_id,
             "history": history,
             "lang": lang,
+            # 命中标记由读端置位:缓存载荷里的 ``cached`` 是写端注记
+            # (``_record_cache``),读端不依赖它——老载荷/手工构造的命中
+            # 重建出来的也该是「这一轮是命中的」。
+            "cached": True,
         })
 
     # ── Token usage ──────────────────────────────────────
@@ -3050,6 +3089,21 @@ class SessionManager:
             return _get_usage(run_id)
         except Exception:  # noqa: BLE001 — 记账失败不阻断消息持久化
             return None
+
+    @staticmethod
+    def _discard_tokens(run_id: str) -> None:
+        """终态异常 / cancel 路径:结算并丢弃这一轮的 token tally(best-effort)。
+
+        这些路径不产出 finish —— 没有 ``_run_stats`` 的 pop,用量会永远留在
+        进程级累加器里(长驻 serve 的内存泄漏)。记录层不因此改路径。
+        """
+        if not run_id:
+            return
+        try:
+            from trove.llm.token_accounting import pop
+            pop(run_id)
+        except Exception:  # noqa: BLE001 — 记账清理失败不改变异常路径
+            pass
 
     @staticmethod
     def _run_stats(run_id: str, run_start: float) -> dict[str, Any]:

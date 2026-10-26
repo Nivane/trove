@@ -110,12 +110,28 @@ _CLOCK_FILES = (
     "trove/eval/quality_report.py",
 )
 
-#: Evidence paths: aware clocks are allowed, naive ones are not.
+#: Persisted-timestamp scope: aware clocks are allowed, naive ones are not.
+#: ``trove/storage/`` is the persistence layer wholesale; the rest are the
+#: modules migrated onto :mod:`trove.core.clock` in P3 plus the admin app (whose
+#: retention cutoffs are compared against persisted rows). ``tests/`` is not
+#: scanned — a test may freeze a local clock to prove the legacy read path.
+_UTC_PREFIXES = ("trove/storage/",)
 _UTC_FILES = (
-    "trove/storage/run_record_store.py",
+    "trove/api/app.py",
     "trove/tracing/run_record.py",
+    "trove/core/clock.py",
+    "trove/mcp/server.py",
+    "trove/services/action/guard.py",
+    "trove/services/action/propose.py",
+    "trove/services/action/service.py",
+    "trove/services/action/store.py",
+    "trove/services/decision/outcome.py",
+    "trove/services/decision/service.py",
+    "trove/services/decision/verdict_store.py",
+    "trove/services/jobs/runner.py",
+    "trove/services/scan/service.py",
+    "trove/services/validate/service.py",
 )
-_UTC_FUNCTION = ("trove/api/app.py", "_purge_run_records")
 
 
 def _dotted(node: ast.AST, bound: dict[str, str]) -> str:
@@ -195,22 +211,11 @@ def detect_wall_clock(sources: Sources) -> list[str]:
     return offenders
 
 
-def detect_naive_utc(sources: Sources) -> list[str]:
+def detect_naive_timestamps(sources: Sources) -> list[str]:
     offenders: list[str] = []
     for rel, source in sources.items():
-        if rel in _UTC_FILES:
+        if rel in _UTC_FILES or any(arch.under(rel, p) for p in _UTC_PREFIXES):
             offenders += _clock_in_tree(rel, ast.parse(source), allow_aware=True)
-    rel, func_name = _UTC_FUNCTION
-    source = sources.get(rel)
-    if source is not None:
-        tree = ast.parse(source)
-        bound = arch.import_bindings(rel, tree)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
-                for inner in ast.walk(node):
-                    hit = clock_call(inner, rel, bound, allow_aware=True)
-                    if hit:
-                        offenders.append(hit)
     return offenders
 
 
@@ -263,17 +268,19 @@ INVARIANTS: tuple[Invariant, ...] = (
         safe="def stamp(now):\n    return now()\n",
     ),
     Invariant(
-        id="run-record-utc",
+        id="persisted-timestamps-utc",
         statement=(
-            "请求记录证据层只有一个钟：写入、捕获与保留截止一律 UTC，"
-            "本地时区会把保留窗口整体平移。"
+            "落盘时间戳只有一个钟：存储层、运行记录、decision/action/scan/"
+            "validate/jobs/mcp 的写入与保留截止一律 aware UTC；本地时区会把"
+            "保留窗口与「同一时刻」整体平移。旧 naive 行只经 "
+            "trove.core.clock.parse_utc 读，不迁移。"
         ),
-        detector=detect_naive_utc,
-        synthetic_rel="trove/tracing/run_record.py",
+        detector=detect_naive_timestamps,
+        synthetic_rel="trove/storage/run_record_store.py",
         synthetic="from datetime import datetime\n\ndef stamp():\n    return datetime.now()\n",
         safe=(
             "from datetime import datetime, timezone\n\n"
-            "def stamp():\n    return datetime.now(timezone.utc)\n"
+            "def stamp():\n    return datetime.now(timezone.utc).isoformat()\n"
         ),
     ),
     Invariant(
@@ -350,6 +357,27 @@ INVARIANTS: tuple[Invariant, ...] = (
         ),
     ),
     Invariant(
+        id="ledger-never-invents-zero",
+        statement=(
+            "没测到只能说不知道：账本 token 缺失 → None + 覆盖码、usage 无数据 "
+            "→ null、eval baseline 未记账的字段不计入分母；测到的 0 才是 0。"
+        ),
+        evidence=(
+            "tests/core/test_run_ledger.py::TestCounts::"
+            "test_no_events_means_none_not_zero",
+            "tests/core/test_run_ledger.py::TestTokens::"
+            "test_unmeasured_tokens_are_none_with_a_reason",
+            "tests/core/test_run_ledger.py::TestTokens::"
+            "test_measured_zero_tokens_stays_zero",
+            "tests/api/test_admin_run_record.py::TestReadEndpoint::"
+            "test_ledger_projects_lifecycle_and_cost",
+            "tests/eval/test_gate.py::TestTokenDenominatorVisibility::"
+            "test_avg_tokens_value_and_denominator_unchanged",
+            "tests/eval/test_replay.py::TestScoreReplay::"
+            "test_avg_tokens_coverage_count_exposed",
+        ),
+    ),
+    Invariant(
         id="semantics-single-write-path",
         statement="语义文档只经白名单写者落盘；agent 不得自行直写主线。",
         evidence=(
@@ -366,13 +394,14 @@ ID_SET = {
     "cores-no-llm-or-io",
     "no-builtin-hash",
     "pure-modules-no-wall-clock",
-    "run-record-utc",
+    "persisted-timestamps-utc",
     "masking-fail-closed",
     "auto-drafts-pending-only",
     "failures-are-loud",
     "refusal-state-hygiene",
     "one-measurement-one-outcome",
     "degradation-is-visible",
+    "ledger-never-invents-zero",
     "semantics-single-write-path",
 }
 

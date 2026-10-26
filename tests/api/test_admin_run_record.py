@@ -121,6 +121,51 @@ class TestReadEndpoint:
         body = (await client.get(f"/v1/admin/runs/{RUN_ID}/record")).json()
         assert body["outcome"] is None
 
+    async def test_ledger_projects_lifecycle_and_cost(
+            self, client, record_store):
+        """``ledger`` = 生命周期 + 代价的派生投影（纯读，不回写）。
+
+        fixture 的记录里 llm 事件没有 usage、finish 没有 token_usage ——
+        账本必须说「不知道」（None + 覆盖码），不能把缺席洗成 0。
+        """
+        body = (await client.get(f"/v1/admin/runs/{RUN_ID}/record")).json()
+        ledger = body["ledger"]
+        assert ledger["version"] == 1
+        assert ledger["status"] == "done"
+        assert ledger["outcome"] is None  # 旧记录:finish 没有 outcome
+        assert ledger["llm"]["calls"] == 1
+        assert ledger["llm"]["models"] == ["mock/model"]
+        assert ledger["tools"]["by_name"] == {"probe_query": 1}
+        assert ledger["sql"]["probes"] == 1
+        assert ledger["llm"]["tokens"]["total"] is None
+        assert "tokens_unmeasured" in ledger["coverage"]
+        assert "context_not_recorded" in ledger["coverage"]
+
+    async def test_include_raw_keeps_the_ledger(
+            self, client, record_store):
+        body = (await client.get(
+            f"/v1/admin/runs/{RUN_ID}/record?include_raw=true")).json()
+        assert body["ledger"]["llm"]["calls"] == 1
+
+    async def test_unknown_status_is_not_a_500(self, client, api_app):
+        """写端闭集抛错,读端相反:一条旧/坏记录不该让管理端 500。"""
+
+        class _FakeStore:
+            async def get(self, run_id):
+                return {
+                    "header": {"run_id": run_id, "status": "weird",
+                               "finish": {"outcome": "answered"}},
+                    "events": [],
+                }
+
+        api_app.state.run_records = _FakeStore()
+        resp = await client.get("/v1/admin/runs/r-weird/record")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["outcome"] is None
+        assert body["ledger"]["outcome"] is None
+        assert "unknown_status" in body["ledger"]["coverage"]
+
     async def test_unassembled_store_is_503(self, client):
         # The conftest app has no run_records component.
         resp = await client.get(f"/v1/admin/runs/{RUN_ID}/record")
@@ -159,6 +204,8 @@ class TestUserReplayUnchanged:
             text = resp.text
             assert "SECRET-OBS" not in text
             assert "SECRET-PROMPT" not in text
+            # 运行账本只挂管理端记录端点,不进用户回放。
+            assert "ledger" not in text
             body = resp.json()
             assert "events" not in body
             assert "messages" not in body

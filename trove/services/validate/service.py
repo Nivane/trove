@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import difflib
 import re
-from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -31,6 +30,7 @@ from typing import Any
 import sqlglot
 import yaml
 
+from trove.core.clock import utc_now
 from trove.core.logging import get_logger
 from trove.services.action.templates import ActionTemplateService
 from trove.services.decision.drafts import DecisionDraftStore
@@ -555,7 +555,8 @@ async def _check_decisions(
         # 编译不过 = 到点必炸,那是硬错误。
         severity = "error" if rule.enabled else "warning"
         try:
-            window, _baseline_window = svc._resolve_window(rule, date.today())
+            window, _baseline_window = svc._resolve_window(
+                rule, utc_now().date())
             if model is not None:
                 await svc._compile(rule, model, dialect, datasource, window)
         except Exception as e:  # noqa: BLE001

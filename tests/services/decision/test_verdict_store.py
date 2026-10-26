@@ -8,8 +8,11 @@ rather than fail one.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from trove.core.clock import cutoff_pair, iso_utc
 from trove.services.decision.verdict_store import VerdictStore
 from trove.services.decision.verdicts import VerdictRecord
 
@@ -126,6 +129,49 @@ class TestRetention:
     async def test_purge_before_keeps_boundary(self, store):
         await store.record(verdict(evaluated_at="2026-09-15T00:00:00"))
         assert await store.purge_before("2026-09-15T00:00:00") == 0
+
+
+class TestMixedEraRetention:
+    """P3 时钟迁移:旧行 naive 本地、新行 aware UTC —— 截止必须两边都覆盖。
+
+    旧行/新行的字面量都由 :func:`cutoff_pair` 从**同一个瞬时**派生,所以
+    断言不依赖运行机器的时区;窗口也只有 ±1 小时,避开任何 DST 边界。
+    """
+
+    @staticmethod
+    def _eras(instant):
+        return cutoff_pair(instant.isoformat())
+
+    async def test_purge_covers_both_eras(self, store):
+        cutoff = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+        aware_old = self._eras(cutoff - timedelta(hours=1))[0]
+        legacy_old = self._eras(cutoff - timedelta(hours=1))[1]
+        aware_new = self._eras(cutoff + timedelta(hours=1))[0]
+        legacy_new = self._eras(cutoff + timedelta(hours=1))[1]
+        for stamp in (aware_old, legacy_old, aware_new, legacy_new):
+            await store.record(verdict(evaluated_at=stamp))
+
+        deleted = await store.purge_before(iso_utc(cutoff))
+
+        assert deleted == 2
+        left = [r.evaluated_at for r in await store.list_for_rule(
+            "demo", "loan-drop")]
+        assert sorted(left) == sorted([aware_new, legacy_new])
+
+    async def test_since_covers_both_eras(self, store):
+        cutoff = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+        aware_old = self._eras(cutoff - timedelta(hours=1))[0]
+        legacy_old = self._eras(cutoff - timedelta(hours=1))[1]
+        aware_new = self._eras(cutoff + timedelta(hours=1))[0]
+        legacy_new = self._eras(cutoff + timedelta(hours=1))[1]
+        for stamp in (aware_old, legacy_old, aware_new, legacy_new):
+            await store.record(verdict(evaluated_at=stamp))
+
+        rows = await store.list_for_rule(
+            "demo", "loan-drop", since=iso_utc(cutoff))
+
+        assert sorted(r.evaluated_at for r in rows) == sorted(
+            [aware_new, legacy_new])
 
 
 class TestSchema:
