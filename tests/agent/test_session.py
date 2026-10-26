@@ -1322,12 +1322,15 @@ class TestResultCache:
         session = await manager.start_session(project_cwd="/tmp/p")
         first = await manager.ask(session=session, question=self.Q)
         assert first.sql and first.verdict == "OK"
+        assert first.cached is False  # 实跑轮:没命中
         calls = llm.calls
 
         second = await manager.ask(session=session, question=self.Q)
         assert second.sql == first.sql
         assert second.verdict == "OK"
         assert second.error == ""
+        # 命中标记落在 state 上 → summary/finish 透出 → 运行账本可归属。
+        assert second.cached is True
         assert llm.calls == calls  # 命中 → 零额外 LLM 调用
         assert len(session.messages) == 4  # user+assistant × 2(交换照常记录)
 

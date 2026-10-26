@@ -125,6 +125,24 @@ class TestCaptureBasics:
         assert [e["kind"] for e in events] == ["run", "llm"]
         assert header["finished_at"]
 
+    async def test_finish_carries_the_answer_cache_fact(self):
+        """缓存命中是运行事实:finish 里必须能读出「这一轮是命中的」。
+
+        运行账本靠它区分「零成本的一轮」与「跑过但没测到成本的一轮」;
+        False 也是**测到的事实**(跑过、未命中),不能被当成空值丢掉。
+        """
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1")
+        rec.capture_finish("r1", final=_final(cached=True))
+        await rec.drain()
+        assert json.loads(store.writes[-1][0]["finish_json"])["cached"] is True
+
+        rec.capture_run_start("r2")
+        rec.capture_finish("r2", final=_final(cached=False))
+        await rec.drain()
+        assert json.loads(store.writes[-1][0]["finish_json"])["cached"] is False
+
     async def test_finish_projection_omits_and_caps_rows(self):
         store = FakeStore()
         rec = RunRecorder(store)

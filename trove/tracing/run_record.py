@@ -62,7 +62,8 @@ _KIND_DROPPABLE = ("tool_model",)
 _FINISH_KEEP = (
     "run_id", "session_id", "question", "rewritten_question", "datasource",
     "topic", "sql", "model", "row_count", "verdict", "reason",
-    "answer_source", "sql_confidence", "confidence", "confidence_evidence",
+    "answer_source", "cached", "sql_confidence", "confidence",
+    "confidence_evidence",
     "error", "error_info", "refusal", "hitl_status", "final_response",
     # 运行结局:tracing 里唯一能读出「拒绝/澄清/答复」的区别(header.status
     # 对三者都是 done)。不可裁剪 —— 见 _FINISH_DROP_ORDER。
