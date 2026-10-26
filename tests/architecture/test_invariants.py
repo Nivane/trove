@@ -357,6 +357,27 @@ INVARIANTS: tuple[Invariant, ...] = (
         ),
     ),
     Invariant(
+        id="ledger-never-invents-zero",
+        statement=(
+            "没测到只能说不知道：账本 token 缺失 → None + 覆盖码、usage 无数据 "
+            "→ null、eval baseline 未记账的字段不计入分母；测到的 0 才是 0。"
+        ),
+        evidence=(
+            "tests/core/test_run_ledger.py::TestCounts::"
+            "test_no_events_means_none_not_zero",
+            "tests/core/test_run_ledger.py::TestTokens::"
+            "test_unmeasured_tokens_are_none_with_a_reason",
+            "tests/core/test_run_ledger.py::TestTokens::"
+            "test_measured_zero_tokens_stays_zero",
+            "tests/api/test_admin_run_record.py::TestReadEndpoint::"
+            "test_ledger_projects_lifecycle_and_cost",
+            "tests/eval/test_gate.py::TestTokenDenominatorVisibility::"
+            "test_avg_tokens_value_and_denominator_unchanged",
+            "tests/eval/test_replay.py::TestScoreReplay::"
+            "test_avg_tokens_coverage_count_exposed",
+        ),
+    ),
+    Invariant(
         id="semantics-single-write-path",
         statement="语义文档只经白名单写者落盘；agent 不得自行直写主线。",
         evidence=(
@@ -380,6 +401,7 @@ ID_SET = {
     "refusal-state-hygiene",
     "one-measurement-one-outcome",
     "degradation-is-visible",
+    "ledger-never-invents-zero",
     "semantics-single-write-path",
 }
 
