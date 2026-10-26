@@ -27,6 +27,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from trove.core.clock import utc_now
 from trove.core.logging import get_logger
 from trove.services.analysis.budget import QueryLedger
 from trove.services.decision.drafts import DecisionDraftStore
@@ -245,7 +246,7 @@ class ScanService:
         """确定性扫描 → 报告。设置类问题(无 runner/无模型/窗口解析不了)抛 ``ScanError``。"""
         if self._runner is None:
             raise ScanError("scan service has no query runner (runner=...)")
-        anchor = (now or datetime.now()).date()
+        anchor = (now or utc_now()).date()
         cur_window = self.resolve_window(spec.window, anchor)
         if cur_window is None:
             raise ScanError(
@@ -413,7 +414,7 @@ class ScanService:
         cfg = getattr(self.config, "scan", None)
         limit = max(1, int(getattr(cfg, "max_hypotheses", 3)))
         try:
-            anchor = (now or datetime.now()).date()
+            anchor = (now or utc_now()).date()
             cur_window = self.resolve_window(spec.window, anchor)
             dialect = await self._dialect(datasource)
             provider = self._provider_for(datasource, dialect)

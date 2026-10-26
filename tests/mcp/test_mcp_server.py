@@ -521,6 +521,24 @@ async def test_proposals_resource_only_approved_and_unexpired(mcp_actions):
     assert p_stale.id not in text, "已过期的取不走,不该出现在索引里"
 
 
+async def test_live_legacy_naive_expiry_is_still_pullable(mcp_actions):
+    """旧纪元(naive 本地)截止的提案**没到期就照发** —— 跨纪元比较不能
+    把还能取的藏起来(字符串比会在本地偏移上误判一个方向)。"""
+    from datetime import datetime, timedelta
+
+    from trove.mcp.server import build_mcp_server
+
+    legacy_now = datetime.now() - timedelta(hours=1)   # naive = 旧写者形状
+    mcp_actions.service._now = staticmethod(lambda: legacy_now)
+    p = await _seed_mcp_proposal(mcp_actions.service, digest="legacy")
+    await mcp_actions.service.approve(p.id, "admin")
+    del mcp_actions.service._now
+
+    text = await _read(build_mcp_server(mcp_actions.components),
+                       "trove://proposals")
+    assert p.id in text
+
+
 async def test_fetch_proposal_returns_frozen_payload_and_trail(mcp_actions):
     from trove.mcp.server import build_mcp_server
 

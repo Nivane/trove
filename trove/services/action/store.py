@@ -30,6 +30,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from trove.core.clock import era_predicate
 from trove.core.logging import get_logger
 from trove.services.action.models import (
     ActionProposal,
@@ -455,15 +456,25 @@ class ActionStore:
         """Pending proposals past ``expires_at`` → ``expired``. Returns the count.
 
         Strictly ``<``: a proposal expiring exactly now is still approvable for
-        the instant it is being read.
+        the instant it is being read. The bound is the **mixed-era** predicate
+        (:func:`trove.core.clock.era_predicate`): legacy rows carry a naive
+        local deadline, new ones an aware-UTC one, and a single string compare
+        against either cutoff silently mis-expires the other era by the local
+        offset.
         """
+        predicate = era_predicate("expires_at", "<", now_iso)
+        if predicate is None:                      # unreadable bound → skip
+            logger.warning("action expiry: unparseable cutoff %r — skipped",
+                           now_iso)
+            return 0
+        where, params = predicate
         conn = await self._conn()
         try:
             cursor = await conn.execute(
                 "UPDATE proposals SET status = 'expired', decided_at = ?"
-                " WHERE status = 'pending' AND expires_at <> ''"
-                " AND expires_at < ?",
-                (str(now_iso), str(now_iso)),
+                f" WHERE status = 'pending' AND expires_at <> ''"
+                f" AND {where}",
+                (str(now_iso), *params),
             )
             count = int(getattr(cursor, "rowcount", 0) or 0)
             await conn.commit()
@@ -541,16 +552,24 @@ class ActionStore:
         速率护栏的输入:计数不该靠一个会被重启清零的计数器,而该来自
         append-only 的回执 trail —— 它是既有的、有索引的事实源,零新列。
         只算 ``sent`` / ``failed``:``dry_run`` 什么都没发出去,``ack`` 是
-        回执不是外送。
+        回执不是外送。``since`` 走混纪元谓词(旧行 naive 本地、新行 aware
+        UTC),单边字符串比较会让另一纪元的回执整体偏一个时区偏移 —— 对速率
+        护栏就是**少算**了窗口内的尝试。
         """
+        predicate = era_predicate("attempted_at", ">=", since_iso)
+        if predicate is None:
+            logger.warning("action rate guard: unparseable cutoff %r — "
+                           "treating as no attempts in window", since_iso)
+            return []
+        where, params = predicate
         conn = await self._conn()
         try:
             cursor = await conn.execute(
                 "SELECT attempted_at FROM deliveries"
-                " WHERE channel = ? AND attempted_at >= ?"
+                f" WHERE channel = ? AND {where}"
                 " AND status IN ('sent', 'failed')"
                 " ORDER BY attempted_at",
-                (str(channel), str(since_iso)),
+                (str(channel), *params),
             )
             return [str(r[0]) async for r in cursor]
         finally:

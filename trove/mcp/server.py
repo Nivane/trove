@@ -46,12 +46,12 @@ grant 判定的实现**不在本模块** —— 唯一实现在
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
+from trove.core.clock import parse_utc, utc_now_iso
 from trove.services.action.models import PROPOSAL_STATUSES
 from trove.services.authz.policy import (
     LOCAL_SUBJECT,
@@ -326,13 +326,22 @@ def build_mcp_server(
                      "(or its datasource is not allowed for this identity)"
         }
 
-    async def _open_proposals(status: str, now_iso: str) -> list[Any]:
-        """某状态且未过期的提案,按身份过滤(拉通道只发「还能取的」)。"""
+    async def _open_proposals(status: str, now: Any) -> list[Any]:
+        """某状态且未过期的提案,按身份过滤(拉通道只发「还能取的」)。
+
+        截止时间跨纪元比较:旧提案的 ``expires_at`` 是 naive 本地时刻,新的是
+        aware UTC。字符串比会在另一个纪元上偏一个时区偏移 —— 要么把还能取的
+        藏起来,要么把过期的递出去。解析不了的行**照发**(与 action 侧的
+        ``_is_expired`` 同口径:坏数据不能替人做过期判定)。
+        """
+        now_dt = parse_utc(now)
         rows = await actions.list_proposals(status=status, limit=_PROPOSAL_LIMIT_MAX)
         out = []
         for p in rows:
-            if p.expires_at and p.expires_at < now_iso:
-                continue
+            if p.expires_at and now_dt is not None:
+                expires = parse_utc(p.expires_at)
+                if expires is not None and expires < now_dt:
+                    continue
             if not await _allowed(p):
                 continue
             out.append(p)
@@ -344,8 +353,7 @@ def build_mcp_server(
         with ``fetch_proposal`` to get its payload, then ``ack_proposal``)."""
         if actions is None:
             return "(action layer is not available in this process)"
-        now_iso = datetime.now().isoformat(timespec="seconds")
-        rows = await _open_proposals(_PULL_STATUS, now_iso)
+        rows = await _open_proposals(_PULL_STATUS, utc_now_iso())
         if not rows:
             return "(no approved proposals waiting)"
         lines = [

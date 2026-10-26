@@ -50,6 +50,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Awaitable, Callable
 
+from trove.core.clock import utc_now
 from trove.core.logging import get_logger
 from trove.services.analysis.effect import attribute_effect, measure_effect
 from trove.services.analysis.stats import median
@@ -135,7 +136,7 @@ def make_verifier(decision: Any, *, kb: Any) -> Verifier:
         if not rule.subject.dimensions:
             group = ""
 
-        anchor = date.today()
+        anchor = utc_now().date()
         try:
             window, _baseline = decision._resolve_window(rule, anchor)
             dialect = await decision._dialect(datasource)

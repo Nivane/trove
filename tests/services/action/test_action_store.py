@@ -6,8 +6,11 @@ fixture 一律 ``await store.dispose()`` —— aiosqlite 的工作线程不是�
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from trove.core.clock import cutoff_pair, iso_utc
 from trove.services.action.models import ActionProposal, Approval, Delivery
 from trove.services.action.propose import ProposalError
 from trove.services.action.store import ActionStore
@@ -171,6 +174,45 @@ async def test_expire_due_only_touches_overdue_pending(store):
     assert (await store.get_proposal("p-approved")).status == "approved"
     assert (await store.get_proposal("p-no-expiry")).status == "pending"
     assert await store.expire_due("2026-10-03T09:00:01") == 0
+
+
+async def test_expire_due_covers_both_eras(store):
+    """P3 时钟迁移:旧提案 naive 本地截止,新提案 aware UTC 截止。
+
+    两个字面量都由 :func:`cutoff_pair` 从同一瞬时派生 → 断言与机器时区无关。
+    """
+    cutoff = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    aware_old = cutoff_pair(cutoff - timedelta(hours=1))[0]
+    legacy_old = cutoff_pair(cutoff - timedelta(hours=1))[1]
+    aware_new = cutoff_pair(cutoff + timedelta(hours=1))[0]
+    legacy_new = cutoff_pair(cutoff + timedelta(hours=1))[1]
+    for pid, expires in (("p-aware-old", aware_old), ("p-legacy-old", legacy_old),
+                         ("p-aware-new", aware_new), ("p-legacy-new", legacy_new)):
+        await store.create_proposal(_proposal(
+            id=pid, idempotency_key=pid, expires_at=expires))
+
+    assert await store.expire_due(iso_utc(cutoff)) == 2
+    statuses = {pid: (await store.get_proposal(pid)).status
+                for pid in ("p-aware-old", "p-legacy-old",
+                            "p-aware-new", "p-legacy-new")}
+    assert statuses == {
+        "p-aware-old": "expired", "p-legacy-old": "expired",
+        "p-aware-new": "pending", "p-legacy-new": "pending",
+    }
+
+
+async def test_delivery_times_cover_both_eras(store):
+    cutoff = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    old = cutoff_pair(cutoff - timedelta(hours=1))
+    new = cutoff_pair(cutoff + timedelta(hours=1))
+    for stamp in (old[0], old[1], new[0], new[1]):
+        await store.add_delivery(Delivery(
+            proposal_id="p", channel="ops-alerts", status="sent",
+            attempted_at=stamp))
+
+    times = await store.list_delivery_times("ops-alerts", iso_utc(cutoff))
+
+    assert sorted(times) == sorted([new[0], new[1]])
 
 
 async def test_approvals_and_deliveries_are_append_only(store):

@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from trove.core.clock import cutoff_pair, parse_utc
 from trove.services.action.dispatcher import (
     ActionDispatcher,
     DispatchResult,
@@ -182,15 +183,27 @@ def test_backoff_is_exponential_and_capped():
 
 
 def test_next_attempt_at_is_a_pure_derivation():
+    """返回归一后的 aware UTC 时点(旧 naive 本地行按瞬时解释,不按字面)。"""
     last = NOW.isoformat(timespec="seconds")
-    assert next_attempt_at(1, last, base_s=60) == NOW + timedelta(seconds=60)
-    assert next_attempt_at(2, last, base_s=60) == NOW + timedelta(seconds=120)
+    base = parse_utc(NOW)
+    assert next_attempt_at(1, last, base_s=60) == base + timedelta(seconds=60)
+    assert next_attempt_at(2, last, base_s=60) == base + timedelta(seconds=120)
     # 不可依赖的上次尝试 → 没有时点,绝不返回一个"看起来安全"的假时点。
     assert next_attempt_at(1, "", base_s=60) is None
     assert next_attempt_at(1, "yesterday", base_s=60) is None
 
 
 # ── ActionGuards.from_config ────────────────────────────
+
+def test_channel_rate_counts_legacy_naive_attempts_as_instants():
+    """旧回执是 naive 本地时刻 —— 在窗口内就必须算,不能因字面形状漏掉。"""
+    now = datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc)
+    legacy_in_window = cutoff_pair(now - timedelta(seconds=5))[1]
+    assert channel_rate_ok([legacy_in_window], now=now, limit=1,
+                           window_s=60) is False
+    assert channel_rate_ok([legacy_in_window], now=now, limit=2,
+                           window_s=60) is True
+
 
 def test_guards_from_config_defaults_are_all_off():
     assert ActionGuards.from_config(None) == ActionGuards()

@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from trove.core.clock import utc_now_iso
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.decision.bridge import primary_driver_line
@@ -495,7 +496,7 @@ class SchedulerRunner:
                 datasource=job.datasource or "",
                 job_id=job.id,
                 run_id=run_id,
-                now=datetime.now().isoformat(timespec="seconds"),
+                now=utc_now_iso(),
             )
             return int(await self.verdicts.record(verdict) or 0) or None
         except Exception:

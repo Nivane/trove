@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+from trove.core.clock import parse_utc
+
 #: 风险等级(与 ``models.RISKS`` 同一序:低 < 中 < 高)。
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -96,18 +98,22 @@ def channel_rate_ok(
         window_s: 窗口长度(秒),``<= 0`` 同样视为不设限。
 
     解析不了的时间戳**不计入** —— 护栏宁可漏过一次,也不该把一条坏行读成
-    "超限"(那会把外送永久卡死在一行坏数据上)。
+    "超限"(那会把外送永久卡死在一行坏数据上)。旧行的 naive 本地时刻按
+    legacy 时区解释(:func:`trove.core.clock.parse_utc`)—— 两边都归一到
+    aware UTC 再比,不拿字符串跨纪元比。
     """
     if limit <= 0 or window_s <= 0:
         return True
-    cutoff = now - timedelta(seconds=int(window_s))
+    now_dt = parse_utc(now)
+    if now_dt is None:
+        return True
+    cutoff = now_dt - timedelta(seconds=int(window_s))
     hits = 0
     for raw in attempt_times:
-        try:
-            stamp = datetime.fromisoformat(str(raw))
-        except (TypeError, ValueError):
+        stamp = parse_utc(raw)
+        if stamp is None:
             continue
-        if cutoff < stamp <= now:
+        if cutoff < stamp <= now_dt:
             hits += 1
     return hits < int(limit)
 
@@ -154,9 +160,8 @@ def next_attempt_at(
     raw = str(last_attempted_at or "").strip()
     if not raw:
         return None
-    try:
-        last = datetime.fromisoformat(raw)
-    except (TypeError, ValueError):
+    last = parse_utc(raw)
+    if last is None:
         return None
     return last + timedelta(
         seconds=backoff_delay(attempts, base_s=base_s, factor=factor, max_s=max_s))
