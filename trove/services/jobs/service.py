@@ -198,6 +198,20 @@ class JobsService:
     async def record_run(self, job: Job, run: Run) -> int:
         return await self.store.start_run(run)
 
+    async def reconcile_interrupted_runs(self) -> int:
+        """Close runs left in flight by a dead scheduler process.
+
+        Called once at scheduler startup (serve lifespan / CLI schedule).
+        Returns the number of rows reclaimed; a non-zero count is a warning —
+        those runs died with a previous process, not with this one.
+        """
+        count = await self.store.reconcile_interrupted_runs()
+        if count:
+            logger.warning(
+                "[jobs] reclaimed %d interrupted run(s) as error", count,
+            )
+        return count
+
     async def finish_run(
         self, run_id: int, status: str, alert_triggered: bool,
         alert_sent: bool, row_count: int | None, verdict: str,

@@ -186,6 +186,77 @@ async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_schedule_reconciles_before_tick_and_disposes_its_store(
+        tmp_path, monkeypatch):
+    """启动收敛发生在第一次 tick 之前;cwd-rooted store 在退出时释放。
+
+    顺序是承重的:先 tick 会把本进程刚写下的在飞行行也收成 error。store 释放
+    是 aiosqlite 纪律 —— 它的 worker 是非 daemon 线程,不 dispose 会挂住进程。
+    """
+    from trove.cli import schedule_cmds
+
+    events: list[str] = []
+
+    class _FakeStore:
+        async def dispose(self):
+            events.append("dispose")
+
+    class _FakeJobs:
+        store = _FakeStore()
+
+        async def reconcile_interrupted_runs(self):
+            events.append("reconcile")
+            return 0
+
+    class _Registry:
+        async def close_all(self):
+            return None
+
+    class _FakeRunner:
+        def __init__(self, sm, jobs, **kw):
+            events.append("construct")
+
+        async def tick(self):
+            events.append("tick")
+            return []
+
+    class _FakeCheckpointer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_load_config(args):
+        from trove.core.config import AgentConfig
+
+        return AgentConfig()
+
+    async def fake_create(args, config, checkpointer):
+        return {
+            "session_manager": object(),
+            "connector_registry": _Registry(),
+            "decision": object(),
+            "verdicts": object(),
+            "actions": object(),
+            "subscriptions": object(),
+            "scans": object(),
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(schedule_cmds, "_load_config_with", fake_load_config)
+    monkeypatch.setattr("trove.main.build_checkpointer",
+                        lambda home: _FakeCheckpointer())
+    monkeypatch.setattr("trove.main.create_app_components", fake_create)
+    monkeypatch.setattr("trove.services.jobs.runner.SchedulerRunner", _FakeRunner)
+    monkeypatch.setattr(schedule_cmds, "_jobs_service", lambda: _FakeJobs())
+
+    await schedule_cmds.main_schedule(["--once"])
+
+    assert events == ["reconcile", "construct", "tick", "dispose"]
+
+
+@pytest.mark.asyncio
 async def test_daemon_exit_drains_records_and_disposes_store(
         tmp_path, monkeypatch):
     """收尾走 ``_dispose_components``:终态记录落盘 + store 释放。

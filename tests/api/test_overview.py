@@ -366,11 +366,17 @@ class TestOverviewJobsAndSkills:
         self, client, jobs_app, monkeypatch,
     ):
         api_app, jobs, job = jobs_app
-        await jobs.store.start_run(Run(job_id=job.id, status="error"))
-        await jobs.store.start_run(Run(
-            job_id=job.id, status="error",
-            started_at=(datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
-        ))
+        # Real lifecycle: open a run, then close it with an error. Seeding a
+        # terminal status through start_run is exactly the fake-success path
+        # the state machine now rejects.
+        for started in (
+            None,
+            (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
+        ):
+            run_id = await jobs.record_run(
+                job, Run(job_id=job.id, **({"started_at": started} if started else {})),
+            )
+            await jobs.finish_run(run_id, "error", False, False, 0, "")
 
         r = await client.get("/v1/admin/overview", params={"window": "24h"})
         assert r.status_code == 200, r.text

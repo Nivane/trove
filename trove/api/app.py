@@ -338,6 +338,16 @@ async def _lifespan(app: FastAPI):
 
         startup_task = asyncio.create_task(_startup_sweep())
         sweep_task = asyncio.create_task(_periodic_sweep(app))
+    # 定时运行收敛:上一个进程死在任务中途时,库里留下 finished_at 为空的行
+    # (更早的版本还会先写 ok 再干活,留下假成功)。必须发生在 tick 启动**之前**,
+    # 否则会把自己刚写下的在飞行行也收掉。收敛是护栏,失败不阻断启动。
+    jobs_service = getattr(app.state, "jobs", None)
+    reconcile = getattr(jobs_service, "reconcile_interrupted_runs", None)
+    if reconcile is not None:
+        try:
+            await reconcile()
+        except Exception as e:
+            logger.warning("[jobs] startup reconciliation failed: %s", e)
     # 定时任务调度 tick(与 CLI daemon 二选一,别同时跑到期 job)
     job_tick_task = asyncio.create_task(_job_tick(app))
     try:

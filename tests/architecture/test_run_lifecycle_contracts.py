@@ -107,7 +107,7 @@ STATUS_TRACKS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     ),
     "jobs run": (
         "trove.services.jobs.store", "RUN_STATUSES",
-        ("ok", "error", "alert"),
+        ("running", "ok", "error", "alert"),
     ),
     "jobs delivery": (
         "trove.services.jobs.store", "DELIVERY_STATUSES",

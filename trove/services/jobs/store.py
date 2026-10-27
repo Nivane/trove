@@ -31,10 +31,16 @@ logger = get_logger(__name__)
 
 JOBS_DIR_NAME = "jobs"
 
-#: 一次定时运行的结局闭集（``runs.status``）。此前只活在 schema 注释与写入
-#: 点里；本常量是状态词汇注册表（P3）的登记项，消费面不因此校验——jobs 的
-#: 状态机改造（``start_run`` 先写 ok 的假成功）留给后续批次。
-RUN_STATUSES: tuple[str, ...] = ("ok", "error", "alert")
+#: 一次定时运行的状态闭集（``runs.status``）。状态词汇注册表（P3）的登记项。
+#:
+#: ``running`` 是**在飞行**：``start_run`` 先落这一行，``finish_run`` 才写终态。
+#: 没有它的时候 ``start_run`` 只能先写调用方给的 ``ok`` —— 进程死在任务中途，
+#: 库里就留下一条假成功（P3 登记的已知缺口）。
+RUN_STATUSES: tuple[str, ...] = ("running", "ok", "error", "alert")
+
+#: 运行可以被 ``finish_run`` 关闭的状态。``running`` 刻意不在其中：把一行
+#: 「结束」成「仍在跑」会让启动收敛永远捞不到它。
+TERMINAL_RUN_STATUSES: tuple[str, ...] = ("ok", "error", "alert")
 
 #: 一次投递尝试的结局闭集（``deliveries.status``）。
 DELIVERY_STATUSES: tuple[str, ...] = ("sent", "failed")
@@ -75,7 +81,7 @@ _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
     job_id TEXT NOT NULL,
     started_at TEXT NOT NULL,
     finished_at TEXT,
-    status TEXT NOT NULL,                  -- 'ok' | 'error' | 'alert'
+    status TEXT NOT NULL,                  -- 'running' | 'ok' | 'error' | 'alert'
     alert_triggered INTEGER NOT NULL DEFAULT 0,
     alert_sent INTEGER NOT NULL DEFAULT 0,
     row_count INTEGER,
@@ -155,8 +161,11 @@ class Run:
 
     job_id: str
     started_at: str = field(default_factory=now_iso)
-    finished_at: str = ""
-    status: str = "ok"
+    #: NULL = 仍在飞行。``start_run`` 只写 NULL，``finish_run`` 才落时间。
+    #: 旧版本写空串；启动收敛把 ``NULL OR ''`` 都当成未结束（见
+    #: :meth:`JobStore.reconcile_interrupted_runs`）。
+    finished_at: str | None = None
+    status: str = "running"
     alert_triggered: bool = False
     alert_sent: bool = False
     row_count: int | None = None
@@ -372,6 +381,19 @@ class JobStore:
     # ── runs ─────────────────────────────────────────────
 
     async def start_run(self, run: Run) -> int:
+        """Open a run row. **Only** the in-flight state is accepted.
+
+        写端闭集（与 ``RunRecordStore.write`` 同款方向：写端响亮、读端宽容）：
+        调用方不能借 ``start_run`` 先写一个终态 —— 那正是假成功的来源。
+        结束一次运行走 :meth:`finish_run`。
+        """
+        if run.status != "running":
+            raise ValueError(
+                "start_run only accepts status='running' "
+                f"(got {run.status!r}); use finish_run for terminal statuses",
+            )
+        if run.finished_at is not None:
+            raise ValueError("start_run cannot close a run; use finish_run")
         conn = await self._conn()
         try:
             cursor = await conn.execute(
@@ -379,7 +401,7 @@ class JobStore:
                    alert_triggered, alert_sent, row_count, verdict, result_json)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
-                    run.job_id, run.started_at, run.finished_at, run.status,
+                    run.job_id, run.started_at, None, run.status,
                     1 if run.alert_triggered else 0,
                     1 if run.alert_sent else 0,
                     run.row_count, run.verdict,
@@ -404,7 +426,16 @@ class JobStore:
         record; ``default=str`` keeps one unserializable value (a stray
         Decimal from Postgres, say) from aborting the write — an exception
         here would strand the job's schedule and re-fire the alert forever.
+
+        ``status`` is restricted to :data:`TERMINAL_RUN_STATUSES`: finishing
+        a run *into* ``running`` would make startup reconciliation miss it
+        forever.
         """
+        if status not in TERMINAL_RUN_STATUSES:
+            raise ValueError(
+                f"finish_run requires a terminal status {TERMINAL_RUN_STATUSES}, "
+                f"got {status!r}",
+            )
         conn = await self._conn()
         try:
             sql = """UPDATE runs SET finished_at=?, status=?, alert_triggered=?,
@@ -418,6 +449,40 @@ class JobStore:
                 args.append(json.dumps(result_json, ensure_ascii=False, default=str))
             await conn.execute(sql + " WHERE id=?", (*args, run_id))
             await conn.commit()
+        finally:
+            await conn.close()
+
+    async def reconcile_interrupted_runs(self, now: str | None = None) -> int:
+        """Close runs stranded by a dead scheduler process. Returns the count.
+
+        一行 ``finished_at`` 为空 = 写入它的进程没走到 ``finish_run``（进程被
+        杀、容器重启、宿主掉电）。这些行此前会**永远显示为在飞**；更早的版本
+        还会在先写 ``ok`` 之后直接留一条假成功。升级前的历史行也写空串，所以
+        ``NULL OR ''`` 两种都收 —— 正常结束的行一定有 ``finish_run`` 写的时间。
+
+        收敛成 ``error`` 而不是新增 ``interrupted`` 终态：既有失败面（概览的
+        failed 计数、导航徽章、红色 pill）立刻可见，状态词汇不外扩；具体原因
+        记在 ``verdict``（已有值不覆盖 —— 那是那次运行自己的结论）。
+
+        **部署边界**：前提是同一份 store 只有一个调度进程（``serve`` 的
+        lifespan tick 与 ``trove-cli schedule --daemon`` 二选一，见运维文档）。
+        两个进程共享同一 PG store 时，后启动者会把前者的在飞行收敛成 error ——
+        与「双调度器」同属不支持配置，不是本方法能靠心跳区分的。
+
+        幂等：第二次运行 0 行。
+        """
+        finished = now or now_iso()
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                """UPDATE runs SET status='error', finished_at=?,
+                   verdict=CASE WHEN verdict IS NULL OR verdict='' THEN 'interrupted'
+                                ELSE verdict END
+                   WHERE finished_at IS NULL OR finished_at=''""",
+                (finished,),
+            )
+            await conn.commit()
+            return int(cursor.rowcount or 0)
         finally:
             await conn.close()
 

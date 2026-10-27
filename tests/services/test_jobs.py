@@ -153,6 +153,91 @@ async def _run(job: Job):
     return Run(job_id=job.id)
 
 
+class TestRunLifecycle:
+    """The run row is *opened* running and *closed* terminal — no fake success.
+
+    Before this state machine, ``start_run`` inserted the caller's status
+    (``Run.status`` defaulted to ``"ok"``) before any work happened: a
+    process killed mid-job left a run that every surface reported as a
+    success.
+    """
+
+    async def test_start_run_writes_running_and_null_finished_at(self, tmp_path):
+        from trove.services.jobs.store import Run
+
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        run_id = await svc.record_run(job, Run(job_id=job.id))
+        recent = await svc.store.recent_run(job.id)
+        assert recent["id"] == run_id
+        assert recent["status"] == "running"
+        assert recent["finished_at"] is None
+
+    async def test_start_run_rejects_terminal_status(self, tmp_path):
+        import pytest
+
+        from trove.services.jobs.store import Run
+
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        with pytest.raises(ValueError):
+            await svc.store.start_run(Run(job_id=job.id, status="ok"))
+        with pytest.raises(ValueError):
+            await svc.store.start_run(Run(job_id=job.id, finished_at="2026-10-27"))
+        assert await svc.store.recent_run(job.id) is None
+
+    async def test_finish_run_rejects_non_terminal_status(self, tmp_path):
+        import pytest
+
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        run_id = await svc.record_run(job, await _run(job))
+        with pytest.raises(ValueError):
+            await svc.finish_run(run_id, "running", False, False, 0, "")
+        # Still open: the rejected write changed nothing.
+        assert (await svc.store.recent_run(job.id))["finished_at"] is None
+
+    async def test_reconcile_closes_stranded_runs(self, tmp_path, caplog):
+        """NULL (new) and '' (pre-upgrade) finished_at are both stranded;
+        an existing verdict survives, an empty one becomes 'interrupted'."""
+        from trove.services.jobs.store import Run
+
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        null_run = await svc.record_run(job, Run(job_id=job.id, verdict="OK"))
+        # Pre-upgrade rows wrote '' before doing any work.
+        empty_run = await svc.record_run(job, Run(job_id=job.id))
+        await svc.store._backend.execute(
+            "UPDATE runs SET finished_at='' WHERE id=?", (empty_run,),
+        )
+        await svc.store._backend.commit()
+
+        with caplog.at_level("WARNING"):
+            assert await svc.reconcile_interrupted_runs() == 2
+        assert "reclaimed 2 interrupted run(s)" in caplog.text
+
+        rows = {r["id"]: r for r in await svc.store.list_runs(job.id)}
+        assert rows[null_run]["status"] == "error"
+        assert rows[null_run]["finished_at"]
+        assert rows[null_run]["verdict"] == "OK"       # existing verdict kept
+        assert rows[empty_run]["status"] == "error"
+        assert rows[empty_run]["verdict"] == "interrupted"
+
+        # Idempotent: a second pass finds nothing stranded.
+        assert await svc.reconcile_interrupted_runs() == 0
+
+    async def test_reconcile_leaves_finished_runs_alone(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval")
+        run_id = await svc.record_run(job, await _run(job))
+        await svc.finish_run(run_id, "alert", True, True, 7, "OK")
+        assert await svc.reconcile_interrupted_runs() == 0
+        recent = await svc.store.recent_run(job.id)
+        assert (recent["status"], recent["verdict"], recent["row_count"]) == (
+            "alert", "OK", 7,
+        )
+
+
 class TestCooldown:
     async def test_alert_dedup_within_cooldown(self, tmp_path):
         svc = JobsService(JobStore(tmp_path))
