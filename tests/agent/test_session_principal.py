@@ -799,3 +799,30 @@ class TestCacheMaskingIsolation:
         hit = cache_manager._cached_final(cached, "run-2", "", "zh")
 
         assert hit.principal == principal
+
+
+class TestToolRoleFallbackVisibility:
+    """``_user_tool_roles`` fails open — that widening must leave a trace.
+
+    A resolver error returns ``None`` (= every tool visible). The behaviour is
+    deliberate (an authz lookup hiccup must not take the answer down), but it
+    must not be indistinguishable from "this deployment has no resolver".
+    """
+
+    async def test_resolver_failure_logs_a_warning(self, manager_with_auth, caplog):
+        manager, _ = manager_with_auth
+
+        async def boom(user_id):
+            raise RuntimeError("auth db down")
+
+        manager._role_resolver = boom
+        with caplog.at_level("WARNING"):
+            assert await manager._user_tool_roles("7") is None
+        assert "tool ACL falls back to all-visible" in caplog.text
+        assert "auth db down" in caplog.text
+
+    async def test_no_resolver_is_the_normal_embedded_path(self, manager_with_auth, caplog):
+        manager, _ = manager_with_auth
+        with caplog.at_level("WARNING"):
+            assert await manager._user_tool_roles("7") is None
+        assert "tool ACL falls back" not in caplog.text

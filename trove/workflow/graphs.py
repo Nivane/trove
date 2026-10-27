@@ -279,7 +279,14 @@ def _payload_sql(raw: str, dialect: str) -> str:
         from trove.workflow.nodes.gen_sql import validate_sql
 
         ok, _errors = validate_sql(text, dialect)
-    except Exception:
+    except Exception as e:
+        # The parser is the gate that keeps prose out of state.sql; when it
+        # itself fails we keep the old permissive behaviour, but never
+        # silently — a bypassed SQL gate must be visible in the run log.
+        logger.warning(
+            "SQL parser unavailable; passing finish payload through "
+            "unvalidated: %s", e,
+        )
         return text
     return text if ok else ""
 
