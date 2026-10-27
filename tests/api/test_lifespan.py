@@ -84,6 +84,42 @@ def test_lifespan_startup_sweep_runs_and_exits_clean():
     assert maint.calls == 1  # periodic never fired; no extra sweeps
 
 
+def test_lifespan_reconciles_stranded_job_runs_before_tick():
+    """A previous process killed mid-job leaves finished_at NULL.
+
+    The lifespan must close those rows before this process starts writing its
+    own in-flight rows (otherwise it would reclaim its own runs).
+    """
+
+    class _FakeJobs:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def reconcile_interrupted_runs(self) -> int:
+            self.calls += 1
+            return 0
+
+    jobs = _FakeJobs()
+    components = _components()
+    components["jobs"] = jobs
+    app = create_app(components, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        assert jobs.calls == 1
+
+
+def test_lifespan_reconcile_failure_does_not_block_startup():
+    class _BrokenJobs:
+        async def reconcile_interrupted_runs(self) -> int:
+            raise RuntimeError("store unavailable")
+
+    components = _components()
+    components["jobs"] = _BrokenJobs()
+    app = create_app(components, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+
+
 def test_lifespan_without_maintenance_is_noop():
     """Shape B: api-test shape (no maintenance/config) -> zero side effects."""
     app = create_app(

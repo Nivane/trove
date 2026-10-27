@@ -190,7 +190,7 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 - **生命周期权威** — `trove/core/run_outcome.py::RECORD_STATUSES`（六态，`RECORD_STATUS_OUTCOME` 的键）是唯一闭集；`tracing/run_record.py::RUN_RECORD_STATUSES` 是镜像（机检钉集合相等）。recorder 里 `_transition(buf, status, *, finished)` 是**唯一**的状态写者，status 与 `finished_at` 一起写（`_Buffer.__init__` 的初值是字面量，不是转移；机检冻结写点）。`RunRecordStore.write()` 在套用默认值之后对未知 status **响亮抛 `ValueError`**（写端闭集；读端相反——账本/管理端对旧坏数据给 `unknown_status` 不 500）。upsert 的身份列（`session_id/user_id/question/workflow/datasource/model/kb_rev`）与 finish/assembly/truncation **非空才覆盖**（`COALESCE(NULLIF(excluded.col,''), …)`）——HITL 恢复/buffer 淘汰后的空 buffer 不再抹掉已存身份；新 buffer 从 0 重编号的事件追加到 `MAX(seq)+1`，同一事件重发幂等。
 - **状态词汇注册表** — `tests/architecture/test_run_lifecycle_contracts.py::STATUS_TRACKS` 登记九条轨道（run record / run outcome / jobs run / jobs delivery / task / action proposal / coverage run / evalset item / verdict）的常量与冻结值，**只登记、不合并、不重命名**（jobs 的 `alert` 不是运行结局的降级）。新增/删除任何轨道的状态值都必须改清单。
 - **单一 UTC 时钟 `trove/core/clock.py`** — 写侧一律 aware UTC（`utc_now` / `utc_now_iso` / `iso_utc`），读侧经 `parse_utc` 容忍旧 naive 值（解释为本地时区）与不可解析值（`None`，绝不猜成 now）；**不做数据迁移**。不变量 `persisted-timestamps-utc` 扫描 `trove/storage/`、本批迁移模块与 `api/app.py`；跨纪元比较必须先解析再比，不能字符串比。
-- **记录接线分类** — `configure_run_records` 只接 `trove/main.py` 与 `scripts/offline_eval.py`；**刻意不接**的入口（eval graph_runner / evalset 试跑 / eval_bird / lang_ab / 定时 decision·scan）逐条登记理由，机检断言入口仍存在（改名/删除会报警复核）。**已知缺口（未修）**：jobs `start_run` 先写 `ok` 再干活，进程崩溃会留下假成功——正确修法要新增 `running` 态 + 启动收敛 + 前端标签，属 jobs 状态机改造，留给后续批次，**不得声称已解决**。
+- **记录接线分类** — `configure_run_records` 只接 `trove/main.py` 与 `scripts/offline_eval.py`；**刻意不接**的入口（eval graph_runner / evalset 试跑 / eval_bird / lang_ab / 定时 decision·scan）逐条登记理由，机检断言入口仍存在（改名/删除会报警复核）。**jobs 假成功已修**：`start_run` 只接受 `status="running"` 且 `finished_at` 落 NULL（写端闭集，终态只能经 `finish_run`）；`reconcile_interrupted_runs` 在 serve lifespan 与 `trove-cli schedule` 第一次 tick **之前**把 `finished_at IS NULL OR ''` 的滞留行收成 `error` + `verdict='interrupted'`（幂等；旧版本的假成功行也在这里暴露）。部署前提是单 store 单调度进程（serve tick 与 CLI daemon 二选一），共享 store 的双进程不在支持范围。前端 jobs 页有 `running` 筛选与中性 pill。
 
 ### LLM and tests
 
@@ -199,6 +199,23 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 - **起草模型档(A3)** — `AgentConfig.model_draft`(配置项 / 管理端 `llm.draft_model`,**path 型=可清空**,空=关闭):「起草/判定类」结构化短输出调用的统一便宜档,专门避开推理模型(白烧 reasoning tokens + 挤占 max_tokens 截断正文)。入口 `model_for_draft(node, complexity)`,回落链 `node_models[node]` → `model_draft` → `model_for(complexity)`(与 `model_for_node` 同形,只多中间一档)——**兼容安全带 = `model_draft=""` 时两函数全格相同**,由表驱动断言(全收编节点 × 全复杂度)钉死,未配置部署逐字节不变。收编六处:`init_pipeline`(kb_init,注解起草/合成示例/字段注记,顺带修掉「直读 model_fast、node_models 够不到」的黑洞)、`refuse.py` 拒绝扩展草稿(时点已有 node_models 通道,换成 model_for_draft)、`session.py` 偏好抽取(complexity 固定 `"complex"` 不落 fast 档=与改造前直读 target 一致)、`graphs.py` 意图判别与追问改写(固定 `"simple"`=fast 档,判别任务不按复杂度分档)、`chart.py` 图表判定。**刻意不收编**:会话摘要/任务规划/批量合成(`session.py` 其余调用点)——起草档语义是「生产 KB 待审资产」,塞进这些会变杂物抽屉;`services/decision/` 的 `_model_for` 是**语义模型查找**不是选模型,判定核心零 LLM 红线不动它。测试:config 兼容安全带 + 优先级链、admin_settings path 型收发空串、五个站点 fake-LLM 断言实际 model 名(`RecordingLLM.models`)。
 - **Scheduled jobs** (`trove/services/jobs/`): `JobsService` (CRUD + scheduling + alert-eval + cooldown) over `JobStore` (`.trove/jobs/jobs.sqlite`, on the `StorageBackend` abstraction), `SchedulerRunner` (duck-typed against `SessionManager`, auto-approves HITL, passes `job.datasource`). `trove serve` runs an embedded tick (lifespan task, poll = `agent.scheduler_poll_seconds`, default 30s) — do **not** run `trove-cli schedule --daemon` alongside serve (double execution). Exposed as admin API `trove/api/routers/jobs.py` (`/v1/admin/jobs`: CRUD + `run` + `runs`) + admin UI "定时任务 / Scheduled jobs". The runner/scheduler never blocks; test fakes record `asked_datasources`.
 - Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked. **Internal state stores run on the SQLite backend** (file-backed under tmp dirs via `resolve_backend`, `TROVE_STORAGE_URL` unset; a few registries use literal `:memory:`); business datasource adapters also use local SQLite. Real-Postgres coverage is env-gated with `-m integration` (`PG_TEST_URL`; see `tests/storage/test_pg_storage.py` + `.github/workflows/backend.yml`). Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
+
+### API 响应契约（单一类型源）
+
+链路只有一条：**后端 Pydantic 模型 → `scripts/gen_openapi.py` → `frontend/src/api/openapi.json` → `openapi-typescript` → `frontend/src/api/openapi.d.ts`**。两份前端产物都是提交物；链上任一环没重跑，前端类型就停在上一个契约版本而手写类型照样「编译通过」。
+
+```bash
+uv run python scripts/gen_openapi.py            # 写快照（模型改了就跑）
+uv run python scripts/gen_openapi.py --check    # 只比对（漂移 → 退出码 1）
+cd frontend && npm run types:generate           # 快照 → openapi.d.ts
+cd frontend && npm run types:check              # d.ts 与快照不同步 → 退出码 1（已串入 npm run ci）
+```
+
+- **当前覆盖**：第一组读端点 `GET /v1/sessions` / `GET /v1/sessions/{id}` / `GET /v1/runs/{id}`（`SessionListResponse` / `SessionDetailResponse` / `RunReplayResponse` + `ErrorResponse` 挂 404）。其余 179 条仍是裸 `-> dict`（`(方法, 路径)` 对；本批不迁移）—— `tests/architecture/test_api_contracts.py` 的 `UNTYPED_DICT_ENDPOINTS` **只许变少**、`TYPED_ENDPOINTS` 双向冻结：搬一条就两边各改一行。
+- **`response_model` 会过滤未声明键**（FastAPI 既有行为）：模型必须逐键照抄当前载荷与顺序，`tests/api/test_response_contracts.py` 用精确键集快照（含 `size_bytes` 这类手写前端没投影的键）锁住；时间戳保持 `str`（`.isoformat()` 带 `+00:00`，换成 `datetime` 会变成 `Z`，字节就变了）。
+- **前端编译期棘轮**在 `frontend/src/api/types.ts` 尾部：`Assert<_X> = true`，两个方向分开写 —— 线上载荷可当手写类型用（`_XConformsToWire`）+ 手写类型没有线上不存在的键（`_XKeysSubsetOfWire`）。条件类型必须先落成**顶层别名**再交给 `Assert<...>`；直接嵌在 `Assert` 实参位置时 TS 不化简嵌套分支，断言会退化成 `boolean` 而恒红。
+- **离线生成不碰真服务**：`create_app({"auth": _OfflineAuth()})` —— 替身只为让管理端路由挂上（非 `NullAuth`），任何方法调用都抛错；`app.openapi()` 无墙钟/网络/DB 查询，`render()` 做 `sort_keys` 规范化后逐字节比对。管理端路径少于 20 条直接报错（替身被误认成 `NullAuth` 会让快照静默缩水而漂移门「通过」）。
+- 路由枚举用 `fastapi.routing.iter_route_contexts`（FastAPI 0.141 的 lazy `_IncludedRouter` 让 `app.routes` 只剩 2 条直挂路由）；`-> dict` 端点的 `route.response_model` 会被推断成 `dict` 类本身，判定「已定型」要排除它。
 
 ### 扩展点清单（接缝盘点）
 

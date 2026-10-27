@@ -668,7 +668,10 @@ async def _physical_column_field(
     physical_table = str(ds.source or ds_name).rsplit(".", 1)[-1]
     try:
         schema = await connectors.get_schema(datasource)
-    except Exception:
+    except Exception as e:
+        # Fail-closed (the draft stays pending) — but a catalog outage is an
+        # environmental fact, not a verdict on the draft; leave a trace.
+        logger.debug("field draft auto-confirm skipped (schema unavailable): %s", e)
         return ""
     for t in schema.tables:
         if t.name.lower() != physical_table.lower():
@@ -756,7 +759,8 @@ async def _mechanical_metric_ok(
     physical_table = str(ds.source or ds_name).rsplit(".", 1)[-1]
     try:
         schema = await connectors.get_schema(datasource)
-    except Exception:
+    except Exception as e:
+        logger.debug("metric draft auto-confirm skipped (schema unavailable): %s", e)
         return ""
     tbl = next((t for t in schema.tables if t.name.lower() == physical_table.lower()), None)
     if tbl is None or (tbl.row_count_estimate or 0) > _AUTO_EXEC_MAX_ROWS:
@@ -814,7 +818,8 @@ async def _mechanical_metric_ok(
     try:
         res = await asyncio.wait_for(
             connectors.execute(exec_sql, datasource), timeout=_AUTO_EXEC_TIMEOUT_S)
-    except Exception:
+    except Exception as e:
+        logger.debug("metric draft auto-confirm trial execution failed: %s", e)
         return ""
     if not res.columns or not res.rows:
         return ""

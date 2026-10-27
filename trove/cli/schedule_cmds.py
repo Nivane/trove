@@ -215,6 +215,13 @@ async def main_schedule(argv: list[str]) -> None:
         components = await create_app_components(args, config, checkpointer)
         session_manager = components["session_manager"]
         jobs = _jobs_service()
+        # 启动收敛:上一次 CLI/serve 死在任务中途留下 finished_at 为空的行
+        # (更早的版本是假成功 ok)。必须在第一次 tick 之前 —— 之后的在飞行
+        # 行属于本进程。失败不阻断调度(护栏故障不终止服务)。
+        try:
+            await jobs.reconcile_interrupted_runs()
+        except Exception as e:
+            logger.warning("[jobs] startup reconciliation failed: %s", e)
         from trove.services.jobs.runner import SchedulerRunner
 
         # **装配 parity**:daemon 与 serve 的 tick 必须注入同一组件集。
@@ -271,3 +278,7 @@ async def main_schedule(argv: list[str]) -> None:
             # 可能还在飞),再按 DISPOSE_PLAN 释放全部连接。只关连接器会让
             # aiosqlite worker 线程挂住退出,且最后一批运行记录静默丢失。
             await _dispose_components(components)
+            # `_jobs_service()` 自己开了一个 cwd-rooted store(与 CLI job
+            # 子命令同一份),它不在 components 的收尾清单里 —— 不释放会让
+            # aiosqlite 的非 daemon worker 挂住进程退出。
+            await jobs.store.dispose()

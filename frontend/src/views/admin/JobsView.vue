@@ -18,6 +18,7 @@
         />
         <el-select v-model="values.status" class="filter-select">
           <el-option :label="t('jobsFilterStatus', ui.lang)" value="" />
+          <el-option :label="t('jobStatusRunning', ui.lang)" value="running" />
           <el-option :label="t('jobStatusError', ui.lang)" value="error" />
           <el-option :label="t('jobStatusAlert', ui.lang)" value="alert" />
           <el-option :label="t('jobStatusOk', ui.lang)" value="ok" />
@@ -568,7 +569,8 @@ interface JobScanSpec {
 interface RunRow {
   id: number
   started_at: string
-  finished_at: string
+  /** NULL while the run is in flight (status === 'running'). */
+  finished_at: string | null
   status: string
   row_count: number | null
   alert_sent: boolean
@@ -589,7 +591,7 @@ const loading = ref(false)
    drill-down) lands on the filtered list, a refresh keeps it and the link
    is shareable.
    status values are the last run's outcome, or 'disabled' for the enable
-   switch: '' | error | alert | ok | disabled. */
+   switch: '' | running | error | alert | ok | disabled. */
 const { values } = useListQuery({ q: '', status: '', page: '1' })
 const pageSize = ref(20)
 
@@ -734,12 +736,14 @@ function scanMetrics(row: JobRow): string[] {
 }
 
 function runClass(status: string): string {
+  if (status === 'running') return 'pill-neutral'
   if (status === 'ok') return 'pill-ok'
   if (status === 'alert') return 'pill-warn'
   return 'pill-danger'
 }
 
 function runLabel(status: string): string {
+  if (status === 'running') return t('jobStatusRunning', ui.lang)
   if (status === 'ok') return t('jobStatusOk', ui.lang)
   if (status === 'alert') return t('jobStatusAlert', ui.lang)
   return t('jobStatusError', ui.lang)

@@ -275,7 +275,14 @@ class SessionManager:
             if inspect.isawaitable(res):
                 res = await res
             return res
-        except Exception:
+        except Exception as e:
+            # Fail-open by design (an authz lookup hiccup must not take the
+            # answer down), but "all tools visible" is a widening — it must
+            # leave a trace, not look like a user with no role.
+            logger.warning(
+                "role resolution failed for user %s; tool ACL falls back to "
+                "all-visible: %s", user_id, e,
+            )
             return None
 
     # ── Session lifecycle ────────────────────────────────
@@ -1185,7 +1192,13 @@ class SessionManager:
                                 try:
                                     from trove.llm.token_accounting import get as _get_usage
                                     usage = _get_usage(run_id) or {}
-                                except Exception:
+                                except Exception as e:
+                                    # The pending HITL bubble just won't show
+                                    # token counts; the resume still settles.
+                                    logger.debug(
+                                        "token tally unavailable for run %s: %s",
+                                        run_id, e,
+                                    )
                                     usage = {}
                                 if usage:
                                     pending_summary["token_usage"] = usage
@@ -2789,7 +2802,10 @@ class SessionManager:
             return ""
         try:
             return config.model_for_node("gen_sql", final.complexity)
-        except Exception:
+        except Exception as e:
+            # Model attribution disappears from the trace card when this
+            # fails — debug is enough (the answer itself is unaffected).
+            logger.debug("gen model attribution unavailable: %s", e)
             return ""
 
     @staticmethod

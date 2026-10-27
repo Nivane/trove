@@ -3,7 +3,11 @@ import pluginVue from 'eslint-plugin-vue'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**'] },
+  {
+    // `openapi.d.ts` 是生成物（后端模型 → openapi.json → openapi-typescript）:
+    // 它的格式由生成器决定，手改会在 `types:check` 里被覆盖回去。
+    ignores: ['dist/**', 'node_modules/**', 'src/api/openapi.d.ts'],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
