@@ -60,6 +60,35 @@ def package_of(rel: str) -> str:
     return module_name(rel).rpartition(".")[0]
 
 
+def resolve_import_targets(rel: str, node: ast.AST) -> set[str]:
+    """Absolute module names named by one ``Import`` / ``ImportFrom`` node.
+
+    Relative imports are resolved against ``rel``'s package; a multi-alias
+    statement yields one entry per module and per imported name (``*``
+    excluded), matching :func:`resolve_imports`.
+    """
+    if isinstance(node, ast.Import):
+        return {alias.name for alias in node.names}
+    if not isinstance(node, ast.ImportFrom):
+        return set()
+
+    package = package_of(rel)
+    out: set[str] = set()
+    if node.level:
+        base = package
+        for _ in range(node.level - 1):
+            base = base.rpartition(".")[0]
+        module = f"{base}.{node.module}" if node.module else base
+    else:
+        module = node.module or ""
+    if module:
+        out.add(module)
+    for alias in node.names:
+        if alias.name != "*" and module:
+            out.add(f"{module}.{alias.name}")
+    return out
+
+
 def resolve_imports(rel: str, tree: ast.Module) -> set[str]:
     """Absolute module names imported by ``tree``, relative imports resolved.
 
@@ -68,24 +97,9 @@ def resolve_imports(rel: str, tree: ast.Module) -> set[str]:
     absolute-prefix check would miss. ``from . import y`` resolves to
     ``<package>.y``.
     """
-    package = package_of(rel)
     out: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                base = package
-                for _ in range(node.level - 1):
-                    base = base.rpartition(".")[0]
-                module = f"{base}.{node.module}" if node.module else base
-            else:
-                module = node.module or ""
-            if module:
-                out.add(module)
-            for alias in node.names:
-                if alias.name != "*" and module:
-                    out.add(f"{module}.{alias.name}")
+        out |= resolve_import_targets(rel, node)
     return out
 
 
