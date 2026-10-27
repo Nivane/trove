@@ -1,8 +1,13 @@
 // Shared wire types for the SSE event stream and API payloads.
 
-/** GET /v1/sessions 列表条目(会话侧栏一行)。 */
+/** GET /v1/sessions 列表条目(会话侧栏一行)。
+ *
+ *  字段是线上契约的**兼容投影**(全部可选):侧栏只消费其中一部分,但每个
+ *  声明的名字都必须在 `SessionSummaryItem` 里存在 —— 编译期断言见文件末尾。 */
 export interface SessionInfo {
   session_id: string
+  project_name?: string
+  user_id?: string
   created_at?: string
   updated_at?: string
   message_count?: number
@@ -11,6 +16,8 @@ export interface SessionInfo {
   /** 置顶标记 —— 排序 = 置顶在前 + updated_at desc,由存储层查询保证
    *  (分页切片发生在排序之后,前端不做本地重排)。 */
   pinned?: boolean
+  /** 单库多表模型下恒为 0;保留是因为它是真实载荷键(不是前端该猜的)。 */
+  size_bytes?: number
 }
 
 export interface ChartSpec {
@@ -383,7 +390,7 @@ export interface PrincipalWire {
 /** `GET /v1/runs/{run_id}` 的只读回放(节点时间线 / LLM / 工具 / 终态)。 */
 export interface RunReplayStep {
   name: string
-  seq?: number
+  seq?: number | null
   depth?: number
   elapsed_ms?: number | null
   tokens?: TokenBucket | null
@@ -1148,3 +1155,34 @@ export interface ObjectGraphInfo {
   links: ObjectLinkInfo[]
   hierarchies?: ObjectHierarchyInfo[]
 }
+
+// ── 生成类型的一致性断言（编译期棘轮）────────────────────────
+//
+// 唯一类型源:后端 Pydantic 模型 → scripts/gen_openapi.py →
+// src/api/openapi.json → openapi-typescript → src/api/openapi.d.ts。
+// 下面几行把**第一批**手写类型钉在那份生成类型上:后端改了字段名/类型,
+// `npm run typecheck` 红,而不是等运行时某个字段悄悄变成 undefined。
+// 手写类型保留自己的收窄形状(可为空/子集投影),断言只要求两件事:
+//   ① 手写类型没有线上不存在的键;
+//   ② 线上载荷可以当作手写类型使用(字段类型兼容)。
+// 其余手写类型是后续棘轮的对象 —— 本批不迁移。
+
+import type { components } from './openapi'
+
+/** `T extends true` 之外的类型实参 = 编译错误(断言的形状)。 */
+type Assert<T extends true> = T
+
+type WireSessionInfo = components['schemas']['SessionSummaryItem']
+// 两个方向分开写、各自先落成顶层别名:把条件类型直接嵌进 `Assert<...>` 的
+// 实参位置时，TS 不会化简嵌套分支（断言会退化成 `boolean` 而恒红），
+// 先经别名求值再交给 Assert 才是可用的写法。
+type _SessionInfoWireAssignable = WireSessionInfo extends SessionInfo ? true : false
+type _SessionInfoKeysSubset = keyof SessionInfo extends keyof WireSessionInfo ? true : false
+export type _SessionInfoConformsToWire = Assert<_SessionInfoWireAssignable>
+export type _SessionInfoKeysSubsetOfWire = Assert<_SessionInfoKeysSubset>
+
+type WireRunReplay = components['schemas']['RunReplayResponse']
+type _RunReplayWireAssignable = WireRunReplay extends RunReplay ? true : false
+type _RunReplayKeysSubset = keyof RunReplay extends keyof WireRunReplay ? true : false
+export type _RunReplayConformsToWire = Assert<_RunReplayWireAssignable>
+export type _RunReplayKeysSubsetOfWire = Assert<_RunReplayKeysSubset>

@@ -15,9 +15,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "types:generate": "openapi-typescript http://127.0.0.1:8000/openapi.json -o src/api/openapi.d.ts",
+    "types:generate": "openapi-typescript src/api/openapi.json -o src/api/openapi.d.ts",
+    "types:check": "node scripts/check-openapi-types.mjs",
     "lint:font-size": "node scripts/check-font-size.mjs",
-    "ci": "npm run typecheck && npm run lint && npm run lint:font-size && npm test && npm run build",
+    "ci": "npm run typecheck && npm run lint && npm run lint:font-size && npm run types:check && npm test && npm run build",
     "shots": "node scripts/capture-guide-shots.mjs",
     "gif": "node scripts/record-readme-gif.mjs"
   },

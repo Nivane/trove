@@ -200,6 +200,23 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 - **Scheduled jobs** (`trove/services/jobs/`): `JobsService` (CRUD + scheduling + alert-eval + cooldown) over `JobStore` (`.trove/jobs/jobs.sqlite`, on the `StorageBackend` abstraction), `SchedulerRunner` (duck-typed against `SessionManager`, auto-approves HITL, passes `job.datasource`). `trove serve` runs an embedded tick (lifespan task, poll = `agent.scheduler_poll_seconds`, default 30s) — do **not** run `trove-cli schedule --daemon` alongside serve (double execution). Exposed as admin API `trove/api/routers/jobs.py` (`/v1/admin/jobs`: CRUD + `run` + `runs`) + admin UI "定时任务 / Scheduled jobs". The runner/scheduler never blocks; test fakes record `asked_datasources`.
 - Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked. **Internal state stores run on the SQLite backend** (file-backed under tmp dirs via `resolve_backend`, `TROVE_STORAGE_URL` unset; a few registries use literal `:memory:`); business datasource adapters also use local SQLite. Real-Postgres coverage is env-gated with `-m integration` (`PG_TEST_URL`; see `tests/storage/test_pg_storage.py` + `.github/workflows/backend.yml`). Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
 
+### API 响应契约（单一类型源）
+
+链路只有一条：**后端 Pydantic 模型 → `scripts/gen_openapi.py` → `frontend/src/api/openapi.json` → `openapi-typescript` → `frontend/src/api/openapi.d.ts`**。两份前端产物都是提交物；链上任一环没重跑，前端类型就停在上一个契约版本而手写类型照样「编译通过」。
+
+```bash
+uv run python scripts/gen_openapi.py            # 写快照（模型改了就跑）
+uv run python scripts/gen_openapi.py --check    # 只比对（漂移 → 退出码 1）
+cd frontend && npm run types:generate           # 快照 → openapi.d.ts
+cd frontend && npm run types:check              # d.ts 与快照不同步 → 退出码 1（已串入 npm run ci）
+```
+
+- **当前覆盖**：第一组读端点 `GET /v1/sessions` / `GET /v1/sessions/{id}` / `GET /v1/runs/{id}`（`SessionListResponse` / `SessionDetailResponse` / `RunReplayResponse` + `ErrorResponse` 挂 404）。其余 179 条仍是裸 `-> dict`（`(方法, 路径)` 对；本批不迁移）—— `tests/architecture/test_api_contracts.py` 的 `UNTYPED_DICT_ENDPOINTS` **只许变少**、`TYPED_ENDPOINTS` 双向冻结：搬一条就两边各改一行。
+- **`response_model` 会过滤未声明键**（FastAPI 既有行为）：模型必须逐键照抄当前载荷与顺序，`tests/api/test_response_contracts.py` 用精确键集快照（含 `size_bytes` 这类手写前端没投影的键）锁住；时间戳保持 `str`（`.isoformat()` 带 `+00:00`，换成 `datetime` 会变成 `Z`，字节就变了）。
+- **前端编译期棘轮**在 `frontend/src/api/types.ts` 尾部：`Assert<_X> = true`，两个方向分开写 —— 线上载荷可当手写类型用（`_XConformsToWire`）+ 手写类型没有线上不存在的键（`_XKeysSubsetOfWire`）。条件类型必须先落成**顶层别名**再交给 `Assert<...>`；直接嵌在 `Assert` 实参位置时 TS 不化简嵌套分支，断言会退化成 `boolean` 而恒红。
+- **离线生成不碰真服务**：`create_app({"auth": _OfflineAuth()})` —— 替身只为让管理端路由挂上（非 `NullAuth`），任何方法调用都抛错；`app.openapi()` 无墙钟/网络/DB 查询，`render()` 做 `sort_keys` 规范化后逐字节比对。管理端路径少于 20 条直接报错（替身被误认成 `NullAuth` 会让快照静默缩水而漂移门「通过」）。
+- 路由枚举用 `fastapi.routing.iter_route_contexts`（FastAPI 0.141 的 lazy `_IncludedRouter` 让 `app.routes` 只剩 2 条直挂路由）；`-> dict` 端点的 `route.response_model` 会被推断成 `dict` 类本身，判定「已定型」要排除它。
+
 ### 扩展点清单（接缝盘点）
 
 > 2026-10-04 盘点；三处死接口已收口：`register_adapter` 接线（内置方言自注册、唯一注册路径）、`ToolSpec.level` 通电（默认观察者把 level 带进 tool record；**门控只由 `roles` 决定**，level 是观测/装配分类）、`FRONTMATTER_FIELDS` 生效（`create` 写入校验 + `version` 字段，读路径保持宽容）。「加一个要改」= 新增一个同类扩展要动的文件/位置数。
