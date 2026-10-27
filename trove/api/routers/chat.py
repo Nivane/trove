@@ -17,10 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from trove.api.deps import check_api_rate, get_current_user, require_datasource, require_scope
 from trove.api.schemas import (
     ChatRequest,
+    ErrorResponse,
     PinRequest,
     RenameRequest,
     ResumeRequest,
     SessionCreateResponse,
+    SessionDetailResponse,
+    SessionListResponse,
 )
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
@@ -95,7 +98,7 @@ async def create_session(
     return {"session_id": session.session_id}
 
 
-@router.get("/sessions")
+@router.get("/sessions", response_model=SessionListResponse)
 async def list_sessions(
     request: Request,
     limit: int = 20,
@@ -110,7 +113,11 @@ async def list_sessions(
     return {"sessions": sessions, "has_more": len(sessions) == limit}
 
 
-@router.get("/sessions/{session_id}")
+@router.get(
+    "/sessions/{session_id}",
+    response_model=SessionDetailResponse,
+    responses={404: {"model": ErrorResponse}},
+)
 async def get_session(
     session_id: str, request: Request, user: dict = Depends(get_current_user)
 ) -> dict:

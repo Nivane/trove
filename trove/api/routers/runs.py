@@ -32,6 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import get_current_user, require_scope
+from trove.api.schemas import ErrorResponse, RunReplayResponse
 
 # 与 chat 同档:受限 token 需要 ``query`` scope 才能读回放。
 router = APIRouter(dependencies=[Depends(require_scope("query"))])
@@ -111,7 +112,11 @@ def _pick_model(summary: dict[str, Any], llm_calls: list[dict[str, Any]]) -> str
     return ""
 
 
-@router.get("/runs/{run_id}")
+@router.get(
+    "/runs/{run_id}",
+    response_model=RunReplayResponse,
+    responses={404: {"model": ErrorResponse}},
+)
 async def get_run(
     run_id: str,
     request: Request,

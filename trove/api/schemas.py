@@ -846,3 +846,130 @@ class CoverageDraftsRequest(BaseModel):
 
     seqs: list[int] = Field(default_factory=list)
     all: bool = False
+
+
+# ── 读端点响应契约（API 响应契约的第一组）──────────────────
+#
+# FastAPI 的 ``response_model`` 会把**未声明**的键从响应里过滤掉 —— 所以
+# 模型不是"大概描述一下"，而是这条路径的真实出口形状：生产端多出的键会
+# 静默消失。每个模型都按端点的当前键集与插入顺序逐字抄写，并用精确键集
+# 测试锁住（tests/api/test_response_contracts.py），新增字段必须同时改模型。
+#
+# 时间戳一律 ``str``：端点今天吐的是 ``datetime.isoformat()``（``+00:00``
+# 后缀）。换成 pydantic 的 ``datetime`` 会把线格式改成 ``Z`` —— 契约收紧
+# 不能顺手改线上字节。
+
+
+class SessionSummaryItem(BaseModel):
+    """``GET /v1/sessions`` 的一行(``SessionStore._session_info`` 的九键全量)。
+
+    ``size_bytes`` 在单库多表模型下恒为 0,但它是载荷里真实存在的键 ——
+    手写的前端类型曾只投影五个键，正是"没有契约就会漏"的样本。
+    """
+
+    session_id: str
+    project_name: str
+    user_id: str
+    created_at: str
+    updated_at: str
+    message_count: int
+    title: str
+    pinned: bool
+    size_bytes: int
+
+
+class SessionListResponse(BaseModel):
+    """``GET /v1/sessions`` —— 分页会话列表。
+
+    ``has_more`` 是启发式(满页即可能有下一页),不是总数;端点注释里已
+    写明,这里保持同一语义。
+    """
+
+    sessions: list[SessionSummaryItem]
+    has_more: bool
+
+
+class SessionMessageItem(BaseModel):
+    """会话里的一条消息(四个角色值来自 ``core.types.Message``)。
+
+    ``metadata`` 保持自由字典:其形状由产生方(工作流/任务/HITL)拥有，
+    在这里镜像一份只会漂移。
+    """
+
+    role: Literal["user", "assistant", "system", "tool"]
+    content: str
+    timestamp: str
+    metadata: dict[str, Any]
+
+
+class SessionDetailResponse(BaseModel):
+    """``GET /v1/sessions/{session_id}`` —— 整段会话(消息全量,不裁剪)。"""
+
+    session_id: str
+    created_at: str
+    updated_at: str
+    summary: str | None
+    user_id: str
+    messages: list[SessionMessageItem]
+
+
+class RunTimelineItem(BaseModel):
+    """回放时间线的一个节点 span(未闭合的 span = 运行中断,``status="running"``)。"""
+
+    name: str
+    seq: int | None = None
+    depth: int = 0
+    elapsed_ms: int | float | None = None
+    tokens: dict[str, Any] | None = None
+    status: Literal["ok", "running"]
+
+
+class RunLlmCallItem(BaseModel):
+    """一次 LLM 调用的**结构化字段**(prompt/output/reasoning 不出口)。
+
+    ``tokens`` 是网关归一化后的 ``{prompt, completion, total}``;旧事件
+    可能没有 → ``None``(三态:没有 ≠ 零)。
+    """
+
+    node: str
+    model: str
+    elapsed_ms: int | float | None = None
+    tokens: dict[str, Any] | None = None
+
+
+class RunToolCallItem(BaseModel):
+    """一次工具调用:只留名字与所在节点,参数与观测不出口。"""
+
+    name: str
+    node: str
+
+
+class RunReplayResponse(BaseModel):
+    """``GET /v1/runs/{run_id}`` —— 只读回放。
+
+    两级数据源如实标注:``source="trace"`` 有过程(可能被裁剪,``complete``
+    表示有没有终态);``source="session"`` 只有已持久化的终态摘要,过程
+    三数组为空 —— 兜底不是编一份看起来像过程的东西。
+    """
+
+    run_id: str
+    source: Literal["trace", "session"]
+    session_id: str
+    question: str
+    started_at: str | None
+    complete: bool
+    model: str | None
+    summary: dict[str, Any]
+    timeline: list[RunTimelineItem]
+    llm_calls: list[RunLlmCallItem]
+    tools: list[RunToolCallItem]
+
+
+class ErrorResponse(BaseModel):
+    """错误出口的唯一形状(``HTTPException(detail=...)`` → ``{"detail": str}``)。
+
+    挂到 typed 端点的 404 ``responses`` 上，让 OpenAPI 快照里"查不到"
+    不再是未声明的出口。
+    """
+
+    detail: str
