@@ -148,6 +148,15 @@ flowchart TB
       对话链路、评测脚本、MCP 通道都在用，而它们的编排方式各不相同。
     </p>
 
+    <p>
+      上面的五层是职责分组，不是编译器强制的边界。机器校验的是一张
+      <strong>14 级依赖序</strong>（<code>core</code> 在底、<code>main</code> 在顶）：
+      只允许 import 更低的层，当前仅保留三条冻结的反向边
+      （<code>llm→services</code> 2 条、<code>services→workflow</code> 13 条、
+      <code>cli→main</code> 5 条），由
+      <code>tests/architecture/test_dependency_matrix.py</code> 精确计数看守。
+    </p>
+
     <h2 id="entry">多个入口，一张图</h2>
 
     <p>

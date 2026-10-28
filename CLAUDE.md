@@ -236,6 +236,22 @@ cd frontend && npm run types:check              # d.ts 与快照不同步 → �
 | 配置 | `AgentConfig`（`core/config.py:386`）+ 管理端白名单 `SETTINGS_SCHEMA`（`admin_settings/service.py:25`，双写纪律；`extensions.org_extensions_enabled` 即经此落库 + 热改活 config） | 2–3 处 | 仅核心 |
 | 预设包 | `trove/presets/<name>/preset.yml`（内置只读）+ `.trove/presets/<name>/preset.yml`（org，同名遮蔽内置）；契约闭键校验在 `services/presets/models.py`；**套用只落 pending 草稿**（skills→`SkillService.create` / 规则→`decision_drafts.yml` / 域→`semantic_drafts.yml`，确认门复用各服务既有写路径），`trove validate` 干跑同一套契约 + 引用可解析性 | 新预设 0 处代码 | admin ✅ |
 
+### 依赖方向矩阵（顶层包，P3）
+
+`trove/` 的 14 个顶层组件按依赖序排定（rank 越小越底层）：`core 0 → storage 1 → demo 2 → tracing 3 → llm 4 → prompts 5 → services 6 → workflow 7 → agent 8 → eval 9 → api 10 → mcp 11 → cli 12 → main 13`。规则只有一条：**只允许 import 更低 rank 的组件**（同包不算边）。机检在 `tests/architecture/test_dependency_matrix.py`：按 import 语句精确计数（函数内延迟 import 与 `TYPE_CHECKING` 都不豁免），未登记组件 / 新增反向边 / 计数增加都红；移除一条反向 import 必须同 commit 收缩冻结清单（棘轮只减不增）。
+
+当前冻结的反向边（3 对，含理由）：
+
+| 反向边 | 条数 | 为什么保留 |
+|---|---|---|
+| `llm → services` | 2 | `services.errors` 的确定性错误分类（整包迁移不划算） |
+| `services → workflow` | 13 | 覆盖率回放复用 workflow 节点、时间解析、context score |
+| `cli → main` | 5 | 入口与组合根的经典环 |
+
+同一测试冻结 `services` 的两个深度 2 兄弟环——10 节点 `{analysis, authz, datasource, decision, drift, kb, memory, retrieval, semantic_layer, sql}` 与 3 节点 `{extensions, presets, validate}`——**只禁新增环**，不承诺拆环。本批已把 `core→services`、`tracing→llm`、`workflow→agent` 三条倒置为零（`MemoryConfig` 归 `core`、缓存字段知识归 `core/token_usage.py`、`answer_source`/`confidence` 归 `workflow`）。
+
+盲区：`importlib` / `__import__` / `getattr` 等动态 import 不在 AST 覆盖内；`scripts/` 与 `tests/` 不参与矩阵（入口在 `main` 之上）。基线由 detector 生成后人工核对，失败消息会打印全部违规站点（`rel:line`）；新增含 `.py` 的顶层目录必须先在 `LAYERS` 登记 rank，否则 `test_layers_cover_every_top_level_component` 红。
+
 ## Hard project constraints (must respect)
 
 - **KB anti-cheating**: never manually stuff BIRD dev-set gold SQL into `.trove/kb/.../examples.yml` — content that `kb init` cannot generate deterministically is not a real accuracy gain. Fixes may only land in code/prompts (applies globally) and in KB content `kb init` can generate (schema notes, terms, enums, template examples).
