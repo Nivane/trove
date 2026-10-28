@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from trove.api.sse import with_answer_source
-from trove.agent.answer_source import (
+from trove.workflow.answer_source import (
     AnswerSource,
     for_compile,
     for_template_status,

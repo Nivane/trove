@@ -373,7 +373,7 @@ class TestConfidenceDoesNotChangeBehaviour:
         分数),出于错误的理由(整段都没了),而设计 §6.2 要防的正是这种
         「半个急停」。
         """
-        from trove.agent.answer_source import AnswerSource, source_line
+        from trove.workflow.answer_source import AnswerSource, source_line
 
         enum_line = source_line(AnswerSource(state.answer_source), lang="zh").strip()
         kept: list[str] = []
@@ -392,7 +392,7 @@ class TestConfidenceDoesNotChangeBehaviour:
         return "\n".join(kept)
 
     async def test_flag_on_and_off_produce_identical_pipeline_output(self, full_stack):
-        from trove.agent.confidence import (
+        from trove.workflow.confidence import (
             set_confidence_enabled, reset_confidence_flag,
         )
 
@@ -468,13 +468,13 @@ class TestConfidenceDoesNotChangeBehaviour:
         # ``import_module`` 直接取 ``sys.modules`` 里的模块,不受属性遮蔽影响。
         import importlib
         output_mod = importlib.import_module("trove.workflow.nodes.output")
-        from trove.agent.confidence import (
+        from trove.workflow.confidence import (
             SCORE_CEIL, SCORE_FLOOR, reset_confidence_flag, set_confidence_enabled,
         )
 
         async def run(score: float) -> WorkflowState:
             # 替换的是 ``output`` **命名空间里**的那个名字 —— 它是本节点调用时
-            # 真正拿到的对象;改 ``trove.agent.confidence.sql_confidence`` 不会
+            # 真正拿到的对象;改 ``trove.workflow.confidence.sql_confidence`` 不会
             # 生效(本节点是 ``from ... import`` 进来的)。
             monkeypatch.setattr(
                 output_mod, "sql_confidence",
@@ -525,8 +525,8 @@ class TestConfidenceDoesNotChangeBehaviour:
         §5.4 要求的就是「顺路时证据为空」,硬凑一条恒出现的证据反而是要消灭的东西;
         §11-4 的判别力由 Task 5/7 的用例承担,本用例的职责只有「单轮非零」。
         """
-        from trove.agent.answer_source import AnswerSource
-        from trove.agent.confidence import TIER_BANDS
+        from trove.workflow.answer_source import AnswerSource
+        from trove.workflow.confidence import TIER_BANDS
 
         session = await full_stack.start_session(project_cwd="/tmp/confidence-live")
         state = await full_stack.ask(

@@ -15,16 +15,21 @@ from __future__ import annotations
 
 from typing import Any
 
-_usage: dict[str, dict[str, int]] = {}
+# 字段知识与读取规则住在 core(观测层也用它,而 tracing 不得依赖 llm);
+# 本模块 re-export,调用方的既有 import 路径不变。
+from trove.core.token_usage import CACHE_FIELDS, cache_hit_tokens, cache_suffix
 
-# 需要聚合的 token 字段(prompt/completion 之外,含 prompt 缓存命中)。
-# 公开常量:eval/replay 侧另存同序副本(该文件不 import 任何 trove 模块),
-# 由测试钉住两份相等 —— 缓存指标跨引擎必须同源,否则门与基线各算各的。
-CACHE_FIELDS = (
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "cached_tokens",
-)
+__all__ = [
+    "CACHE_FIELDS",
+    "add",
+    "cache_hit_tokens",
+    "cache_suffix",
+    "get",
+    "pop",
+    "reset",
+]
+
+_usage: dict[str, dict[str, int]] = {}
 
 
 def add(run_id: str, usage: dict[str, Any]) -> None:
@@ -44,34 +49,6 @@ def add(run_id: str, usage: dict[str, Any]) -> None:
         value = usage.get(f)
         if value is not None:  # 键存在 = 测量过(报 0 也留:0 命中 ≠ 没测量)
             bucket[f] = bucket.get(f, 0) + int(value)
-
-
-def cache_hit_tokens(bucket: dict[str, Any] | None) -> int | None:
-    """命中缓存的 prompt token 数;两键同时可读时**取一不求和**。
-
-    ``cached_tokens``(litellm 规范拼写,DeepSeek/OpenAI 系)优先,缺失时
-    退 ``cache_read_input_tokens``(Anthropic 原生)——litellm 对 DeepSeek
-    会同时设出这两个拼写(同一命中数),求和会翻倍。``cache_creation_
-    input_tokens`` 是"写缓存"不计入命中。两键都不在 = 未测量 → None。
-    """
-    if not bucket:
-        return None
-    if bucket.get("cached_tokens") is not None:
-        return int(bucket["cached_tokens"])
-    if bucket.get("cache_read_input_tokens") is not None:
-        return int(bucket["cache_read_input_tokens"])
-    return None
-
-
-def cache_suffix(bucket: dict[str, Any] | None) -> str:
-    """人类可读缓存后缀 ``cache N(x%)``(命中/prompt);未测量或分母缺 → ""。"""
-    hit = cache_hit_tokens(bucket)
-    if hit is None or not bucket:
-        return ""
-    prompt = int(bucket.get("prompt") or 0)
-    if prompt <= 0:
-        return ""
-    return f"cache {hit}({hit / prompt:.0%})"
 
 
 def get(run_id: str) -> dict[str, int] | None:

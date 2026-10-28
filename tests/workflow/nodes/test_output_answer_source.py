@@ -303,7 +303,7 @@ class TestConfidenceDisclosure:
         半截状态(分数消失、枚举也留在折叠区)既不是旧形态也不是新形态 ——
         是新造出来的第三种,而那让「急停」在事故现场不可用。
         """
-        from trove.agent.confidence import set_confidence_enabled, reset_confidence_flag
+        from trove.workflow.confidence import set_confidence_enabled, reset_confidence_flag
         set_confidence_enabled(False)
         try:
             update = await output(make_state(**await run_fast_match("certified")))

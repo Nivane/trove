@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from trove.llm.token_accounting import CACHE_FIELDS, cache_suffix
+from trove.core.token_usage import CACHE_FIELDS, cache_suffix
 from trove.tracing import local as store
 from trove.tracing.assembly import ASSEMBLY_SUFFIX, write_report
 

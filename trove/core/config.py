@@ -18,7 +18,7 @@ import yaml
 
 from trove.core.errors import ConfigError
 from trove.core.logging import get_logger
-from trove.services.memory.models import MemoryConfig
+from trove.core.memory_config import MemoryConfig
 
 logger = get_logger(__name__)
 
@@ -560,7 +560,7 @@ class AgentConfig:
     context_budget_tokens: dict[str, int] = field(default_factory=dict)
     schema_budget_tokens: dict[str, int] = field(default_factory=dict)
     # 记忆子系统配置(统一 memory facade):情景记忆/自动示例/偏好提取/
-    # 自动晋升/画像注入等渐进开关。见 trove.services.memory.models.MemoryConfig。
+    # 自动晋升/画像注入等渐进开关。见 trove.core.memory_config.MemoryConfig。
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # 业务级归因/根因分析:为什么类问题的多跳下钻 + 贡献率 + 瀑布图。
     attribution: AttributionConfig = field(default_factory=AttributionConfig)

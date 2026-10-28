@@ -311,13 +311,13 @@ flowchart LR
 
     <p>
       编译梯子的每一级对应一种答案来源，披露装置把它们显示成四档
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/answer_source.py#L27">answer_source.py:27 <span class="ref-line">AnswerSource</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/answer_source.py#L27">answer_source.py:27 <span class="ref-line">AnswerSource</span></a>：
       <code>certified</code>（复用已认证模板）/ <code>reused</code>（复用 KB 资产，未认证）/
       <code>compiled</code>（编译器产物）/ <code>generated</code>（LLM 生成，含编译失败回退与软 MISS 骨架）。
       拆成四档而不是三档的原因写在模块头：<strong>「机制」与「有没有人背书」是两个维度</strong>——
       压成一档会把「根本没进过模型的 SQL」说成「LLM 生成」。
       判定只有一份
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/answer_source.py#L94">answer_source.py:94 <span class="ref-line">resolve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/answer_source.py#L94">answer_source.py:94 <span class="ref-line">resolve</span></a>
       （答案渲染、SSE、评测归因、台账落账共用一个入口），方向刻意不对称：
       <strong>判定不出的一律 GENERATED</strong>——把编译器产物标低，用户少得一点信息；
       把模型编的标高，用户得到一个不该有的信任。同类纪律还有快径的治理门：
@@ -426,7 +426,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 2e7ec47</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 668105d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
