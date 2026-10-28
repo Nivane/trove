@@ -1,8 +1,10 @@
 """Top-level dependency-direction matrix (layers + frozen reverse edges).
 
 The audit found six bidirectional top-level pairs, with the high-churn
-``graphs``/``session`` code sitting on a cycle. This module turns the intended
-direction into a global rule instead of a handful of special-case tests:
+``graphs``/``session`` code sitting on a cycle. Three were inverted in the same
+batch (MemoryConfig, cache-field helpers, answer-source/confidence); the
+remaining three are frozen below. This module turns the intended direction into
+a global rule instead of a handful of special-case tests:
 
 * components are ranked bottom-up (``core`` first, ``main`` last); an import is
   allowed only when the target ranks *below* the source;
@@ -57,17 +59,11 @@ RANK: dict[str, int] = {name: rank for rank, name in enumerate(LAYERS)}
 #: imports are allowed by the rank rule and need no entry.
 #:
 #: Reasons:
-#:   core -> services       config.py needs MemoryConfig (moved to core in C2)
 #:   llm -> services        deterministic error classification (services.errors)
-#:   tracing -> llm         pure cache-field helpers (moved to core in C2)
-#:   workflow -> agent      output.py renders agent answer-source/confidence
 #:   services -> workflow   coverage replay / time parsing / context score
 #:   cli -> main            entry points re-enter the composition root
 FROZEN_UPWARD_IMPORTS: dict[tuple[str, str], int] = {
-    ("core", "services"): 1,
     ("llm", "services"): 2,
-    ("tracing", "llm"): 1,
-    ("workflow", "agent"): 4,
     ("services", "workflow"): 13,
     ("cli", "main"): 5,
 }

@@ -16,12 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from trove.agent.answer_source import AnswerSource
-from trove.agent.answer_source import resolve as resolve_answer_source
-from trove.agent.answer_source import source_line as render_source_line
-from trove.agent.confidence import (
-    confidence_enabled, render_line, result_confidence, sql_confidence,
-)
 from trove.core.i18n import L, detect_language
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
@@ -30,6 +24,12 @@ from trove.services.skills.guards import format_guard_hit
 from trove.services.skills.validators import format_hit
 from trove.services.sql.format import format_sql
 from trove.services.viz.spark import render_ascii_bar, render_waterfall_ascii
+from trove.workflow.answer_source import AnswerSource
+from trove.workflow.answer_source import resolve as resolve_answer_source
+from trove.workflow.answer_source import source_line as render_source_line
+from trove.workflow.confidence import (
+    confidence_enabled, render_line, result_confidence, sql_confidence,
+)
 from trove.workflow.state import WorkflowState
 
 

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from trove.agent.confidence import (
+from trove.workflow.confidence import (
     DISCOUNT_FLOOR,
     TIER_BANDS,
     render_line,
     result_confidence,
     sql_confidence,
 )
-from trove.agent.answer_source import AnswerSource
+from trove.workflow.answer_source import AnswerSource
 from trove.workflow.state import WorkflowState
 
 

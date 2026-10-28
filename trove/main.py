@@ -158,7 +158,7 @@ async def create_app_components(
     from trove.services.limits import set_result_limits
     set_result_limits(config.result_max_rows, config.result_display_rows)
     # 置信度开关同样是进程级镜像(output 是模块级函数,拿不到 config)。
-    from trove.agent.confidence import set_confidence_enabled
+    from trove.workflow.confidence import set_confidence_enabled
     set_confidence_enabled(config.confidence_score)
 
     # ── Auth (central app.db: users/tokens/grants/audit) ────

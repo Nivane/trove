@@ -452,7 +452,10 @@ def detect_api_workflow_imports(
 #: Today's count is one module (``miss_copy``). Freeze it per file so a second
 #: import added to another router is red even if it names the same module.
 API_WORKFLOW_MODULES: dict[str, frozenset[str]] = {
-    "trove/api/routers/admin.py": frozenset({"trove.workflow.miss_copy"}),
+    "trove/api/routers/admin.py": frozenset({
+        "trove.workflow.miss_copy",
+        "trove.workflow.confidence",
+    }),
 }
 
 #: Known direct store imports in API routers (P2: route through app.state).

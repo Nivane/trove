@@ -3,7 +3,7 @@
 **决策一:只披露,不改行为。** 这两个分数不进任何条件分支 —— 判据是开/关两跑
 ``sql``/``rows``/``row_count``/``verdict``/``answer_source`` 逐字节相同(I7)。
 
-**判定只有这一份。** 与 ``agent/answer_source.py`` 同构:两个分数都在 ``output``
+**判定只有这一份。** 与 ``workflow/answer_source.py`` 同构:两个分数都在 ``output``
 一处算,SSE / 前端 / 评测 / markdown 同源同上文。分两处判迟早出现「行说 82%、
 字段说 55%」——那比不披露更坏。
 
@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from trove.agent.answer_source import AnswerSource
 from trove.core.i18n import L
+from trove.workflow.answer_source import AnswerSource
 from trove.workflow.state import WorkflowState
 
 _enabled = True

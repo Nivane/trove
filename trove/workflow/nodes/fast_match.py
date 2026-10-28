@@ -409,7 +409,7 @@ def match_fast_template(
                 # 治理状态随命中一起交出去:输出层的答案来源档位(certified /
                 # generated)判的就是它,而 ExampleHit 到此为止 —— 下游只见得到
                 # 拍平后的 SQL。**交状态而不是交档位**:判定只该有一处
-                # (``agent/answer_source``),本节点是证据的产地,不是判官。
+                # (``workflow/answer_source``),本节点是证据的产地,不是判官。
                 "status": hit.status,
             }
     if skipped_unvetted:
