@@ -658,3 +658,140 @@ def test_graph_node_inventory_under_real_defaults():
             f"missing={sorted(expected - actual[name])} "
             f"extra={sorted(actual[name] - expected)}"
         )
+
+
+def _graph_topology() -> dict[str, frozenset[tuple[str, str, bool, str]]]:
+    from trove.core.config import AgentConfig
+    from trove.llm.gateway import LLMGateway
+    from trove.workflow.graphs import GraphServices, build_graphs
+
+    services = GraphServices(
+        llm=LLMGateway(mock_response="x"),
+        config=AgentConfig(),
+    )
+    graphs = build_graphs(services)
+    return {
+        name: frozenset(
+            (edge.source, edge.target, bool(edge.conditional), edge.data or "")
+            for edge in graph.get_graph().edges
+        )
+        for name, graph in graphs.items()
+    }
+
+
+# The node inventory above survives a rewiring error — swapping which router
+# owns an edge keeps every node name. This snapshot is the wiring contract the
+# orchestration split (graphs/gen_chain) must preserve: same edges, same
+# conditional flags, same branch labels.
+FROZEN_GRAPH_EDGES: dict[str, frozenset[tuple[str, str, bool, str]]] = {
+    "reflection": frozenset({
+        ("__start__", "route_intent", False, ""),
+        ("analyze_error", "answer_metadata", True, ""),
+        ("analyze_error", "gen_retrieve", True, "gen_sql"),
+        ("analyze_error", "output", True, ""),
+        ("analyze_error", "query_sketch", True, ""),
+        ("analyze_error", "schema_linking", True, ""),
+        ("answer_chitchat", "output", False, ""),
+        ("answer_correction", "output", False, ""),
+        ("answer_metadata", "metadata_check", False, ""),
+        ("answer_reject", "output", False, ""),
+        ("attribution", "insights", False, ""),
+        ("chart", "conclusion", False, ""),
+        ("conclusion", "output", False, ""),
+        ("confirm_draft", "output", True, ""),
+        ("confirm_draft", "parse_date", True, ""),
+        ("execute_sql", "select", False, ""),
+        ("fast_match", "execute_sql", True, ""),
+        ("fast_match", "query_sketch", True, ""),
+        ("gen_assemble", "gen_generate", False, ""),
+        ("gen_generate", "semantics", False, ""),
+        ("gen_retrieve", "gen_assemble", False, ""),
+        ("hitl", "execute_sql", True, ""),
+        ("hitl", "output", True, ""),
+        ("insights", "chart", False, ""),
+        ("masking", "reflect", False, ""),
+        ("metadata_check", "answer_metadata", True, ""),
+        ("metadata_check", "output", True, ""),
+        ("output", "__end__", False, ""),
+        ("parse_date", "schema_linking", False, ""),
+        ("query_sketch", "analyze_error", True, ""),
+        ("query_sketch", "gen_retrieve", True, ""),
+        ("query_sketch", "refuse", True, ""),
+        ("reflect", "analyze_error", True, ""),
+        ("reflect", "answer_metadata", True, ""),
+        ("reflect", "attribution", True, ""),
+        ("reflect", "insights", True, ""),
+        ("refuse", "output", True, ""),
+        ("refuse", "parse_date", True, ""),
+        ("route_intent", "answer_chitchat", True, "chitchat"),
+        ("route_intent", "answer_correction", True, "correction"),
+        ("route_intent", "answer_metadata", True, "metadata"),
+        ("route_intent", "answer_reject", True, "write"),
+        ("route_intent", "confirm_draft", True, "confirm"),
+        ("route_intent", "parse_date", True, "attribution"),
+        ("schema_linking", "fast_match", True, ""),
+        ("schema_linking", "refuse", True, ""),
+        ("select", "validate", False, ""),
+        ("semantics", "hitl", False, ""),
+        ("validate", "analyze_error", True, ""),
+        ("validate", "masking", True, ""),
+        ("validate", "output", True, ""),
+    }),
+    "fixed": frozenset({
+        ("__start__", "route_intent", False, ""),
+        ("answer_chitchat", "output", False, ""),
+        ("answer_correction", "output", False, ""),
+        ("answer_metadata", "metadata_check", False, ""),
+        ("answer_reject", "output", False, ""),
+        ("attribution", "insights", False, ""),
+        ("chart", "conclusion", False, ""),
+        ("conclusion", "output", False, ""),
+        ("confirm_draft", "output", True, ""),
+        ("confirm_draft", "parse_date", True, ""),
+        ("execute_sql", "validate", False, ""),
+        ("gen_assemble", "gen_generate", False, ""),
+        ("gen_generate", "semantics", False, ""),
+        ("gen_retrieve", "gen_assemble", False, ""),
+        ("hitl", "execute_sql", True, ""),
+        ("hitl", "output", True, ""),
+        ("insights", "chart", False, ""),
+        ("masking", "attribution", False, ""),
+        ("metadata_check", "answer_metadata", True, ""),
+        ("metadata_check", "output", True, ""),
+        ("output", "__end__", False, ""),
+        ("parse_date", "schema_linking", False, ""),
+        ("refuse", "output", True, ""),
+        ("refuse", "parse_date", True, ""),
+        ("route_intent", "answer_chitchat", True, "chitchat"),
+        ("route_intent", "answer_correction", True, "correction"),
+        ("route_intent", "answer_metadata", True, "metadata"),
+        ("route_intent", "answer_reject", True, "write"),
+        ("route_intent", "confirm_draft", True, "confirm"),
+        ("route_intent", "parse_date", True, "attribution"),
+        ("schema_linking", "gen_retrieve", True, ""),
+        ("schema_linking", "refuse", True, ""),
+        ("semantics", "hitl", False, ""),
+        ("validate", "gen_retrieve", True, ""),
+        ("validate", "masking", True, ""),
+        ("validate", "output", True, ""),
+    }),
+    "empty": frozenset({
+        ("__start__", "output", False, ""),
+        ("output", "__end__", False, ""),
+    }),
+}
+
+
+def test_graph_edge_inventory_under_real_defaults():
+    actual = _graph_topology()
+    assert set(actual) == set(FROZEN_GRAPH_EDGES), (
+        f"workflows changed: missing={sorted(set(FROZEN_GRAPH_EDGES) - set(actual))} "
+        f"extra={sorted(set(actual) - set(FROZEN_GRAPH_EDGES))}"
+    )
+    for name, expected in FROZEN_GRAPH_EDGES.items():
+        missing = expected - actual[name]
+        extra = actual[name] - expected
+        assert not missing and not extra, (
+            f"{name} graph edges changed:\n"
+            f"  missing={sorted(missing)}\n  unexpected={sorted(extra)}"
+        )
