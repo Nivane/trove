@@ -29,7 +29,8 @@ MODULE_LINE_BUDGET: dict[str, int] = {
     "trove/workflow/graphs.py": 1119,
     "trove/workflow/gen_chain.py": 1366,
     "trove/workflow/graph_services.py": 67,
-    "trove/agent/session.py": 3159,
+    "trove/agent/session.py": 2960,
+    "trove/agent/audit.py": 304,
     "trove/workflow/state.py": 727,
 }
 
