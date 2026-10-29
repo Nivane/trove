@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from trove.core.config import AgentConfig
 from trove.workflow.state import WorkflowState, GenSQLState
+from trove.workflow import gen_chain as gen_chain_module
 from trove.workflow import graphs as graphs_module
 from trove.workflow.graphs import (
     GraphServices,
@@ -2458,7 +2459,7 @@ examples:
         整块排除;核心 schema(非可选块)始终保留。
         """
         monkeypatch.setattr(
-            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            gen_chain_module, "COMPLEXITY_BUDGET_TOKENS",
             {"simple": 2, "standard": 2, "complex": 2},
         )
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
@@ -2476,18 +2477,18 @@ examples:
     async def test_complexity_tier_drives_budget(self, sqlite_registry, catalog, monkeypatch):
         """复杂度档位驱动预算:simple 档��算小(history 被裁),complex 档预算大(history 保留)。"""
         monkeypatch.setattr(
-            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            gen_chain_module, "COMPLEXITY_BUDGET_TOKENS",
             {"simple": 2, "standard": 2500, "complex": 2500},
         )
         history = "user: 平均成绩是多少\nassistant: 85 分"
 
-        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+        monkeypatch.setattr(gen_chain_module, "grade_complexity", lambda *a, **k: "simple")
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         await graphs["reflection"].ainvoke(make_state(history=history))
         assert "Conversation history" not in llm.calls[1][-1]["content"]
 
-        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "complex")
+        monkeypatch.setattr(gen_chain_module, "grade_complexity", lambda *a, **k: "complex")
         llm2 = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs2 = build(make_services(llm2, catalog, sqlite_registry))
         await graphs2["reflection"].ainvoke(make_state(history=history))
@@ -2501,7 +2502,7 @@ examples:
         from trove.core.config import AgentConfig
 
         history = "user: 平均成绩是多少\nassistant: 85 分"
-        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+        monkeypatch.setattr(gen_chain_module, "grade_complexity", lambda *a, **k: "simple")
 
         cfg = AgentConfig(context_budget_tokens={"simple": 2})
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
@@ -2525,10 +2526,10 @@ examples:
     ):
         """空 context_budget_tokens → 回落内置 COMPLEXITY_BUDGET_TOKENS(与未配置一致)。"""
         monkeypatch.setattr(
-            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            gen_chain_module, "COMPLEXITY_BUDGET_TOKENS",
             {"simple": 2500, "standard": 2500, "complex": 2500},
         )
-        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+        monkeypatch.setattr(gen_chain_module, "grade_complexity", lambda *a, **k: "simple")
         from trove.core.config import AgentConfig
 
         history = "user: 平均成绩是多少\nassistant: 85 分"
@@ -2583,7 +2584,7 @@ examples:
 
         # 每条示例约 13 tokens;standard 档预算 20 → 只装得下最高分那条
         monkeypatch.setattr(
-            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            gen_chain_module, "COMPLEXITY_BUDGET_TOKENS",
             {"simple": 2500, "standard": 20, "complex": 2500},
         )
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
@@ -3530,8 +3531,6 @@ class TestCalibrationBasis:
 
     async def test_est_is_full_first_round_basis(self, sqlite_registry, catalog, monkeypatch):
         """est 包含 system+tools+user,不再是可选块之和(旧口径的 ~15× 失真)。"""
-        from trove.workflow import graphs as graphs_mod
-
         captured: dict = {}
 
         def spy(model, dialect, estimated, actual):
@@ -3540,7 +3539,7 @@ class TestCalibrationBasis:
                 estimated=estimated, actual=actual,
             )
 
-        monkeypatch.setattr(graphs_mod, "record_token_calibration", spy)
+        monkeypatch.setattr(gen_chain_module, "record_token_calibration", spy)
 
         actual_input = 4567  # 脚本化首轮完整输入实测
         llm = AgenticLLM([

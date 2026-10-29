@@ -24,8 +24,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 MODULE_LINE_BUDGET: dict[str, int] = {
-    # Orchestration modules under the #4 split.
-    "trove/workflow/graphs.py": 2480,
+    # Orchestration modules under the #4 split. Each extraction lowers the
+    # original module's budget in the same commit and freezes the new module.
+    "trove/workflow/graphs.py": 1119,
+    "trove/workflow/gen_chain.py": 1366,
+    "trove/workflow/graph_services.py": 67,
     "trove/agent/session.py": 3159,
     "trove/workflow/state.py": 727,
 }

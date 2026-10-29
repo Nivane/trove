@@ -147,25 +147,43 @@ def test_every_registry_with_skills_passes_skill_ctx():
     import ast
     import inspect
 
+    from trove.workflow import gen_chain as gen_chain_module
     from trove.workflow import graphs as graphs_module
 
-    tree = ast.parse(inspect.getsource(graphs_module))
-    calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        and node.func.id == "build_sql_registry"
-    ]
-    assert calls, "graphs.py 里没有 build_sql_registry(...) 的调用 —— 改名了?"
+    # Registry construction split across two files in the #4 orchestration
+    # split: topology builders (graphs) and the gen chain (gen_chain). Scan
+    # both — pinning one file would let the other half go unmentioned.
+    sources = {
+        "graphs.py": inspect.getsource(graphs_module),
+        "gen_chain.py": inspect.getsource(gen_chain_module),
+    }
+    files_with_calls: list[str] = []
+    with_skills: list[tuple[str, ast.Call]] = []
+    for filename, source in sources.items():
+        tree = ast.parse(source)
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "build_sql_registry"
+        ]
+        if calls:
+            files_with_calls.append(filename)
+        with_skills.extend(
+            (filename, c) for c in calls
+            if "skills" in {k.arg for k in c.keywords}
+        )
 
-    with_skills = [c for c in calls if "skills" in {k.arg for k in c.keywords}]
+    assert files_with_calls, (
+        "graphs.py / gen_chain.py 里都没有 build_sql_registry(...) 的调用 —— 改名了?"
+    )
     assert with_skills, (
-        "graphs.py 里没有带 skills= 的 build_sql_registry(...) 调用 —— "
+        "graphs.py / gen_chain.py 里没有带 skills= 的 build_sql_registry(...) 调用 —— "
         "org available skill 的 on-demand 通道断了,清单要跟着看"
     )
-    for c in with_skills:
+    for filename, c in with_skills:
         kw = {k.arg for k in c.keywords}
         assert "skill_ctx" in kw, (
-            f"graphs.py:{c.lineno} 的 build_sql_registry(...) 带了 skills 却没带 "
+            f"{filename}:{c.lineno} 的 build_sql_registry(...) 带了 skills 却没带 "
             "skill_ctx —— 触发器里的 role/lang 恒不匹配,广告点名后调过去必被拒"
         )
 
