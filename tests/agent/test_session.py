@@ -2611,3 +2611,79 @@ class TestKbRevWiring:
         for action in ("query.execute", "query.refused"):
             assert details[action]["kb_rev"] == "r9"
             assert details[action]["kb_files"] == {"semantics.yml": "d1"}
+
+
+class TestRecordExchangeSideEffectOrder:
+    """``_record_exchange`` 的副作用顺序是承重的(第 4 项编排拆分的表征测试)。
+
+    审计汇从 ``SessionManager`` 搬进 ``trove/agent/audit.py`` 之后,方法体会
+    换文件,但落库链的顺序**不能变**:记忆回流 → 候选 → KB 指纹 → 指纹复用
+    → 四条审计 → 结果缓存。交换其中任意两条都可能让审计读到尚未落地的状态
+    (例如拒绝审计先于 KB 指纹 → 报表丢掉归因键)。
+    """
+
+    @pytest.fixture
+    async def _manager(self, tmp_home, agent_config, graphs):
+        from trove.agent.session import SessionManager
+        from trove.storage.session_store import SessionStore
+
+        store = SessionStore(home_dir=str(tmp_home))
+        manager = SessionManager(
+            config=agent_config, session_store=store, graphs=graphs,
+            llm_gateway=None,
+        )
+        yield manager, store
+        await store.dispose()
+
+    async def test_side_effects_run_in_the_frozen_order(self, _manager, monkeypatch):
+        manager, store = _manager
+        order: list[str] = []
+
+        def _spy(name, result=None):
+            async def _call(*args, **kwargs):
+                order.append(name)
+                return result
+            return _call
+
+        original_save = store.save_session
+
+        async def _save(session):
+            order.append("save_session")
+            await original_save(session)
+
+        store.save_session = _save
+        manager._observe_memory = _spy("observe_memory")
+        manager._capture_candidates = _spy("capture_candidates")
+        manager._kb_rev_snapshot = _spy("kb_rev_snapshot", {})
+        manager._audit_query = _spy("audit_query")
+        manager._audit_refusal = _spy("audit_refusal")
+        manager._audit_authz = _spy("audit_authz")
+        manager._audit_egress = _spy("audit_egress")
+        manager._maybe_cache_exchange = lambda session, final: order.append(
+            "maybe_cache_exchange"
+        )
+        monkeypatch.setattr(
+            "trove.tracing.run_record.capture_kb_rev",
+            lambda run_id, snap: order.append("capture_kb_rev"),
+        )
+
+        session = await manager.start_session(project_cwd="/tmp/p", user_id="7")
+        final = WorkflowState(
+            session_id=session.session_id, question="q", user_id="7",
+            run_id="r1", datasource="demo", final_response="ok",
+        )
+
+        await manager._record_exchange(session, "reflection", final)
+
+        assert order == [
+            "save_session",
+            "observe_memory",
+            "capture_candidates",
+            "kb_rev_snapshot",
+            "capture_kb_rev",
+            "audit_query",
+            "audit_refusal",
+            "audit_authz",
+            "audit_egress",
+            "maybe_cache_exchange",
+        ]

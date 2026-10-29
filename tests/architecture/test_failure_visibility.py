@@ -483,13 +483,14 @@ SILENT_HANDLERS: frozenset[tuple[str, str, int]] = frozenset({
     # trove/workflow/context_budget.py
     ('trove/workflow/context_budget.py', '<module>', 0),
     ('trove/workflow/context_budget.py', 'count_tokens', 0),
+    # trove/workflow/gen_chain.py
+    ('trove/workflow/gen_chain.py', '_run_candidate_subagent', 0),
+    ('trove/workflow/gen_chain.py', 'make_gen_retrieve.gen_retrieve', 0),
+    ('trove/workflow/gen_chain.py', 'make_gen_retrieve.gen_retrieve', 1),
+    ('trove/workflow/gen_chain.py', 'make_gen_retrieve.gen_retrieve', 2),
+    ('trove/workflow/gen_chain.py', 'make_gen_retrieve.gen_retrieve', 7),
+    ('trove/workflow/gen_chain.py', 'make_gen_retrieve.gen_retrieve._shot', 0),
     # trove/workflow/graphs.py
-    ('trove/workflow/graphs.py', '_run_candidate_subagent', 0),
-    ('trove/workflow/graphs.py', 'make_gen_retrieve.gen_retrieve', 0),
-    ('trove/workflow/graphs.py', 'make_gen_retrieve.gen_retrieve', 1),
-    ('trove/workflow/graphs.py', 'make_gen_retrieve.gen_retrieve', 2),
-    ('trove/workflow/graphs.py', 'make_gen_retrieve.gen_retrieve', 7),
-    ('trove/workflow/graphs.py', 'make_gen_retrieve.gen_retrieve._shot', 0),
     ('trove/workflow/graphs.py', 'make_route_intent._classify', 0),
     ('trove/workflow/graphs.py', 'make_route_intent._classify', 1),
     ('trove/workflow/graphs.py', 'make_route_intent._classify', 2),

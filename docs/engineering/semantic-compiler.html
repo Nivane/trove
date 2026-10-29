@@ -185,12 +185,12 @@ flowchart TB
     <p>
       两把尺共用一个工程判断：<strong>校验读契约，不反推 SQL</strong>。
       编译器在编译期就把结果形状抽成纯 JSON 契约（join 边/过滤/分组宽度 +
-      缺口列表）随 state 走（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L204">state.py:204 <span class="ref-line">contract</span></a>），
+      缺口列表）随 state 走（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L206">state.py:206 <span class="ref-line">contract</span></a>），
       校验节点直接读字段——不再拿 <code>compiled_sql</code> 用 AST 反推回结构。
       骨架的覆盖情况也在 state 上留下痕迹：<code>compile_partial</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L196">state.py:196 <span class="ref-line">compile_partial</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L198">state.py:198 <span class="ref-line">compile_partial</span></a>
       与 <code>compile_misses</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L197">state.py:197 <span class="ref-line">compile_misses</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L199">state.py:199 <span class="ref-line">compile_misses</span></a>
       （未覆盖组件 <code>[{reason, component}]</code>）——它们既是执行侧的判据，也是学习侧的输入（见下）。
     </p>
 
@@ -286,7 +286,7 @@ flowchart LR
 
     <ul>
       <li><strong>零 LLM</strong>——捕获跑在每次查询的收尾路径上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L2204">session.py:2204 <span class="ref-line">_capture_candidates</span></a>），
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L2005">session.py:2005 <span class="ref-line">_capture_candidates</span></a>），
       所有翻译只是对 <code>compile_misses</code> 的确定性改写。</li>
       <li><strong>只落 pending</strong>——只写 <code>semantic_drafts.yml</code>，不碰
       <code>semantics.yml</code>：自动内容绝不绕过管理员确认（与记忆子系统的
@@ -340,7 +340,7 @@ flowchart LR
     <p>
       编译决策的观测字段（<code>compiled</code> / <code>compile_partial</code> /
       <code>compile_misses</code> / <code>contract</code>）恒写在 state 上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L189">state.py:189 <span class="ref-line">compiled_sql</span></a>）——
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L191">state.py:191 <span class="ref-line">compiled_sql</span></a>）——
       eval 归因按 <code>path: compiled|llm</code> 分账，学习回路（
       <a href="closed-loop.html">闭环与契约</a>）也读同一份缺口记录。
     </p>
@@ -426,7 +426,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 668105d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 309499d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
