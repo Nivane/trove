@@ -95,7 +95,8 @@
         { href: "engineering/causal-whatif.html", text: "因果与模拟" },
         { href: "engineering/closed-loop.html", text: "闭环与契约" },
         { href: "engineering/action-safety.html", text: "行动安全架构" },
-        { href: "engineering/extension-governance.html", text: "扩展与治理" }
+        { href: "engineering/extension-governance.html", text: "扩展与治理" },
+        { href: "engineering/compatibility.html", text: "版本与兼容" }
       ]
     },
     {
