@@ -8,8 +8,9 @@ import yaml
 
 from trove.services.evalset.lock import EvalsetBusy, EvalsetLock
 from trove.services.evalset.models import (
-    EvalsetDoc, EvalsetError, EvalsetItem, check_transition, content_hash,
-    dump_evalset, new_qid, parse_evalset, resolve_duplicates, tier_of,
+    EVALSET_VERSION, EvalsetDoc, EvalsetError, EvalsetItem, check_transition,
+    content_hash, dump_evalset, new_qid, parse_evalset, resolve_duplicates,
+    tier_of,
 )
 from trove.services.evalset.rev import evalset_rev
 from trove.services.evalset.store import evalset_path, load_evalset, save_evalset
@@ -272,3 +273,27 @@ def test_unreadable_asset_is_an_issue_not_an_empty_document(tmp_path):
     assert exists is True
     assert [i.code for i in issues] == ["evalset.unreadable"]
     assert doc.items == []
+
+
+# ── 版本:新版本原样保留(注册表 evalset-version 的钉子) ────────────────
+
+
+def test_newer_version_round_trips_without_refusal():
+    """未知的新版本不拒绝、不折叠:parse → dump → parse 仍是它。
+
+    这是登记在案的缺口 ``evalset-newer-refusal``;加门时本测试会红。
+    """
+    doc, issues = parse_evalset(
+        {"version": 99, "datasource": "demo", "items": []})
+    assert issues == []
+    assert doc.version == 99
+    again, issues = parse_evalset(yaml.safe_load(dump_evalset(doc)))
+    assert issues == []
+    assert again.version == 99
+
+
+def test_non_integer_version_folds_to_default():
+    """非整数(坏形状)折回默认值,不算 issue —— 与「更新版本透传」是两扇门。"""
+    doc, issues = parse_evalset({"version": "not-a-version", "items": []})
+    assert issues == []
+    assert doc.version == EVALSET_VERSION

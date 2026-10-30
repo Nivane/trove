@@ -586,3 +586,15 @@ def test_capture_methods_need_a_run_id(kind):
     else:
         rec.capture_hitl("", sql="", question="")
     assert rec._buffers == {}
+
+
+class TestRecordVersionStamp:
+    async def test_header_carries_the_record_version_stamp(self):
+        """录制端写出的 header 自带 record_version=1(注册表 run-record-version)。"""
+        store = FakeStore()
+        rec = RunRecorder(store)
+        rec.capture_run_start("r1", session_id="s1", question="q?")
+        await rec.drain()
+
+        header, _events = store.writes[0]
+        assert header["record_version"] == 1
