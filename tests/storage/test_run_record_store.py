@@ -332,3 +332,26 @@ async def test_run_records_round_trip_on_pg(monkeypatch, tmp_path):
             await conn.close()
         finally:
             await store.dispose()
+
+
+class TestRecordVersionStamp:
+    async def test_record_version_is_preserved_as_an_informational_stamp(
+            self, tmp_path):
+        """写入的 record_version 原样读回;缺省行读作 1。
+
+        注册表 run-record-version-default:目前没有消费方分支(纯信息戳),
+        加读端分支时本测试会红。
+        """
+        store = RunRecordStore(tmp_path)
+        try:
+            await store.write(_header("r1", record_version=999), [])
+            stamped = await store.get("r1")
+            assert stamped is not None
+            assert stamped["header"]["record_version"] == 999
+
+            await store.write(_header("r2"), [])
+            plain = await store.get("r2")
+            assert plain is not None
+            assert plain["header"]["record_version"] == 1
+        finally:
+            await store.dispose()

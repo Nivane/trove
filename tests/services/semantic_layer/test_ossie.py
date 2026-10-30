@@ -840,3 +840,31 @@ semantic_model:
 """
     model = parse_ossie(text, preferred_dialect="sqlite")
     assert model.datasets[0].entity is None
+
+
+# ── 版本:透传现状 + 单一权威(注册表 ossie-version 的钉子) ─────────────
+
+
+def test_unknown_newer_version_is_preserved_without_refusal():
+    """解析端不校验版本(当前行为):未知/更新的 version 原样透传。
+
+    这是登记在案的缺口 ``ossie-version-gate``;加根形状检查时本测试会红,
+    逼迫同步改注册表与文档。
+    """
+    model = parse_ossie("version: 9.9.9\nsemantic_model:\n  - name: m\n")
+    assert model.version == "9.9.9"
+
+
+def test_written_documents_share_one_version_authority():
+    """所有写出点引用同一个常量对象,生成文档的 version 就是它。"""
+    from trove.core.types import SchemaInfo
+    from trove.services.kb import ossie_format, semantic_gen
+    from trove.services.semantic_layer import changes, ossie
+    from trove.services.semantic_layer.importers import landing
+
+    for module in (semantic_gen, ossie_format, changes, landing):
+        assert module.OSSIE_VERSION is ossie.OSSIE_VERSION
+    # 钉生成端输出本身(字面量):改版本字符串必须同时改注册表与这里。
+    assert semantic_gen.generate_semantic_document(SchemaInfo())["version"] == (
+        "0.2.0.dev0")
+    assert ossie_format.terms_to_ossie_document([])["version"] == "0.2.0.dev0"

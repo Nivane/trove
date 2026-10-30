@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 版本与兼容注册表：版本点分四类（schema / format / revision / informational / cache_key / derived），更新与更老版本各有闭集语义；四个纯 AST 检测器把未登记常量、字面量写入与迁移版本变成红灯，证据与缺口都显式登记。">
+<title>版本与兼容 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>版本与兼容
+      </div>
+      <h1>版本与兼容</h1>
+      <p class="lede">
+        Trove 里到处是版本：语义模型文档的格式、判定规则文件、迁移、缓存键、运行记录……
+        它们分散在 YAML、载荷与迁移里，<strong>升级与回滚没有单一权威</strong>。
+        这页讲的不是「再发明一个全局版本号」，而是把每一处版本点登记下来——
+        它由谁写、读到<strong>更新</strong>或<strong>更老</strong>的版本会怎样、有没有测试钉住——
+        再用纯 AST 机检逼着新版本点<strong>必须登记</strong>。
+        不新增运行时门禁：注册表只描述与冻结现状，真正的行为门仍属于各自的模块。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">问题不是「没有版本号」</h2>
+
+    <p>
+      代码库里从来不缺版本号；缺的是<strong>一次能答完五个问题的地方</strong>：
+      这个版本字段谁写？谁读？读到更新的版本拒绝还是透传？读到更老的版本迁移还是收养？
+      有测试钉住吗？没有这张账，版本读错的失败方向大多是<strong>安静</strong>的——
+      少读一列不报错，只是默默用了错口径；透传一个未来格式不报错，只是把不认识的内容当认识的处理。
+      安静的失败比响亮的失败贵得多。
+    </p>
+
+    <p>
+      勘察时最刺眼的证据不是缺登记，而是<strong>同一个版本字符串有三个独立写入点</strong>：
+      生成端写一份、格式化端写一份、变更暂存端再写一份。只要三处里有一处被改，
+      另外两处就会继续产出「看起来一致」的旧格式——这正是注册表要防的双源漂移。
+      所以本批唯一的代码改动是把 <code>OSSIE_VERSION</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L50">ossie.py:50 <span class="ref-line">OSSIE_VERSION</span></a>
+      收敛为单一权威，其余写入点全部改成引用它，输出逐字节不变。
+      注册表如果一边宣称「单一权威」一边留着三个写入点，就是自欺。
+    </p>
+
+    <h2 id="principles">三原则：写端闭合、读端宽容、派生重建</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>原则</th><th>含义</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>写端闭合</strong></td>
+            <td>一个版本只有一个权威常量；载荷里的字面量写入也必须登记；迁移版本与代码同一提交</td>
+            <td>双源漂移不会自己暴露——只有一处被改时，两边都「看起来对」</td>
+          </tr>
+          <tr>
+            <td><strong>读端宽容</strong></td>
+            <td>老版本能读就读（迁移 / 收养 / 降级），结构性不兼容才拒绝；「判不了」有自己的一档</td>
+            <td>升级不是全量重写；把可分析的老数据拒之门外是另一种损失</td>
+          </tr>
+          <tr>
+            <td><strong>派生重建，不迁移</strong></td>
+            <td>镜像、向量索引、派生产物：结构变了就重建，不写迁移步骤</td>
+            <td>迁移历史必须反映<strong>曾经发生过什么</strong>，不能反映<strong>现在配置成什么</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      第三条在存储层的落地最典型：KB 镜像版本由 <code>_MIRROR_VERSION</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1197">service.py:1197 <span class="ref-line">_MIRROR_VERSION</span></a>
+      守住——读到更新的版本就抛 <code>StorageSchemaTooNew</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/migrations.py#L54">migrations.py:54 <span class="ref-line">StorageSchemaTooNew</span></a>
+      （旧代码打开新库是最安静的一种分叉），而解决办法是删镜像重建，不是补迁移。
+      与之相对，真正持久化的结构迁移走
+      <code>apply_migrations</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/migrations.py#L226">migrations.py:226 <span class="ref-line">apply_migrations</span></a>，
+      每一步单独幂等、失败不推进版本。
+    </p>
+
+    <h2 id="kinds">版本点分六类，不可混谈</h2>
+
+    <p>
+      版本字段的<strong>读法</strong>决定它的类别。把修订计数当兼容门，会让一次普通编辑变成拒绝服务；
+      把缓存键当持久化格式，会让缓存失效变成数据迁移。注册表用闭集 <code>kind</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L50">test_version_compatibility.py:50 <span class="ref-line">KINDS</span></a>
+      强制分类，每个版本点只能落一类：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>kind</th><th>是什么</th><th>典型例子</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>schema</code></td><td>持久化结构的迁移版本</td><td>各 store 的 <code>Migration(version=…)</code> 序列</td></tr>
+          <tr><td><code>format</code></td><td>持久化内容或载荷格式；读端可能拒绝</td><td>判定规则文件、扩展包、OSSIE 文档、evalset</td></tr>
+          <tr><td><code>revision</code></td><td>单调修订计数，<strong>不是</strong>兼容门</td><td>技能条目的编辑版本</td></tr>
+          <tr><td><code>informational</code></td><td>写入但无消费方分支</td><td>运行记录的版本戳、工具协议字符串</td></tr>
+          <tr><td><code>cache_key</code></td><td>派生缓存键，不持久化</td><td>判定 / validator 的域版本映射</td></tr>
+          <tr><td><code>derived</code></td><td>派生产物结构版本，重生即升级</td><td>运行账本、KB 镜像</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="matrix">容错矩阵：更新与更老各是一句话</h2>
+
+    <p>
+      「读到更新的版本怎么办」与「读到更老的版本怎么办」是两扇门，不能合成一个布尔值。
+      注册表给每扇门一个闭集词汇——行为只有这些，写不出「大概兼容」这种中间态：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>更新版本（newer）</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>refuse</code></td><td>拒绝，响亮报错（结构不认识的形状绝不猜）</td></tr>
+          <tr><td><code>degrade</code></td><td>降级继续：打标 / 缺省 / 用可解析部分，原因可见</td></tr>
+          <tr><td><code>fold_unknown</code></td><td>未知值折回默认（只对非结构性字段）</td></tr>
+          <tr><td><code>rebuild</code></td><td>派生产物重建</td></tr>
+          <tr><td><code>pass_through</code></td><td>原样保留，不做解释（没有消费者需要判断）</td></tr>
+          <tr><td><code>cache_invalidate</code></td><td>缓存键版本变化即失效重算</td></tr>
+          <tr><td><code>n/a</code></td><td>不存在兼容问题（无读者分支）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>更老版本（older）</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>migrate</code></td><td>按版本链迁移到当前结构</td></tr>
+          <tr><td><code>adopt</code></td><td>收养：老数据不改写，读时按老口径解释</td></tr>
+          <tr><td><code>rebuild</code></td><td>派生数据重建（同上，不写迁移）</td></tr>
+          <tr><td><code>accept</code></td><td>接受并补默认/升级写回</td></tr>
+          <tr><td><code>degrade</code></td><td>老数据能读但不完整，标记降级</td></tr>
+          <tr><td><code>pass_through</code></td><td>原样保留</td></tr>
+          <tr><td><code>refuse</code></td><td>双向拒绝（值域本身只有一种合法形状）</td></tr>
+          <tr><td><code>cache_invalidate</code></td><td>版本不同即不再复用</td></tr>
+          <tr><td><code>n/a</code></td><td>不存在兼容问题</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这里刻意<strong>不抄具体版本号</strong>：页面描述机制，注册表持有值。把数字写进文档，
+      下一次升版就会出现「文档说 4、代码说 5」的第二次漂移——文档只该回答「读到更新版本时的行为是什么」。
+    </p>
+
+    <h2 id="registry">注册表：让「没登记」变成红灯</h2>
+
+    <p>
+      注册表本体是测试文件里的一组冻结字面量
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L343">test_version_compatibility.py:343 <span class="ref-line">REGISTRY</span></a>：
+      每个版本点一行（id、权威位置、冻结值、kind、更新/更老行为、证据节点、可选缺口）。
+      它与代码的关系是<strong>双向精确</strong>：代码里发现一个版本常量而注册表里没有 → 红；
+      注册表登记了而代码里找不到了 → 红；两边都在但值不一致 → 红。
+      证据不是自由文本，而是 pytest node id——静态校验存在性，改/删被引用的测试会响亮变红并指名该改哪一行。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    W["写入点<br/>常量 · 字面量 · 迁移"]:::entry --&gt; D["四个纯 AST 检测器"]:::exec
+    D --&gt; R["注册表<br/>冻结值 + 容错语义"]:::gate
+    R --&gt; T["证据节点<br/>pytest node id"]:::entry
+    R --&gt; G["缺口<br/>golden 钉现状"]:::act
+    R --&gt; P["这页 / CLAUDE.md<br/>机制说明"]:::entry
+
+    classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
+    classDef gate fill:#f59e0b14,stroke:#f59e0b99,stroke-width:1.5px;
+    classDef act fill:#8b5cf614,stroke:#8b5cf699,stroke-width:1.5px;
+    classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 写入点由检测器扫出，注册表冻结值与语义；有读者分支的行必须引证据节点，未实现的兼容门登记为缺口并由行为中性 golden 钉住现状——补门时 golden 必红，逼着注册表与文档同步。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      四个检测器都是<strong>纯函数</strong>，只吃源码字符串或既有分类表，不碰磁盘、不 import 被测模块
+      ——与其它架构注册表同一姿态（棘轮，不是沙箱）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>检测器</th><th>扫什么</th><th>为什么必须机检</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>module_version_constants</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L103">test_version_compatibility.py:103 <span class="ref-line">module_version_constants</span></a></td>
+            <td>模块体的版本常量（<code>__version__</code>、全大写含 <code>VERSION</code>、映射形态）</td>
+            <td>新常量最容易「顺手加一个」；显式排除表让 <code>MAX_SQL_VERSIONS</code> 这类<strong>上限</strong>不误报，且排除必须写理由</td>
+          </tr>
+          <tr>
+            <td><code>literal_version_writes</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L202">test_version_compatibility.py:202 <span class="ref-line">literal_version_writes</span></a></td>
+            <td>载荷里的 <code>version</code> / <code>record_version</code> 常量，含下标赋值</td>
+            <td>字面量写入绕开常量；动态值（<code>preset.version</code>）不误报，只认常量</td>
+          </tr>
+          <tr>
+            <td><code>migration_versions</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L217">test_version_compatibility.py:217 <span class="ref-line">migration_versions</span></a></td>
+            <td><code>Migration(version=…)</code> 的最大版本；非常量版本直接报错</td>
+            <td>迁移盲区是静默的：漏一步不报错，只是老库升不上来</td>
+          </tr>
+          <tr>
+            <td><code>store_posture</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L263">test_version_compatibility.py:263 <span class="ref-line">store_posture</span></a></td>
+            <td>按既有 <code>STORE_CLASSES</code> 分类，把每个 durable/derived store 模块分区到「已迁移」或「未版本化」</td>
+            <td>精确 partition：给未版本化 store 补迁移时，必须把它从 <code>UNVERSIONED_STORES</code> 搬到 <code>MIGRATION_STORES</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      未版本化的 store 不是「漏了」——设置面列变更走 <code>ensure_column</code>、向量索引派生重建、
+      观测日志没有兼容语义；但每一行都要求<strong>非空理由</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L629">test_version_compatibility.py:629 <span class="ref-line">UNVERSIONED_STORES</span></a>，
+      不允许用沉默表示「不需要」。迁移侧同理
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L556">test_version_compatibility.py:556 <span class="ref-line">MIGRATION_STORES</span></a>：
+      冻结的是实测最大版本，测试如实测值对不上就红。
+    </p>
+
+    <p>
+      一条纪律值得单独说：<strong>缺口也要引 golden</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L673">test_version_compatibility.py:673 <span class="ref-line">GAPS</span></a>。
+      缺口行不是注释，而是一条被测试钉住的现状——「新版本被原样保留」这件事有 golden 证明。
+      将来真给这个缺口加门时，那条 golden 必红：改行为的人被迫在同一提交里改注册表与文档。
+      这是<strong>有意的摩擦</strong>——兼容语义变化本来就该是一次显式决定，而不是一次顺手的重构。
+    </p>
+
+    <p>
+      代码与注册表之间还有一道对账：冻结值测试把 AST 检测到的常量与字面量跟注册表逐行比较；
+      少数名称不含 <code>VERSION</code> 的 curated 常量经 <code>importlib</code> 取出<strong>活对象</strong>再比；
+      产品版本则与 <code>pyproject.toml</code> 核对。于是「代码改了、注册表没改」
+      和「注册表改了、代码没改」都会在 CI 里当场变红——不需要等到某次升级事故才发现。
+    </p>
+
+    <h2 id="gaps">现状缺口：两条，都写在明面上</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>缺口</th><th>现状</th><th>风险</th><th>本批为什么不补</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>ossie-version-gate</code></td>
+            <td><code>parse_ossie</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L175">ossie.py:175 <span class="ref-line">parse_ossie</span></a>
+              不校验版本，字符串原样透传（golden 钉住）</td>
+            <td>规范下一版（0.2）是破坏性根形状；没有版本门时，旧代码会把不认识的文档当认识的处理</td>
+            <td>加门是行为变化，属于 OSSIE 升级对齐批次；本批只登记并钉现状</td>
+          </tr>
+          <tr>
+            <td><code>evalset-newer-refusal</code></td>
+            <td><code>parse_evalset</code>
+              <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/evalset/models.py#L328">models.py:328 <span class="ref-line">parse_evalset</span></a>
+              接受任意整数版本并原样保留；非整数才折回默认</td>
+            <td>新版本的资产会被旧代码继续读写，可能悄悄丢掉新字段的语义</td>
+            <td>拒绝新版本会影响现有资产文件的向前兼容体验，留给 evalset 自己的升级批次决定策略</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      反面例子同样重要：<strong>analysis payload 的「键在场容忍」不是缺口，是机制</strong>。
+      它的兼容判据是「键在不在」而不是版本号——
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1675">engine.py:1675 <span class="ref-line">version</span></a>
+      的 <code>version</code> 字段只写不读，老读端忽略新键、新读端对缺席整节不渲染。
+      把它误登记成「版本门缺失」会导致有人去加一个没有消费者的门——注册表的价值一半在于把「不是问题」也写清楚。
+    </p>
+
+    <h2 id="usage">怎么用：新增一个版本点</h2>
+
+    <ol>
+      <li><strong>先确定类别与两扇门。</strong>写下 kind、读到更新版本的行为、读到更老版本的行为；
+      如果两扇门都不是 <code>n/a</code>，就必须能指出一个钉住该行为的测试——没有证据的兼容声明不算声明。</li>
+      <li><strong>登记。</strong>常量进 <code>CONSTANT_KEYS</code> + <code>REGISTRY</code>；载荷字面量进
+      <code>LITERAL_WRITE_KEYS</code>；迁移进 <code>MIGRATION_STORES</code>（从未版本化 store 搬行，不是两处都写）。</li>
+      <li><strong>同提交补证据。</strong>行为中性 golden 放在属主测试文件里，注册表只引用 pytest node id；
+      缺口行同样要引 golden——它钉的是「现状被看见」，不是「现状没问题」。</li>
+      <li><strong>跑门。</strong><code>uv run pytest tests/architecture/test_version_compatibility.py -q</code>
+      与 <code>python3 scripts/check_page_anchors.py --at HEAD</code>；前者守注册表，后者守这页的源码锚点。</li>
+    </ol>
+
+    <p>
+      改<strong>已有</strong>版本值时的顺序相反：先让冻结值测试红，再从失败消息里读到该改哪一行——
+      「代码改了、注册表忘了」与「注册表改了、代码忘了」都会被同一道门拦下。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>注册表放测试，不进运行时</td>
+            <td>生产环境对「未登记版本点」的即时拦截</td>
+            <td>零运行时门禁、零行为变化；新版本点的风险在合并前暴露，而不是上线后多一条不可控的失败路径</td>
+          </tr>
+          <tr>
+            <td>冻结字面量（非引用常量）</td>
+            <td>改版本时少改一处</td>
+            <td>要改两处正是设计目标：一次兼容语义变化应该被看见，而不是被一次重构带走</td>
+          </tr>
+          <tr>
+            <td>证据用 pytest node id</td>
+            <td>自由文本的说明弹性</td>
+            <td>可静态校验、会腐烂得响亮；证据是「有人真的钉过」，不是「有人说过」</td>
+          </tr>
+          <tr>
+            <td>缺口也钉 golden</td>
+            <td>补门时的一次顺手改动</td>
+            <td>兼容行为变化必须同时改注册表与文档——有意的摩擦比无声的漂移便宜</td>
+          </tr>
+          <tr>
+            <td>未版本化 store 只登记理由</td>
+            <td>给每个 store 都补一套迁移</td>
+            <td>K/V 设置面、派生索引、观测日志没有版本语义；为它们造版本只会制造维护面</td>
+          </tr>
+          <tr>
+            <td>页面不写具体版本值</td>
+            <td>文档自带的「速查数字」</td>
+            <td>注册表是唯一权威；文档写数字就是第二次漂移的起点，机制才是文档该讲的东西</td>
+          </tr>
+          <tr>
+            <td>棘轮而非沙箱</td>
+            <td>对动态 <code>importlib</code> / <code>getattr</code> 的覆盖</td>
+            <td>AST 覆盖明确可解释；诚实标明盲区，比假装全覆盖更可靠。新误报必须显式登记，不许静默放宽</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>OSSIE 语义模型文档的形状与解析</td><td><a href="semantic-compiler.html">语义编译边界</a></td></tr>
+          <tr><td>判定规则文件的版本门与条件语言</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>按规则版本分桶的质量回评</td><td><a href="closed-loop.html">闭环与契约</a></td></tr>
+          <tr><td>资产回滚、停用与治理</td><td><a href="extension-governance.html">扩展与治理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 47609ca</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

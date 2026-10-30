@@ -18,14 +18,13 @@ from typing import Any
 import yaml
 
 from trove.services.kb.lint import lint_semantics_document
-from trove.services.kb.semantic_gen import _OSSIE_VERSION
 from trove.services.semantic_layer.importers.base import (
     ImportedSemantic,
     SemanticImportError,
 )
 from trove.services.semantic_layer.issues import blocking_issues, structured_issues
 from trove.services.semantic_layer.manage import _apply_draft
-from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.ossie import OSSIE_VERSION, parse_ossie
 
 _ANSI = "ANSI_SQL"
 _DUMP_KWARGS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -94,7 +93,7 @@ def build_document(imported: ImportedSemantic, *, model_name: str) -> dict[str, 
         model["metrics"] = metrics
     if relationships:
         model["relationships"] = relationships
-    return {"version": _OSSIE_VERSION, "semantic_model": [model]}
+    return {"version": OSSIE_VERSION, "semantic_model": [model]}
 
 
 def build_payloads(imported: ImportedSemantic) -> list[dict[str, Any]]:

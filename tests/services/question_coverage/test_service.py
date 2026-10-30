@@ -161,12 +161,13 @@ async def svc(tmp_path, monkeypatch):
 
 
 async def _seed(service, run_id, results, *, created_at, status="done",
-                datasource=DS, digest="sha256:a", questions=None):
+                datasource=DS, digest="sha256:a", questions=None,
+                taxonomy_version=1):
     questions = questions or [r["question"] for r in results]
     await service.store.create_run({
         "run_id": run_id, "datasource": datasource, "status": status,
         "created_at": created_at, "question_count": len(questions),
-        "questions": questions, "taxonomy_version": 1,
+        "questions": questions, "taxonomy_version": taxonomy_version,
         "semantic_digest": digest,
         "summary": {"source_label": "paste"},
     })
@@ -631,6 +632,21 @@ async def test_diff_semantic_changed_flag(svc):
     body = await svc.diff("current")
     assert body["semantic_changed"] is True
     assert body["base_semantic_digest"] == "sha256:a"
+
+
+async def test_diff_flags_taxonomy_version_change(svc):
+    """跨版本 diff 是**降级**(打标继续算),不是拒绝 —— 注册表钉住这一点。"""
+    await _seed(svc, "base", [_result(0, "q1", "compiled")],
+                created_at="2026-10-18T10:00:00+00:00", taxonomy_version=1)
+    await _seed(svc, "current", [_result(0, "q1", "compiled")],
+                created_at="2026-10-18T11:00:00+00:00", taxonomy_version=2)
+    body = await svc.diff("current")
+    assert body["base_taxonomy_version"] == 1
+    assert body["taxonomy_version"] == 2
+    assert body["taxonomy_changed"] is True
+    assert body["matched"] == 1
+    delta = body["summary_delta"]["deterministic_coverage"]
+    assert delta["delta"] == 0.0
 
 
 # ── 缺口 → pending 草稿 ────────────────────────────────────────────────

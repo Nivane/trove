@@ -45,6 +45,10 @@ from trove.services.semantic_layer.models import (
 
 logger = logging.getLogger(__name__)
 
+#: 我们写出/消费的 OSSIE core spec 版本(文档级 ``version`` 的唯一权威)。
+#: 三个写入点(kb 结构生成 / flat↔OSSIE 桥接 / 变更暂存补写)都引用这里。
+OSSIE_VERSION = "0.2.0.dev0"
+
 _ANSI = "ANSI_SQL"
 
 # 正则回退:表达式 SQLGlot 解析失败时提取 数据集.字段 引用

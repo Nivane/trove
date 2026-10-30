@@ -252,12 +252,21 @@ cd frontend && npm run types:check              # d.ts 与快照不同步 → �
 
 盲区：`importlib` / `__import__` / `getattr` 等动态 import 不在 AST 覆盖内；`scripts/` 与 `tests/` 不参与矩阵（入口在 `main` 之上）。基线由 detector 生成后人工核对，失败消息会打印全部违规站点（`rel:line`）；新增含 `.py` 的顶层目录必须先在 `LAYERS` 登记 rank，否则 `test_layers_cover_every_top_level_component` 红。
 
+### 版本与兼容注册表（P5）
+
+**零运行时门禁**：注册表只描述并冻结现状，真正的行为门仍在各模块。权威在 `tests/architecture/test_version_compatibility.py` 的冻结字面量 `REGISTRY`（每行一个版本点：id / 权威位置 / 冻结值 / kind / 更新与更老版本行为 / 证据节点 / 可选缺口）+ `MIGRATION_STORES`（9 个已版本化 store 的实测最大版本，含 1 个已版本化但未接线的 `kb/ledger`，单列 `UNWIRED_VERSIONED_STORES`）+ `UNVERSIONED_STORES`（13 个未版本化 store，逐行非空理由）+ `GAPS`（已登记的兼容缺口）。词表闭集：`kind ∈ {schema, format, revision, informational, cache_key, derived}`（`revision` 是修订计数不是兼容门；`derived` 重生即升级）；`newer ∈ {refuse, degrade, fold_unknown, rebuild, pass_through, cache_invalidate, n/a}`；`older ∈ {migrate, adopt, rebuild, accept, degrade, pass_through, refuse, cache_invalidate, n/a}`。`n/a` = 不存在兼容问题；有读者分支的行**必须**引 pytest node id 证据（静态校验存在性），缺口行也照常引行为中性 golden 钉现状——将来补门时 golden 必红，逼着注册表与文档同步改。
+
+四个纯检测器（只吃源码字符串或既有分类表、不碰磁盘）：`module_version_constants`（模块体版本常量；`NON_VERSION_CONSTANTS` 显式排除并写理由，如 `MAX_SQL_VERSIONS` 是链长上限）、`literal_version_writes`（载荷 `version`/`record_version` 常量与下标赋值）、`migration_versions`（`Migration(version=…)` 最大版本；非常量 version 直接报错）、`store_posture`（按 `STORE_CLASSES` 把 durable/derived store 精确分区，补迁移必须同时搬行）。冻结值经 AST 检测值逐行对账（名称不含 `VERSION` 的 curated 常量经 `importlib` 取活对象），产品版本与 `pyproject.toml` 核对。
+
+现状：OSSIE 版本已收敛为 `semantic_layer/ossie.py::OSSIE_VERSION` 单一权威（生成 / 格式化 / 变更暂存全部引用，输出逐字节不变）。两个已登记缺口：`ossie-version-gate`（解析端不校验版本，0.2 破坏性根形状无门）、`evalset-newer-refusal`（任意整数版本原样保留）。analysis payload 的「键在场容忍」是机制不是缺口（`version` 只写不读，判据是键在不在）。机制说明见文档站 `docs/engineering/compatibility.html`。
+
 ## Hard project constraints (must respect)
 
 - **KB anti-cheating**: never manually stuff BIRD dev-set gold SQL into `.trove/kb/.../examples.yml` — content that `kb init` cannot generate deterministically is not a real accuracy gain. Fixes may only land in code/prompts (applies globally) and in KB content `kb init` can generate (schema notes, terms, enums, template examples).
 - **Auto memory never bypasses confirmation**: the memory subsystem's automatic writes (episodes are the exception — they are factual "what happened" records) land as `pending` drafts and must NOT enter retrieval until an admin confirms (`lessons.yml`/`examples.yml` `confirmed`/`pending` fields are the gate). Do not change this to auto-inject — it protects the human-curated KB from pollution (see `MemoryConfig.promotion` default-off).
 - **Never run eval_bird proactively** — cost-sensitive (billed LLM calls); do not launch eval runs without explicit instruction.
 - **架构契约是机检的**：不变量、持久状态的权威写者/构造点、KB YAML 写者、`GenSQLState` 派生字段都有冻结清单（`tests/architecture/test_invariants.py` / `test_state_ownership.py`）；新增一条同类路径会红——先改清单并写明理由，再改代码。它们是棘轮不是沙箱（动态 import / `getattr` 不在覆盖内）。
+- **版本点必须同 commit 登记**：新增模块级版本常量 / 载荷字面量 `version`·`record_version` 写入 / `Migration(version=…)`，必须在同一提交登记 `tests/architecture/test_version_compatibility.py`（`REGISTRY` / `LITERAL_WRITE_KEYS` / `MIGRATION_STORES`，未版本化 store 搬 `UNVERSIONED_STORES` 并写理由）；改已有版本值必须同步冻结值与对应 golden。兼容语义变化（如给 `GAPS` 补门）必须同时改注册表与 `docs/engineering/compatibility.html`——golden 会先红，这是有意的摩擦。
 - **Debug query_sketch first**: wrong output columns from gen_sql usually root in the query_sketch node's `answer_columns` dictating output columns (the "Query plan (follow it...)" line in the user message outranks system rules; gen just obeys). Check the query_sketch node's output in `~/.trove/runs/<run_id>.log` (look up run_id from `.trove/eval/results.jsonl` by question).
 - Eval environment: `scripts/eval_bird.py` connects to MySQL `root:root@127.0.0.1:3306/financial`, dev json at `/Users/zhaolipan/Downloads/minidev/MINIDEV/mini_dev_mysql.json`; swap KBs with `--kb-dir` (flat YAML dirs supported); per-question verdicts land in `.trove/eval/results.jsonl`, failures in `failures.jsonl` for `distill_lessons.py`.
 - Git habit: for a new feature, checkout a new branch; after tests pass, commit directly, then merge the branch to main — but **do not push** (keep origin/main untouched), and never delete the feature branch. Make sure no design docs or secret configs land in any commit.
