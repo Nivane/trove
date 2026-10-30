@@ -30,9 +30,9 @@ from typing import Any
 
 from trove.core.types import SchemaInfo, TableInfo
 from trove.services.kb.ossie_format import _metric_from_entry
+from trove.services.semantic_layer.ossie import OSSIE_VERSION
 
 _ANSI = "ANSI_SQL"
-_OSSIE_VERSION = "0.2.0.dev0"
 
 _TEXT_TYPES = frozenset({"char", "text", "varchar", "enum", "string",
                           "character", "clob", "varchar2", "nvarchar"})
@@ -244,7 +244,7 @@ def generate_semantic_document(
         model["metrics"] = metrics
     doc: dict[str, Any] = {"semantic_model": [model]}
     # OSSIE v0.2.0.dev0 文档级 version(透传;解析端容缺省)
-    doc["version"] = _OSSIE_VERSION
+    doc["version"] = OSSIE_VERSION
     return doc
 
 

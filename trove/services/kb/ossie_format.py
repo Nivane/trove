@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 from sqlglot import exp, parse_one
 
-from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.ossie import OSSIE_VERSION, parse_ossie
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def terms_to_ossie_document(
     model: dict[str, Any] = {"name": model_name, "datasets": [{"name": t} for t in sorted(datasets)]}
     if metrics:
         model["metrics"] = metrics
-    return {"version": "0.2.0.dev0", "semantic_model": [model]}
+    return {"version": OSSIE_VERSION, "semantic_model": [model]}
 
 
 def _parse_model_or_none(text: str) -> Any:
