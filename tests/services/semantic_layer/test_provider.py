@@ -11,53 +11,53 @@ from trove.services.semantic_layer.ossie import parse_ossie
 from trove.services.semantic_layer.provider import SemanticLayerProvider
 
 SAMPLE = """
-semantic_model:
-  - name: financial_analytics
+version: "0.2.0.dev0"
+name: financial_analytics
+ai_context:
+  instructions: "Use this model for banking and loan analysis"
+datasets:
+  - name: loan
+    source: financial.loan
+  - name: account
+    source: financial.account
+metrics:
+  - name: total_loan_amount
+    description: Total amount of all loans
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
     ai_context:
-      instructions: "Use this model for banking and loan analysis"
-    datasets:
-      - name: loan
-        source: financial.loan
-      - name: account
-        source: financial.account
-    metrics:
-      - name: total_loan_amount
-        description: Total amount of all loans
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
-        ai_context:
-          synonyms:
-            - "total loans"
-            - "loan volume"
-      - name: avg_loan_per_account
-        description: Average loan amount per account
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount) / COUNT(DISTINCT account.account_id)
+      synonyms:
+        - "total loans"
+        - "loan volume"
+  - name: avg_loan_per_account
+    description: Average loan amount per account
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount) / COUNT(DISTINCT account.account_id)
 """
 
 TWO_DATASET_METRICS = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-      - name: account
-        source: financial.account
-    metrics:
-      - name: metric_on_loan
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
-      - name: metric_on_account
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(account.account_id)
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+  - name: account
+    source: financial.account
+metrics:
+  - name: metric_on_loan
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
+  - name: metric_on_account
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(account.account_id)
 """
 
 
@@ -119,6 +119,33 @@ def test_parse_failure_keeps_last_good(semantic_dir, caplog):
     assert len(metrics) == 2  # 回退 last-known-good
     assert metrics[0].name == "total_loan_amount"
     assert "semantic" in caplog.text.lower()
+
+
+def test_ossie_gate_refuses_before_the_parser_sees_the_file(semantic_dir, caplog):
+    """版本门在解析器之前:不能解释的根形状绝不交给解析器。
+
+    用一句"什么都肯读"的假解析器钉住门的独立性 —— 门在,它一次都不会
+    被调用;门被删,它会把旧包装读成一份模型(两条断言同时红)。默认解析器
+    自己也拒绝 legacy,只看 last-known-good 的测试区分不出门是否还在。
+    """
+    _write(semantic_dir, SAMPLE)
+    calls = []
+
+    def blind_parser(text: str):
+        calls.append(text)
+        return parse_ossie(SAMPLE, preferred_dialect="sqlite")
+
+    p = SemanticLayerProvider(semantic_dir, "financial", parser=blind_parser)
+    assert len(p.metrics()) == 2
+    assert len(calls) == 1
+    calls.clear()
+
+    _write(semantic_dir, "semantic_model:\n  - name: legacy_root\n")
+    with caplog.at_level("ERROR"):
+        metrics = p.metrics()
+    assert calls == []  # 门在解析器之前拦下
+    assert [m.name for m in metrics] == ["total_loan_amount", "avg_loan_per_account"]
+    assert "keeping last known good" in caplog.text
 
 
 def test_invalid_expression_dropped(semantic_dir, caplog):
@@ -272,31 +299,31 @@ def test_model_view_is_cached_and_keeps_model_level_fields(semantic_dir):
 # ── 单一真源:KB semantics.yml 合并(P4)──────────────────────
 
 KB_MODEL = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: district
-        source: financial.district
-        primary_key: [district_id]
-        fields:
-          - name: A3
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: A3
-            datatype: String
-            description: district name
-            ai_context:
-              synonyms: [region, area]
-    metrics:
-      - name: total_loan_amount
-        description: KB authoritative
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: district
+    source: financial.district
+    primary_key: [district_id]
+    fields:
+      - name: A3
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(loan.amount) * 2
+              expression: A3
+        datatype: String
+        description: district name
         ai_context:
-          synonyms: [total loans]
+          synonyms: [region, area]
+metrics:
+  - name: total_loan_amount
+    description: KB authoritative
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount) * 2
+    ai_context:
+      synonyms: [total loans]
 """
 
 
@@ -344,27 +371,26 @@ def test_kb_metric_overrides_directory_source(tmp_path, semantic_dir):
 
 SPINE_MODEL = """
 version: "0.2.0.dev0"
-semantic_model:
-  - name: financial_analytics
-    ai_context:
-      examples: ["total loans by month"]
-    custom_extensions:
-      - vendor_name: trove
-        data: "audit:2026"
-    datasets:
-      - name: loan
-        source: financial.loan
-        primary_key: [loan_id]
-        fields:
-          - name: date
-            expression: {dialects: [{dialect: ANSI_SQL, expression: date}]}
-    metrics:
-      - name: total_amount
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
-    time_spine:
-      field: loan.date
-      granularity: month
-      fill: "0"
+name: financial_analytics
+ai_context:
+  examples: ["total loans by month"]
+custom_extensions:
+  - vendor_name: trove
+    data: "audit:2026"
+datasets:
+  - name: loan
+    source: financial.loan
+    primary_key: [loan_id]
+    fields:
+      - name: date
+        expression: {dialects: [{dialect: ANSI_SQL, expression: date}]}
+metrics:
+  - name: total_amount
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+time_spine:
+  field: loan.date
+  granularity: month
+  fill: "0"
 """
 
 
@@ -393,62 +419,62 @@ def test_merge_preserves_model_level_fields(tmp_path, semantic_dir):
 # ── 对象视图声明的合并存活(N11 最高危:有 override 时被静默丢弃)──
 
 ONTOLOGY_BASE = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-        primary_key: [loan_id]
-        entity:
-          display_name: 贷款
-          natural_keys: [loan_id]
-          aliases: [借款]
-        fields:
-          - name: loan_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-      - name: account
-        source: financial.account
-        primary_key: [account_id]
-        fields:
-          - name: account_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
-    relationships:
-      - name: loan_to_account
-        from: loan
-        to: account
-        from_columns: [account_id]
-        to_columns: [account_id]
-        display_name: 属于
-    metrics:
-      - name: total_loan_amount
-        description: demo asset (should lose)
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
-    hierarchies:
-      - name: product_hierarchy
-        display_name: 产品层级
-        dataset: loan
-        levels: [loan_id]
-      - name: time_hierarchy
-        dataset: loan
-        levels: [loan_id]
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+    primary_key: [loan_id]
+    entity:
+      display_name: 贷款
+      natural_keys: [loan_id]
+      aliases: [借款]
+    fields:
+      - name: loan_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+  - name: account
+    source: financial.account
+    primary_key: [account_id]
+    fields:
+      - name: account_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+relationships:
+  - name: loan_to_account
+    from: loan
+    to: account
+    from_columns: [account_id]
+    to_columns: [account_id]
+    display_name: 属于
+metrics:
+  - name: total_loan_amount
+    description: demo asset (should lose)
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+hierarchies:
+  - name: product_hierarchy
+    display_name: 产品层级
+    dataset: loan
+    levels: [loan_id]
+  - name: time_hierarchy
+    dataset: loan
+    levels: [loan_id]
 """
 
 #: KB(override):只改其他字段(metric 定义 + 新增数据集),不碰三块声明 ——
 #: 合并后三块必须原样存活。
 ONTOLOGY_OVERLAY = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: district
-        source: financial.district
-        primary_key: [district_id]
-        fields:
-          - name: district_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
-    metrics:
-      - name: total_loan_amount
-        description: KB authoritative
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount) * 2}]}
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: district
+    source: financial.district
+    primary_key: [district_id]
+    fields:
+      - name: district_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
+metrics:
+  - name: total_loan_amount
+    description: KB authoritative
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount) * 2}]}
 """
 
 
@@ -491,16 +517,16 @@ def test_merge_of_hierarchies_is_by_name_override_wins(tmp_path, semantic_dir):
     字段级并集在这里会得到一条谁都没写过的链 —— 所以是整体替换。
     """
     overlay = """
-semantic_model:
-  - name: financial_analytics
-    hierarchies:
-      - name: product_hierarchy
-        display_name: KB 产品层级
-        dataset: account
-        levels: [account_id]
-      - name: new_hierarchy
-        dataset: account
-        levels: [account_id]
+version: "0.2.0.dev0"
+name: financial_analytics
+hierarchies:
+  - name: product_hierarchy
+    display_name: KB 产品层级
+    dataset: account
+    levels: [account_id]
+  - name: new_hierarchy
+    dataset: account
+    levels: [account_id]
 """
     p = _ontology_provider(tmp_path, semantic_dir, overlay)
     m = p.model()
@@ -530,32 +556,32 @@ def test_merge_without_overlay_keeps_base_declarations(tmp_path, semantic_dir):
 # ── 漂移检测(声明模型 vs 实时 catalog)──────────────────────
 
 DRIFT_MODEL = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-        primary_key: [loan_id]
-        fields:
-          - name: amount
-            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
-          - name: account_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
-      - name: account
-        source: financial.account
-        primary_key: [account_id]
-        fields:
-          - name: account_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
-    relationships:
-      - name: loan_account
-        from: loan
-        to: account
-        from_columns: [account_id]
-        to_columns: [account_id]
-    metrics:
-      - name: total_amount
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+    primary_key: [loan_id]
+    fields:
+      - name: amount
+        expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
+      - name: account_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+  - name: account
+    source: financial.account
+    primary_key: [account_id]
+    fields:
+      - name: account_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+relationships:
+  - name: loan_account
+    from: loan
+    to: account
+    from_columns: [account_id]
+    to_columns: [account_id]
+metrics:
+  - name: total_amount
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
 """
 
 _CLEAN_CATALOG = {
@@ -686,28 +712,28 @@ def test_field_hits_maps_question_word_to_field(tmp_path):
 # ── P5.1: 倒排字段候选 + 语义角色 ─────────────────────────
 
 ROLE_MODEL = """
-semantic_model:
-  - name: fin
-    datasets:
-      - name: district
-        fields:
-          - name: A3
-            expression: {dialects: [{dialect: ANSI_SQL, expression: A3}]}
-            ai_context: {synonyms: [region, area]}
-            semantic_role: dimension
-          - name: district_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
-            semantic_role: identifier
-          - name: A11
-            expression: {dialects: [{dialect: ANSI_SQL, expression: A11}]}
-            ai_context: {synonyms: [avg salary]}
-            semantic_role: measure
-      - name: loan
-        fields:
-          - name: status
-            expression: {dialects: [{dialect: ANSI_SQL, expression: status}]}
-            enum_display: {A: finished, B: running}
-            ai_context: {synonyms: [repayment state]}
+version: "0.2.0.dev0"
+name: fin
+datasets:
+  - name: district
+    fields:
+      - name: A3
+        expression: {dialects: [{dialect: ANSI_SQL, expression: A3}]}
+        ai_context: {synonyms: [region, area]}
+        semantic_role: dimension
+      - name: district_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
+        semantic_role: identifier
+      - name: A11
+        expression: {dialects: [{dialect: ANSI_SQL, expression: A11}]}
+        ai_context: {synonyms: [avg salary]}
+        semantic_role: measure
+  - name: loan
+    fields:
+      - name: status
+        expression: {dialects: [{dialect: ANSI_SQL, expression: status}]}
+        enum_display: {A: finished, B: running}
+        ai_context: {synonyms: [repayment state]}
 """
 
 
@@ -746,23 +772,23 @@ def test_parse_semantic_role_and_enum_display(tmp_path):
 
 
 DERIVED_MODEL = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-    metrics:
-      - name: total_loan_amount
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
-      - name: avg_per_loan
-        type: derived
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: total_loan_amount / COUNT(loan.loan_id)
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+metrics:
+  - name: total_loan_amount
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
+  - name: avg_per_loan
+    type: derived
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: total_loan_amount / COUNT(loan.loan_id)
 """
 
 
@@ -780,18 +806,18 @@ def test_derived_metric_survives_validation(semantic_dir):
 
 def test_unparseable_derived_metric_still_dropped(semantic_dir):
     _write(semantic_dir, """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-    metrics:
-      - name: bad_derived
-        type: derived
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: "SUM(loan.amount) / / /"
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+metrics:
+  - name: bad_derived
+    type: derived
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: "SUM(loan.amount) / / /"
 """)
     p = SemanticLayerProvider(semantic_dir, "financial")
     # metrics() 返回校验后列表(model() 是未校验的解析结果)

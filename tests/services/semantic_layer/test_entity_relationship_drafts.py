@@ -63,7 +63,7 @@ def _doc(*, relationship: dict | None = None) -> dict:
     entry: dict = {"name": "demo", "datasets": [loan, account], "metrics": []}
     if relationship is not None:
         entry["relationships"] = [relationship]
-    return {"version": "0.2.0.dev0", "semantic_model": [entry]}
+    return {"version": "0.2.0.dev0", **entry}
 
 
 def _kb_with(tmp_path, doc: dict) -> KbService:
@@ -82,13 +82,13 @@ def kb(tmp_path):
 
 
 def _minimal(*datasets: dict) -> dict:
-    """``_apply_draft`` 直接吃的**完整文档壳**(semantic_model[0] 才是模型)。
+    """``_apply_draft`` 直接吃的**完整文档**(扁平 OSSIE 0.2 根)。
 
-    传个裸 ``{"datasets": [...]}`` 会被 ``_model_of`` 当成缺省 → 新建空
-    模型,所有数据集判定都落「未声明」——壳的形状是这条路径的一部分。
+    必须带 ``version`` 与数据集声明:裸 ``{"datasets": [...]}`` 会被
+    ``_model_of`` 当成缺省 → 新建空模型,所有数据集判定都落「未声明」。
     """
-    return {"semantic_model": [{"name": "demo", "datasets": list(datasets),
-                                "metrics": []}]}
+    return {"version": "0.2.0.dev0", "name": "demo",
+            "datasets": list(datasets), "metrics": []}
 
 
 def _semantics_doc(kb: KbService) -> dict:
@@ -97,7 +97,7 @@ def _semantics_doc(kb: KbService) -> dict:
 
 
 def _dataset_doc(kb: KbService, name: str = "loan") -> dict:
-    model = _semantics_doc(kb)["semantic_model"][0]
+    model = _semantics_doc(kb)
     return next(d for d in model["datasets"] if d["name"] == name)
 
 
@@ -355,7 +355,7 @@ class TestRelationshipWriteFace:
         assert rel.to_columns == ["account_no"]
         assert rel.cardinality == "N:1"
         assert rel.display_name == "归属账户"
-        doc_rel = _semantics_doc(kb)["semantic_model"][0]["relationships"][0]
+        doc_rel = _semantics_doc(kb)["relationships"][0]
         assert doc_rel["name"] == "loan_account"
         assert doc_rel["from"] == "loan" and doc_rel["to"] == "account"
 
@@ -366,7 +366,7 @@ class TestRelationshipWriteFace:
             "demo", "relationship", "upsert", "r",
             payload={**_PAIR, "cardinality": "N:1", "display_name": "  "})
         await manager.confirm_draft("demo", entry["id"], dialect="sqlite")
-        doc_rel = _semantics_doc(kb)["semantic_model"][0]["relationships"][0]
+        doc_rel = _semantics_doc(kb)["relationships"][0]
         assert doc_rel["cardinality"] == "N:1"
         assert "display_name" not in doc_rel
         rel = next(r for r in manager.model("demo").relationships if r.name == "r")
@@ -423,7 +423,7 @@ class TestRelationshipWriteFace:
             "demo", "relationship", "upsert", "r",
             payload={"from": "loan", "to": "account", "display_name": "归属"})
         await manager.confirm_draft("demo", entry["id"], dialect="sqlite")
-        doc_rel = _semantics_doc(seeded)["semantic_model"][0]["relationships"][0]
+        doc_rel = _semantics_doc(seeded)["relationships"][0]
         assert doc_rel["from_columns"] == ["account_no"]
         assert doc_rel["to_columns"] == ["account_no"]
         assert doc_rel["cardinality"] == "N:1"          # carryover
@@ -434,7 +434,7 @@ class TestRelationshipWriteFace:
         丢弃,既有的它被 carryover 保住。方向是 fail-safe 的:豁免只会
         少发,不会多发。"""
         base = _minimal({"name": "loan"}, {"name": "account"})
-        rels = base["semantic_model"][0]["relationships"] = [
+        rels = base["relationships"] = [
             {"name": "r", **_PAIR, "cardinality": "M:N", "fan_out": "dedup"}]
         _apply_draft(base, {
             "kind": "relationship", "action": "upsert", "name": "r",

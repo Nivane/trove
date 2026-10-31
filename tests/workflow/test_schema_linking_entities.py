@@ -31,72 +31,70 @@ from trove.workflow.nodes.schema_linking import (
 )
 
 SEMANTICS_PLAIN = """
-version: "0.1"
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        fields:
-          - name: loan_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.loan_id
-            datatype: Integer
-            semantic_role: identifier
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.amount
-            datatype: Integer
-            semantic_role: measure
-        description: loan records
-    metrics:
-      - name: 平均贷款金额
-        description: 所有贷款的平均金额
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    fields:
+      - name: loan_id
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+              expression: loan.loan_id
+        datatype: Integer
+        semantic_role: identifier
+      - name: amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: loan.amount
+        datatype: Integer
+        semantic_role: measure
+    description: loan records
+metrics:
+  - name: 平均贷款金额
+    description: 所有贷款的平均金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
 """
 
 SEMANTICS_ENTITY = """
-version: "0.1"
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        entity:
-          display_name: 贷款
-          natural_keys:
-            - loan_id
-          aliases:
-            - 借据单
-            - loan note
-        fields:
-          - name: loan_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.loan_id
-            datatype: Integer
-            semantic_role: identifier
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.amount
-            datatype: Integer
-            semantic_role: measure
-        description: loan records
-    metrics:
-      - name: 平均贷款金额
-        description: 所有贷款的平均金额
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    entity:
+      display_name: 贷款
+      natural_keys:
+        - loan_id
+      aliases:
+        - 借据单
+        - loan note
+    fields:
+      - name: loan_id
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+              expression: loan.loan_id
+        datatype: Integer
+        semantic_role: identifier
+      - name: amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: loan.amount
+        datatype: Integer
+        semantic_role: measure
+    description: loan records
+metrics:
+  - name: 平均贷款金额
+    description: 所有贷款的平均金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
 """
 
 

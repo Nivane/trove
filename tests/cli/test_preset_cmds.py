@@ -15,29 +15,28 @@ import yaml
 from trove.cli.commands.preset_cmds import main_preset, register_preset_commands
 
 _SEMANTICS = {
-    "semantic_model": [{
-        "name": "mini",
-        "datasets": [{
-            "name": "loan",
-            "source": "loan",
-            "primary_key": ["loan_id"],
-            "fields": [
-                {"name": "loan_id", "datatype": "Integer",
-                 "description": "Loan id.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
-                {"name": "date", "datatype": "Date",
-                 "description": "Booking date.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "date"}]}},
-            ],
-        }],
-        "metrics": [{
-            "name": "loan_count",
-            "agg_time_dimension": "date",
-            "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
-        }],
+    "version": "0.2.0.dev0",
+    "name": "mini",
+    "datasets": [{
+        "name": "loan",
+        "source": "loan",
+        "primary_key": ["loan_id"],
+        "fields": [
+            {"name": "loan_id", "datatype": "Integer",
+             "description": "Loan id.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
+            {"name": "date", "datatype": "Date",
+             "description": "Booking date.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "date"}]}},
+        ],
+    }],
+    "metrics": [{
+        "name": "loan_count",
+        "agg_time_dimension": "date",
+        "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
     }],
 }
 

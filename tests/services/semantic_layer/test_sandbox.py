@@ -7,20 +7,18 @@ import yaml
 
 from trove.services.semantic_layer.sandbox import run_replay
 
-BASE = {"version": "0.2.0.dev0", "semantic_model": [{
+BASE = {"version": "0.2.0.dev0", 
     "name": "demo",
     "datasets": [{"name": "loan", "source": "loan"}],
     "metrics": [{"name": "refund_rate", "expression": {"dialects": [
         {"dialect": "ANSI_SQL", "expression": "SUM(loan.refund) / SUM(loan.amount)"}]}}],
-    "topics": [{"name": "credits", "datasets": ["loan"]}],
-}]}
+    "topics": [{"name": "credits", "datasets": ["loan"]}],}
 
-AFTER_NO_REFUND = {"version": "0.2.0.dev0", "semantic_model": [{
+AFTER_NO_REFUND = {"version": "0.2.0.dev0", 
     "name": "demo",
     "datasets": [{"name": "loan", "source": "loan"}],
     "metrics": [],
-    "topics": [{"name": "credits", "datasets": ["loan"]}],
-}]}
+    "topics": [{"name": "credits", "datasets": ["loan"]}],}
 
 RULES = {"version": 3, "rules": [
     {"id": "revenue_drop", "subject": {"metrics": ["refund_rate"]},
@@ -48,9 +46,9 @@ def test_regression_highlights_now_broken(tmp_path):
 
 
 def test_improvement_was_broken_now_compiles(tmp_path):
-    base = {"version": "0.2.0.dev0", "semantic_model": [{
+    base = {"version": "0.2.0.dev0", 
         "name": "demo", "datasets": [{"name": "loan", "source": "loan"}],
-        "metrics": []}]}
+        "metrics": []}
     out = run_replay(_kb(tmp_path), "demo", dialect="sqlite",
                      base_text=_dump(base), after_text=_dump(BASE))
     assert out["was_broken_now_compiles"] == ["rule:revenue_drop"]
@@ -86,8 +84,8 @@ def test_repeated_calls_do_not_share_state(tmp_path):
 def test_not_applicable_when_nothing_replayable(tmp_path):
     """KB 里一条可回放产物都没有 → 如实 not_applicable,不冒充 neutral（§5.4）。"""
     kb = _kb(tmp_path, rules=None)
-    bare = {"version": "0.2.0.dev0", "semantic_model": [{
-        "name": "demo", "datasets": [{"name": "loan", "source": "loan"}], "metrics": []}]}
+    bare = {"version": "0.2.0.dev0", 
+        "name": "demo", "datasets": [{"name": "loan", "source": "loan"}], "metrics": []}
     out = run_replay(kb, "demo", dialect="sqlite",
                      base_text=_dump(bare), after_text=_dump(bare))
     assert out["verdict"] == "not_applicable"
@@ -110,9 +108,9 @@ def test_broken_decisions_is_unknown(tmp_path):
 
 
 def test_topic_scope_emptied_is_broken(tmp_path):
-    after = {"version": "0.2.0.dev0", "semantic_model": [{
+    after = {"version": "0.2.0.dev0", 
         "name": "demo", "datasets": [], "metrics": [],
-        "topics": [{"name": "credits", "datasets": ["loan"]}]}]}
+        "topics": [{"name": "credits", "datasets": ["loan"]}]}
     out = run_replay(_kb(tmp_path, rules=None), "demo", dialect="sqlite",
                      base_text=_dump(BASE), after_text=_dump(after))
     assert "topic:credits" in out["now_broken"]
@@ -121,13 +119,13 @@ def test_topic_scope_emptied_is_broken(tmp_path):
 
 def test_topic_scope_restored_is_improvement(tmp_path):
     """域过期 → 域恢复 = 真「曾经编不出」,记 improves（「新增主题不算修复」的正向半边）。"""
-    base = {"version": "0.2.0.dev0", "semantic_model": [{
+    base = {"version": "0.2.0.dev0", 
         "name": "demo", "datasets": [], "metrics": [],
-        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}]}
-    after = {"version": "0.2.0.dev0", "semantic_model": [{
+        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}
+    after = {"version": "0.2.0.dev0", 
         "name": "demo", "datasets": [{"name": "credit_card", "source": "credit_card"}],
         "metrics": [],
-        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}]}
+        "topics": [{"name": "credits", "datasets": ["credit_card"]}]}
     out = run_replay(_kb(tmp_path, rules=None), "demo", dialect="sqlite",
                      base_text=_dump(base), after_text=_dump(after))
     assert out["was_broken_now_compiles"] == ["topic:credits"]
@@ -142,13 +140,12 @@ def test_block_pick_follows_dialect_parameter(tmp_path):
     ``loan.refund`` → 锚定 loan → 能编。块选择若写死 sqlite,mysql 那次会误挑
     ANSI 把坏块编译成功 —— 这条断言即红。
     """
-    doc = {"version": "0.2.0.dev0", "semantic_model": [{
+    doc = {"version": "0.2.0.dev0", 
         "name": "demo",
         "datasets": [{"name": "loan", "source": "loan"}],
         "metrics": [{"name": "refund_rate", "expression": {"dialects": [
             {"dialect": "MYSQL", "expression": "SUM(1)"},
-            {"dialect": "ANSI_SQL", "expression": "SUM(loan.refund)"}]}}],
-    }]}
+            {"dialect": "ANSI_SQL", "expression": "SUM(loan.refund)"}]}}],}
     kb = _kb(tmp_path)  # RULES 的 subject 正是 refund_rate
 
     mysql_out = run_replay(kb, "demo", dialect="mysql",

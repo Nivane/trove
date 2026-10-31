@@ -103,7 +103,7 @@ class TestTerms:
 
         kb = api_kb.state.kb
         data = yaml.safe_load((kb.kb_dir / "test_db" / "semantics.yml").read_text(encoding="utf-8"))
-        metrics = data["semantic_model"][0]["metrics"]
+        metrics = data["metrics"]
         assert any(m["name"] == "学生数" for m in metrics)
 
     async def test_create_term_empty_422(self, kb_client):

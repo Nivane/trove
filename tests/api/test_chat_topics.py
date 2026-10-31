@@ -23,7 +23,7 @@ def _seed_topics(tmp_path, topics: list[dict]) -> None:
     assert candidates, "测试语义模型未落盘 —— conftest 夹具形状变了?"
     path = candidates[-1]
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    doc["semantic_model"][0]["topics"] = topics
+    doc["topics"] = topics
     path.write_text(
         yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
 

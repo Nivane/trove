@@ -407,7 +407,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
           <tr>
             <td>语义模型单一写入口</td>
             <td>草稿确认、自动门放行、变更合入都收敛到<strong>同一个写盘函数</strong>，且合入前先判：基准快照与主线现文件不符、载荷应用失败或有阻断级 lint，都在第一个字节落盘之前拒绝（主线零改动）。「自动批准」标记没有 HTTP 入口——客户端可控的参数会让审计标记可伪造。有一条 AST 守卫逐个文件钉住这条边界。</td>
-            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L368">services/semantic_layer/changes.py:368 <span class="ref-line">_write_merge</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L614">api/routers/semantic.py:614 <span class="ref-line">merge_semantic_change</span></a></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/changes.py#L371">services/semantic_layer/changes.py:371 <span class="ref-line">_write_merge</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L614">api/routers/semantic.py:614 <span class="ref-line">merge_semantic_change</span></a></td>
           </tr>
         </tbody>
       </table>
@@ -546,7 +546,7 @@ uv run trove validate --impact &lt;包或目录&gt; --datasource &lt;你的数�
       可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
     </p>
     <div class="attribution">
-      <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">47609ca</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 47609ca</code></p>
+      <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">1473541</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 1473541</code></p>
       <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
       <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
     </div>

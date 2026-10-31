@@ -5,15 +5,10 @@
   - 模型级 ``masking`` 块(``default_policy`` / ``bypass_scopes`` /
     ``hash_salt_ref``)。
 
-**落点判断**:解析器读的模型级声明(``time_spine`` / ``ai_context`` /
-``custom_extensions``)全挂在 ``semantic_model[0]`` 下,``masking`` 随它 ——
-设计稿 §5.5 注释里的「semantics.yml 顶层」是**单模型文件**的松散说法,
-文档顶层只有一个 ``version`` 是文档级键。这里不认文档顶层的 ``masking``
-(同一件事两个写法必然要配一条优先级规则,而静默忽略 = 静默不脱敏,
-所以在 lint 侧把这种写法报出来,见 tests/services/kb/test_lint.py)。
-
-本文件锁三件事:解析落点、序列化不丢、以及**存量模型**(R6 之前写的、
-没有这两个键的)解析后 ``mask`` 恒为 ``""``(A11)。
+**落点判断**:OSSIE 0.2 扁平根下,``masking`` 与 ``datasets`` / ``metrics``
+/ ``time_spine`` 同在**文档根** —— 文档根就是模型本身。这里锁三件事:
+解析落点、序列化不丢、以及**存量模型**(R6 之前写的、没有这两个键的)
+解析后 ``mask`` 恒为 ``""``(A11)。
 """
 
 import logging
@@ -32,50 +27,49 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _STOCK_MODELS = ["demo", "financial", "mysql_fin"]
 
 MASKED_YAML = """
-version: 0.2.0.dev0
-semantic_model:
-  - name: crm
-    masking:
-      default_policy: apply
-      bypass_scopes:
-        - pii
-      hash_salt_ref: "env:TROVE_MASK_SALT"
-    datasets:
-      - name: customers
-        source: crm.customers
-        fields:
-          - name: phone
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: phone
-            mask: partial
-          - name: id_card
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id_card
-            mask: hash
-          - name: email
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: email
-            mask: partial
+version: "0.2.0.dev0"
+name: crm
+masking:
+  default_policy: apply
+  bypass_scopes:
+    - pii
+  hash_salt_ref: "env:TROVE_MASK_SALT"
+datasets:
+  - name: customers
+    source: crm.customers
+    fields:
+      - name: phone
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: phone
+        mask: partial
+      - name: id_card
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: id_card
+        mask: hash
+      - name: email
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: email
+        mask: partial
 """
 
 _PLAIN_YAML = """
-semantic_model:
-  - name: crm
-    datasets:
-      - name: customers
-        source: crm.customers
-        fields:
-          - name: phone
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: phone
+version: "0.2.0.dev0"
+name: crm
+datasets:
+  - name: customers
+    source: crm.customers
+    fields:
+      - name: phone
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: phone
 """
 
 
@@ -86,17 +80,17 @@ def _masks(model: SemanticModel) -> list[tuple[str, str]]:
 def _declared_mask_yaml(value: str) -> str:
     """一份只声明一个字段 ``mask: <value>`` 的最小模型。"""
     return f"""
-semantic_model:
-  - name: crm
-    datasets:
-      - name: customers
-        fields:
-          - name: phone
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: phone
-            mask: {value}
+version: "0.2.0.dev0"
+name: crm
+datasets:
+  - name: customers
+    fields:
+      - name: phone
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: phone
+        mask: {value}
 """
 
 
@@ -137,17 +131,17 @@ class TestFieldMaskParsing:
         改由 lint 把这种写法在写盘前拦下,见 TestLintMask。
         """
         model = parse_ossie("""
-semantic_model:
-  - name: crm
-    datasets:
-      - name: customers
-        fields:
-          - name: phone
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: phone
-            mask:
+version: "0.2.0.dev0"
+name: crm
+datasets:
+  - name: customers
+    fields:
+      - name: phone
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: phone
+        mask:
 """, preferred_dialect="sqlite")
 
         assert _masks(model) == [("phone", "")]
@@ -169,32 +163,28 @@ class TestMaskingBlockParsing:
         assert model.masking.bypass_scopes == []
         assert model.masking.hash_salt_ref == ""
 
-    def test_document_level_masking_is_ignored_with_a_warning(self, caplog):
-        """文档顶层的 masking 不生效 —— 但必须出声,不允许静默不脱敏。"""
+    def test_document_level_masking_is_honoured(self):
+        """0.2 扁平根下 ``masking`` 就写在文档根 —— 它生效,不再是「放错层」。"""
         text = """
+version: "0.2.0.dev0"
+name: crm
 masking:
   default_policy: bypass
-semantic_model:
-  - name: crm
-    datasets: []
+datasets: []
 """
-        with caplog.at_level(
-            logging.WARNING, logger="trove.services.semantic_layer.ossie"
-        ):
-            model = parse_ossie(text, preferred_dialect="sqlite")
+        model = parse_ossie(text, preferred_dialect="sqlite")
 
-        assert model.masking.default_policy == "apply"
-        assert any("semantic_model[0]" in r.getMessage() for r in caplog.records)
+        assert model.masking.default_policy == "bypass"
 
     def test_invalid_default_policy_falls_back_to_apply(self, caplog):
         """非法 default_policy 回落 ``apply``(脱敏) —— 与 time_spine 同法:
         坏值出声 + 取安全的一侧。"""
         text = """
-semantic_model:
-  - name: crm
-    masking:
-      default_policy: bypasss
-    datasets: []
+version: "0.2.0.dev0"
+name: crm
+masking:
+  default_policy: bypasss
+datasets: []
 """
         with caplog.at_level(
             logging.WARNING, logger="trove.services.semantic_layer.ossie"
@@ -207,11 +197,11 @@ semantic_model:
     def test_bypass_scopes_bare_string_is_one_scope(self):
         """``bypass_scopes: pii`` 是单元素列表,不是 ['p','i','i']。"""
         text = """
-semantic_model:
-  - name: crm
-    masking:
-      bypass_scopes: pii
-    datasets: []
+version: "0.2.0.dev0"
+name: crm
+masking:
+  bypass_scopes: pii
+datasets: []
 """
         model = parse_ossie(text, preferred_dialect="sqlite")
 
@@ -219,34 +209,34 @@ semantic_model:
 
     def test_bypass_scopes_drops_blank_entries_and_survives_a_scalar(self):
         text = """
-semantic_model:
-  - name: crm
-    masking:
-      bypass_scopes:
-        - pii
-        - ""
-        - "  "
-    datasets: []
+version: "0.2.0.dev0"
+name: crm
+masking:
+  bypass_scopes:
+    - pii
+    - ""
+    - "  "
+datasets: []
 """
         model = parse_ossie(text, preferred_dialect="sqlite")
         assert model.masking.bypass_scopes == ["pii"]
 
         bad = """
-semantic_model:
-  - name: crm
-    masking:
-      bypass_scopes: 5
-    datasets: []
+version: "0.2.0.dev0"
+name: crm
+masking:
+  bypass_scopes: 5
+datasets: []
 """
         # 坏形状不得把整个模型解析炸掉(provider 会因此丢 last-known-good)
         assert parse_ossie(bad, preferred_dialect="sqlite").masking.bypass_scopes == []
 
     def test_scalar_masking_block_is_ignored(self):
         text = """
-semantic_model:
-  - name: crm
-    masking: nope
-    datasets: []
+version: "0.2.0.dev0"
+name: crm
+masking: nope
+datasets: []
 """
         assert parse_ossie(text, preferred_dialect="sqlite").masking == MaskingPolicy()
 
@@ -304,26 +294,25 @@ class TestMaskRoundTrip:
     def _reparse(model: SemanticModel) -> SemanticModel:
         d = _model_to_dict(model)
         doc = {
-            "semantic_model": [{
-                "name": d["name"],
-                "masking": d["masking"],
-                "datasets": [
-                    {
-                        "name": ds["name"],
-                        "fields": [
-                            {
-                                "name": f["name"],
-                                "expression": {"dialects": [
-                                    {"dialect": "ANSI_SQL",
-                                     "expression": f["expression"]}]},
-                                "mask": f["mask"],
-                            }
-                            for f in ds["fields"]
-                        ],
-                    }
-                    for ds in d["datasets"]
-                ],
-            }]
+            "version": "0.2.0.dev0",
+            "name": d["name"],
+            "masking": d["masking"],
+            "datasets": [
+                {
+                    "name": ds["name"],
+                    "fields": [
+                        {
+                            "name": f["name"],
+                            "expression": {"dialects": [
+                                {"dialect": "ANSI_SQL",
+                                 "expression": f["expression"]}]},
+                            "mask": f["mask"],
+                        }
+                        for f in ds["fields"]
+                    ],
+                }
+                for ds in d["datasets"]
+            ],
         }
         return parse_ossie(
             yaml.safe_dump(doc, allow_unicode=True, sort_keys=False),

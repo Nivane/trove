@@ -49,7 +49,7 @@ def _model(*, entity: dict | None = None, relationship: dict | None = None):
     entry: dict = {"name": "demo", "datasets": [loan, account], "metrics": []}
     if relationship is not None:
         entry["relationships"] = [relationship]
-    doc = {"version": "0.2.0.dev0", "semantic_model": [entry]}
+    doc = {"version": "0.2.0.dev0", **entry}
     return parse_ossie(yaml.safe_dump(doc, allow_unicode=True))
 
 

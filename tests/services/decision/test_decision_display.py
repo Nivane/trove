@@ -41,44 +41,44 @@ NOW = datetime(2026, 9, 27, 10, 0, 0)
 
 #: 与显著性阶段测试同一份语义模型(region 无显示声明)。
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        source: loan
-        description: "loan records; columns: region, amount, date"
-        ai_context:
-          synonyms: [loan, 贷款]
-        fields:
-          - name: region
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.region}]
-            datatype: TEXT
-            semantic_role: dimension
-          - name: amount
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.amount}]
-            datatype: DOUBLE
-            semantic_role: measure
-          - name: date
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.date}]
-            datatype: DATE
-            semantic_role: time
-    metrics:
-      - name: loan_balance
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    source: loan
+    description: "loan records; columns: region, amount, date"
+    ai_context:
+      synonyms: [loan, 贷款]
+    fields:
+      - name: region
         expression:
-          dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
-        agg_time_dimension: loan.date
+          dialects: [{dialect: sqlite, expression: loan.region}]
+        datatype: TEXT
+        semantic_role: dimension
+      - name: amount
+        expression:
+          dialects: [{dialect: sqlite, expression: loan.amount}]
+        datatype: DOUBLE
+        semantic_role: measure
+      - name: date
+        expression:
+          dialects: [{dialect: sqlite, expression: loan.date}]
+        datatype: DATE
+        semantic_role: time
+metrics:
+  - name: loan_balance
+    expression:
+      dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
+    agg_time_dimension: loan.date
 """
 
 #: 同一模型 + region 上的 enum_display 声明(唯一的差异)。
 DISPLAY_SEMANTICS = SEMANTICS.replace(
-    "            datatype: TEXT\n            semantic_role: dimension\n",
-    "            datatype: TEXT\n            semantic_role: dimension\n"
-    "            enum_display:\n"
-    "              华东: East China\n"
-    "              华北: North China\n",
+    "        datatype: TEXT\n        semantic_role: dimension\n",
+    "        datatype: TEXT\n        semantic_role: dimension\n"
+    "        enum_display:\n"
+    "          华东: East China\n"
+    "          华北: North China\n",
     1,
 )
 

@@ -613,21 +613,16 @@ class TestLintMask:
         assert "customers.phone" in salt_issues[0]
         assert "customers.id_card" in salt_issues[0]
 
-    def test_document_level_masking_flagged(self):
-        """``masking`` 挂在模型入口下(与 time_spine 同层),文档顶层是哑的。
-
-        设计稿 §5.5 注释写「semantics.yml 顶层」,单模型文件里读起来像文档
-        顶层;解析器只认模型入口,写错层会被静默忽略 —— 而静默忽略 =
-        静默不脱敏,所以在这里报出来。
-        """
+    def test_document_level_masking_is_valid(self):
+        """0.2 扁平根:``masking`` 与 datasets/metrics/time_spine 同在文档根 ——
+        文档根就是模型本身,不再有「放错层」这种写法。"""
         doc = {
             "masking": {"default_policy": "bypass"},
-            "semantic_model": [{"name": "crm", "datasets": [], "metrics": []}],
+            "version": "0.2.0.dev0",
+            "name": "crm", "datasets": [], "metrics": [],
         }
 
-        issues = lint_semantics_document(doc)
-
-        assert any("masking" in i and "semantic_model" in i for i in issues)
+        assert lint_semantics_document(doc) == []
 
     @pytest.mark.parametrize("datasource", ["demo", "financial", "mysql_fin"])
     def test_stock_semantics_document_is_clean(self, datasource):

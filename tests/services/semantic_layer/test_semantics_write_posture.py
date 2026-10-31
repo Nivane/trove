@@ -35,6 +35,11 @@ _WHITELIST = {
     ("services/kb/service.py", "append_term"),
     ("services/kb/service.py", "init_terms"),
     ("services/kb/service.py", "init_semantics"),
+    # 上面三条豁免共用的落盘漏斗。0.2 版本门把「semantics.yml」字面量带进
+    # 了这个函数体(盖章/拒绝判定要认文件),于是它第一次被检出。它不是
+    # 新开的面:任何写都只能经上面三条之一到达这里,且这里仍走
+    # ``_write_init``(版本盖章在同一函数内强制)。
+    ("services/kb/service.py", "_init_write"),
 }
 _WRITE_CALLS = {"_dump_yaml", "_write_doc", "_write_init", "_init_write",
                 "_init_doc", "write_text"}

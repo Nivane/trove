@@ -56,6 +56,10 @@ import yaml
 
 from trove.services.kb.deterministic_gen import _enum_values
 from trove.services.kb.lint import parse_enum_values
+from trove.services.semantic_layer.ossie import (
+    document_refusal,
+    stamp_ossie_version,
+)
 
 _DUMP_KWARGS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -80,7 +84,7 @@ _ENUM_LIMIT = 50
 
 #: 结构 diff 白名单:只允许这两条路径变化(enum_display 记到叶子键)。
 _ALLOWED_CHANGE_RE = re.compile(
-    r"semantic_model\[\d+\]\.datasets\[\d+\]\.fields\[\d+\]"
+    r"datasets\[\d+\]\.fields\[\d+\]"
     r"\.(?:description|enum_display(?:\..+)?)")
 #: changed_paths 给新增/删除/长度变化附加的后缀(判白名单前剥掉)。
 _CHANGE_KIND_RE = re.compile(r" \((?:新增|删除|长度 [^)]*)\)$")
@@ -295,7 +299,8 @@ def apply_official(
     matched_fields = 0
     matched_datasets: list[str] = []
 
-    model = (doc.get("semantic_model") or [{}])[0]
+    # 0.2 扁平根:doc 本身就是模型。
+    model = doc
     for ds in model.get("datasets") or []:
         ds_name = str(ds.get("name") or "")
         rows = official.get(ds_name)
@@ -405,8 +410,14 @@ def main() -> int:
 
     raw = sem_path.read_text(encoding="utf-8")
     before = _load_yaml(sem_path)
+    refusal = document_refusal(before)
+    if refusal:
+        print(f"error: {sem_path} 不可读: {refusal}", file=sys.stderr)
+        return 2
+    before = stamp_ossie_version(before)
     if yaml.safe_dump(before, **_DUMP_KWARGS) != raw:
-        print(f"error: {sem_path} YAML 往返非 byte-identical,拒绝重写", file=sys.stderr)
+        print(f"error: {sem_path} YAML 往返非 byte-identical,拒绝重写"
+              "(旧形状先跑 scripts/migrate_semantics_v02.py)", file=sys.stderr)
         return 2
 
     doc = yaml.safe_load(raw) or {}
@@ -435,7 +446,9 @@ def main() -> int:
     if not args.write:
         print(f"(dry-run:{len(paths)} 处变更;加 --write 落盘)")
         return 1 if args.check else 0
-    sem_path.write_text(yaml.safe_dump(doc, **_DUMP_KWARGS), encoding="utf-8")
+    sem_path.write_text(
+        yaml.safe_dump(stamp_ossie_version(doc), **_DUMP_KWARGS),
+        encoding="utf-8")
     print(f"已写入 {sem_path}({len(paths)} 处变更)")
     return 0
 

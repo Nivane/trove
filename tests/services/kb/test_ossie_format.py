@@ -1,4 +1,4 @@
-"""ossie_format 桥接层测试:flat term ↔ OSSIE semantic_model 双向转换。
+"""ossie_format 桥接层测试:flat term ↔ OSSIE 0.2 扁平根文档双向转换。
 
 覆盖写方向(terms_to_ossie_document / append_term_to_document)、读方向
 (ossie_to_term_payloads,含 legacy/坏文件降级)与 qualify_mapping。
@@ -45,7 +45,7 @@ def test_datasets_are_sorted_union_of_tables():
         {"term": "a", "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]},
         {"term": "b", "mapping": "COUNT(client.client_id)", "tables": ["client", "loan"]},
     ])
-    model = doc["semantic_model"][0]
+    model = doc
     assert [d["name"] for d in model["datasets"]] == ["client", "loan"]
 
 
@@ -55,7 +55,7 @@ def test_empty_mapping_entries_skipped_with_warning(caplog):
         {"term": "坏term", "mapping": "", "tables": ["loan"]},
     ]
     doc = terms_to_ossie_document(terms)
-    names = [m["name"] for m in doc["semantic_model"][0]["metrics"]]
+    names = [m["name"] for m in doc["metrics"]]
     assert names == ["好term"]
     assert any("坏term" in r.message for r in caplog.records)
 
@@ -84,18 +84,20 @@ def test_blank_file_returns_empty_silently(caplog):
 
 def test_broken_ossie_returns_empty_with_warning(caplog):
     # metric 缺 dialects → parse_ossie 抛 ValueError → 降级为 []
-    text = yaml.safe_dump({"semantic_model": [{"metrics": [
+    text = yaml.safe_dump({"version": "0.2.0.dev0",
+"metrics": [
         {"name": "x", "expression": {"dialects": []}},
-    ]}]}, allow_unicode=True)
+    ]}, allow_unicode=True)
     assert ossie_to_term_payloads(text) == []
     assert any("not a valid OSSIE" in r.message for r in caplog.records)
 
 
 def test_empty_name_metric_dropped(caplog):
-    text = yaml.safe_dump({"semantic_model": [{"metrics": [
+    text = yaml.safe_dump({"version": "0.2.0.dev0",
+"metrics": [
         {"name": "", "expression": {"dialects": [{"dialect": "ANSI_SQL",
                                                    "expression": "COUNT(*)"}]}},
-    ]}]}, allow_unicode=True)
+    ]}, allow_unicode=True)
     assert ossie_to_term_payloads(text) == []
     assert any("empty name" in r.message for r in caplog.records)
 
@@ -129,7 +131,7 @@ def test_append_merges_metrics_and_datasets():
     append_term_to_document(doc, {"term": "b", "mapping": "AVG(client.balance)",
                                   "tables": ["client", "loan"], "aliases": ["均余额"],
                                   "definition": "客户平均余额"})
-    model = doc["semantic_model"][0]
+    model = doc
     assert [m["name"] for m in model["metrics"]] == ["a", "b"]
     assert sorted(d["name"] for d in model["datasets"]) == ["client", "loan"]
     # 追加内容在 OSSIE 文档里结构正确且可读回
@@ -141,5 +143,5 @@ def test_append_onto_fresh_doc_creates_model():
     doc: dict = {}
     append_term_to_document(doc, {"term": "x", "mapping": "COUNT(loan.loan_id)",
                                   "tables": ["loan"]})
-    assert "semantic_model" in doc
-    assert doc["semantic_model"][0]["metrics"][0]["name"] == "x"
+    assert doc["datasets"] == [{"name": "loan"}]
+    assert doc["metrics"][0]["name"] == "x"

@@ -36,73 +36,73 @@ def eu():
 
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: account
-        source: financial.account
-        primary_key:
-          - account_id
-        fields:
-          - name: account_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account.account_id
-            datatype: Integer
-            semantic_role: identifier
-          - name: district_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account.district_id
-            datatype: Integer
-          - name: frequency
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account.frequency
-            datatype: String
-            semantic_role: enum
-            enum_display:
-              POPLATEK MESICNE: monthly issuance
-              POPLATEK TYDNE: weekly issuance
-      - name: district
-        source: financial.district
-        fields:
-          - name: district_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district.district_id
-            datatype: Integer
-          - name: A3
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district.A3
-            datatype: String
-            ai_context:
-              value_aliases:
-                north Bohemia:
-                  - severni Cechy
-    relationships:
-      - name: account_to_district
-        from: account
-        to: district
-        from_columns:
-          - district_id
-        to_columns:
-          - district_id
-    metrics:
-      - name: account count
-        description: number of accounts
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: account
+    source: financial.account
+    primary_key:
+      - account_id
+    fields:
+      - name: account_id
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(account.account_id)
-        datasets:
-          - account
+              expression: account.account_id
+        datatype: Integer
+        semantic_role: identifier
+      - name: district_id
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account.district_id
+        datatype: Integer
+      - name: frequency
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account.frequency
+        datatype: String
+        semantic_role: enum
+        enum_display:
+          POPLATEK MESICNE: monthly issuance
+          POPLATEK TYDNE: weekly issuance
+  - name: district
+    source: financial.district
+    fields:
+      - name: district_id
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district.district_id
+        datatype: Integer
+      - name: A3
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district.A3
+        datatype: String
+        ai_context:
+          value_aliases:
+            north Bohemia:
+              - severni Cechy
+relationships:
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns:
+      - district_id
+    to_columns:
+      - district_id
+metrics:
+  - name: account count
+    description: number of accounts
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(account.account_id)
+    datasets:
+      - account
 """
 
 

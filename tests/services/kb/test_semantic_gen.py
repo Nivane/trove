@@ -42,7 +42,7 @@ def _financial_schema() -> SchemaInfo:
 def test_datasets_have_pk_source_and_fields():
     doc = generate_semantic_document(_financial_schema(), model_name="fin")
 
-    datasets = doc["semantic_model"][0]["datasets"]
+    datasets = doc["datasets"]
     assert [d["name"] for d in datasets] == ["loan", "account", "district", "client"]
 
     loan = datasets[0]
@@ -54,7 +54,7 @@ def test_datasets_have_pk_source_and_fields():
 
 
 def test_field_datatype_mapping():
-    loan = generate_semantic_document(_financial_schema())["semantic_model"][0][
+    loan = generate_semantic_document(_financial_schema())[
         "datasets"][0]
     by_name = {f["name"]: f for f in loan["fields"]}
 
@@ -66,7 +66,7 @@ def test_field_datatype_mapping():
 
 
 def test_is_time_default_from_date_column():
-    account = generate_semantic_document(_financial_schema())["semantic_model"][0][
+    account = generate_semantic_document(_financial_schema())[
         "datasets"][1]
     date_field = next(f for f in account["fields"] if f["name"] == "date")
 
@@ -99,7 +99,7 @@ def test_relationships_skip_self_and_missing_target():
         ]),
     ])
     doc = generate_semantic_document(schema)
-    assert "relationships" not in doc["semantic_model"][0]
+    assert "relationships" not in doc
 
 
 def test_metrics_embedded_from_terms():
@@ -109,7 +109,7 @@ def test_metrics_embedded_from_terms():
     ]
     doc = generate_semantic_document(_financial_schema(), model_name="fin", terms=terms)
 
-    model = doc["semantic_model"][0]
+    model = doc
     assert model["metrics"][0]["name"] == "number of loan records"
     assert "COUNT(loan.loan_id)" in str(model["metrics"][0])
 
@@ -166,7 +166,7 @@ def test_infer_semantic_role():
 
 def test_generated_doc_carries_semantic_roles():
     doc = generate_semantic_document(_financial_schema())
-    datasets = doc["semantic_model"][0]["datasets"]
+    datasets = doc["datasets"]
     loan = next(d for d in datasets if d["name"] == "loan")
     by_name = {f["name"]: f for f in loan["fields"]}
     assert by_name["loan_id"]["semantic_role"] == "identifier"
@@ -184,14 +184,14 @@ def test_generated_doc_carries_semantic_roles():
 def test_generated_doc_carries_version():
     doc = generate_semantic_document(_financial_schema())
     assert doc["version"] == "0.2.0.dev0"
-    assert doc["semantic_model"][0]["name"] == ""
+    assert doc["name"] == ""
 
 
 def test_enum_probe_roles_and_display():
     """probe 结果 → 低基数列提升为 semantic_role=enum + 恒等 enum_display。"""
     enums = {"loan": {"status": "A; B"}, "district": {"A3": "Prague; Ostrava"}}
     doc = generate_semantic_document(_financial_schema(), enums=enums)
-    datasets = {d["name"]: d for d in doc["semantic_model"][0]["datasets"]}
+    datasets = {d["name"]: d for d in doc["datasets"]}
 
     status = next(f for f in datasets["loan"]["fields"] if f["name"] == "status")
     assert status["semantic_role"] == "enum"
@@ -227,7 +227,7 @@ def test_enum_labeled_entries_produce_display_and_aliases():
     """schema_notes ``CODE=label`` / ``CODE=label1|label2`` → enum_display + value_aliases。"""
     enums = {"loan": {"status": "A=finished, no problems; C=running|still running|in progress"}}
     doc = generate_semantic_document(_financial_schema(), enums=enums)
-    datasets = {d["name"]: d for d in doc["semantic_model"][0]["datasets"]}
+    datasets = {d["name"]: d for d in doc["datasets"]}
     status = next(f for f in datasets["loan"]["fields"] if f["name"] == "status")
     assert status["enum_display"] == {
         "A": "finished, no problems", "C": "running"}

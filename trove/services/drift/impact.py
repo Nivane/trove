@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from typing import Any
 import yaml
 
 from trove.services.drift.models import ImpactSet, normalize_subject
+
+logger = logging.getLogger(__name__)
 
 _SEP_RE = re.compile(r"[`\"\[\]]")
 
@@ -103,17 +106,20 @@ def resolve_impact(kb_dir: Path, datasource: str, subjects: set[str]) -> ImpactS
 
     # ── reference：语义主题的 dataset/metric 声明 ──
     semantics = _load_yaml(ds_dir / "semantics.yml")
-    for model in (semantics.get("semantic_model") or []):
-        for t in (model.get("topics") or []):
-            t_name = str(t.get("name") or "")
-            t_ds = {normalize_subject(x) for x in (t.get("datasets") or [])}
-            t_m = {normalize_subject(x) for x in (t.get("metrics") or [])}
-            hit = bool(t_ds & {normalize_subject(d) for d in dataset_names}) or \
-                bool(t_m & {normalize_subject(m) for m in metric_names}) or \
-                bool(t_ds & {normalize_subject(f).rsplit(".", 1)[0] for f in field_names})
-            if t_name and hit:
-                topics.append(t_name)
-                basis[t_name] = "reference"
+    if "semantic_model" in semantics:
+        logger.warning(
+            "%s/semantics.yml uses the legacy semantic_model list root; "
+            "topic references skipped until it is migrated", ds_dir.name)
+    for t in (semantics.get("topics") or []):
+        t_name = str(t.get("name") or "")
+        t_ds = {normalize_subject(x) for x in (t.get("datasets") or [])}
+        t_m = {normalize_subject(x) for x in (t.get("metrics") or [])}
+        hit = bool(t_ds & {normalize_subject(d) for d in dataset_names}) or \
+            bool(t_m & {normalize_subject(m) for m in metric_names}) or \
+            bool(t_ds & {normalize_subject(f).rsplit(".", 1)[0] for f in field_names})
+        if t_name and hit:
+            topics.append(t_name)
+            basis[t_name] = "reference"
 
     # ── mention：examples.yml / lessons.yml 词面 ──
     display = [n for _, n in sorted(wanted)]

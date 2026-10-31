@@ -63,22 +63,22 @@ def _verdicts(probes, kind: str):
 
 
 _KEY_YAML = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        entity:
-          display_name: 贷款
-          natural_keys: [loan_id]
-        fields:
-          - name: loan_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan_id
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    entity:
+      display_name: 贷款
+      natural_keys: [loan_id]
+    fields:
+      - name: loan_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: loan_id
 """
 
 
@@ -122,22 +122,22 @@ async def test_null_keys_advisory_never_a_violation(make_adapter):
 
 async def test_composite_natural_key_duplicate_violated(make_adapter):
     yaml_text = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: txn
-        source: txn
-        entity:
-          natural_keys: [account_id, seq]
-        fields:
-          - name: account_id
-            datatype: Integer
-            expression:
-              dialects: [{dialect: ANSI_SQL, expression: account_id}]
-          - name: seq
-            datatype: Integer
-            expression:
-              dialects: [{dialect: ANSI_SQL, expression: seq}]
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: txn
+    source: txn
+    entity:
+      natural_keys: [account_id, seq]
+    fields:
+      - name: account_id
+        datatype: Integer
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: account_id}]
+      - name: seq
+        datatype: Integer
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: seq}]
 """
     adapter = await make_adapter(
         "CREATE TABLE txn (account_id INTEGER, seq INTEGER);"
@@ -149,17 +149,17 @@ semantic_model:
 async def test_primary_key_fallback_probed_without_entity(make_adapter):
     """实体缺席但声明了主键 → 按主键探测(读侧回退口径),不是覆盖缺口。"""
     yaml_text = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        fields:
-          - name: loan_id
-            datatype: Integer
-            expression:
-              dialects: [{dialect: ANSI_SQL, expression: loan_id}]
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    fields:
+      - name: loan_id
+        datatype: Integer
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: loan_id}]
 """
     adapter = await make_adapter(
         "CREATE TABLE loan (loan_id INTEGER);"
@@ -175,13 +175,13 @@ semantic_model:
 async def test_no_declared_key_is_coverage_not_probe(make_adapter):
     """实体在场但一个键都没声明 → 零 keys 探测,覆盖率 advisory 顶上。"""
     yaml_text = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: loan
-        source: loan
-        entity:
-          display_name: 贷款
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: loan
+    source: loan
+    entity:
+      display_name: 贷款
 """
     adapter = await make_adapter("CREATE TABLE loan (loan_id INTEGER)")
     probes = await verify_declarations(adapter, _model(yaml_text), "sqlite")
@@ -193,35 +193,35 @@ semantic_model:
 
 
 _REL_YAML = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: child
-        source: child
-        fields:
-          - name: parent_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: parent_id
-      - name: parent
-        source: parent
-        primary_key: [pid]
-        fields:
-          - name: pid
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: pid
-    relationships:
-      - name: child_to_parent
-        from: child
-        to: parent
-        from_columns: [parent_id]
-        to_columns: [pid]
-        cardinality: {card}
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: child
+    source: child
+    fields:
+      - name: parent_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: parent_id
+  - name: parent
+    source: parent
+    primary_key: [pid]
+    fields:
+      - name: pid
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: pid
+relationships:
+  - name: child_to_parent
+    from: child
+    to: parent
+    from_columns: [parent_id]
+    to_columns: [pid]
+    cardinality: {card}
 """
 
 
@@ -283,35 +283,35 @@ async def test_mn_without_exemption_declares_no_uniqueness(make_adapter):
 
 
 _DEDUP_YAML = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: trans
-        source: trans
-        fields:
-          - name: disp_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: disp_id
-      - name: disp
-        source: disp
-        fields:
-          - name: disp_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: disp_id
-    relationships:
-      - name: trans_disp
-        from: trans
-        to: disp
-        from_columns: [disp_id]
-        to_columns: [disp_id]
-        cardinality: M:N
-        fan_out: {fan_out}
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: trans
+    source: trans
+    fields:
+      - name: disp_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: disp_id
+  - name: disp
+    source: disp
+    fields:
+      - name: disp_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: disp_id
+relationships:
+  - name: trans_disp
+    from: trans
+    to: disp
+    from_columns: [disp_id]
+    to_columns: [disp_id]
+    cardinality: M:N
+    fan_out: {fan_out}
 """
 
 
@@ -367,13 +367,13 @@ async def test_bridge_exemption_is_advisory_dead_config(make_adapter):
 async def test_missing_table_is_unverifiable(make_adapter):
     adapter = await make_adapter("CREATE TABLE other (x INTEGER)")
     yaml_text = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: loan
-        source: ghost_table
-        entity:
-          natural_keys: [loan_id]
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: loan
+    source: ghost_table
+    entity:
+      natural_keys: [loan_id]
 """
     probes = await verify_declarations(adapter, _model(yaml_text), "sqlite")
     hits = _kinds(probes, "keys")
@@ -393,17 +393,17 @@ async def test_unsupported_dialect_single_honest_skip():
 
 async def test_multi_dataset_without_relationships_is_coverage_gap(make_adapter):
     yaml_text = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: a
-        source: a
-        entity:
-          display_name: A
-      - name: b
-        source: b
-        entity:
-          display_name: B
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: a
+    source: a
+    entity:
+      display_name: A
+  - name: b
+    source: b
+    entity:
+      display_name: B
 """
     adapter = await make_adapter("CREATE TABLE a (x INTEGER);"
                                  "CREATE TABLE b (y INTEGER)")

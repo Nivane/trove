@@ -25,36 +25,34 @@ from trove.services.semantic_layer.ossie import parse_ossie
 def _doc(metrics: list[dict] | None = None) -> dict:
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "demo",
-            "datasets": [
-                {
-                    "name": "loan", "source": "loan",
-                    "primary_key": ["loan_id"],
-                    "fields": [
-                        {"name": "loan_id", "datatype": "Integer",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "loan_id"}]}},
-                        {"name": "amount", "datatype": "Decimal",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "amount"}]}},
-                        {"name": "status", "datatype": "String",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "status"}]}},
-                    ],
-                },
-                {
-                    "name": "district", "source": "district",
-                    "primary_key": ["district_id"],
-                    "fields": [
-                        {"name": "A3", "datatype": "String",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "A3"}]}},
-                    ],
-                },
-            ],
-            "metrics": metrics or [],
-        }],
+        "name": "demo",
+        "datasets": [
+            {
+                "name": "loan", "source": "loan",
+                "primary_key": ["loan_id"],
+                "fields": [
+                    {"name": "loan_id", "datatype": "Integer",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "loan_id"}]}},
+                    {"name": "amount", "datatype": "Decimal",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "amount"}]}},
+                    {"name": "status", "datatype": "String",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "status"}]}},
+                ],
+            },
+            {
+                "name": "district", "source": "district",
+                "primary_key": ["district_id"],
+                "fields": [
+                    {"name": "A3", "datatype": "String",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "A3"}]}},
+                ],
+            },
+        ],
+        "metrics": metrics or [],
     }
 
 
@@ -199,7 +197,7 @@ class TestCandidateSpecs:
 def _model_with_values(values: list[str] | None, aliases: dict | None = None):
     """status 字段带实测取值(probe 结构事实)+ 可选既有值别名。"""
     doc = _doc()
-    status = doc["semantic_model"][0]["datasets"][0]["fields"][2]
+    status = doc["datasets"][0]["fields"][2]
     if values is not None:
         status["values"] = values
     if aliases is not None:
@@ -311,7 +309,7 @@ class TestEntitySpec:
     def test_display_name_from_cjk_dataset_description(self):
         """中文描述 → 显示名(复用 business_label 的标题词规则)。"""
         doc = _doc()
-        doc["semantic_model"][0]["datasets"][0]["description"] = "贷款信息表"
+        doc["datasets"][0]["description"] = "贷款信息表"
         specs = candidate_specs(
             [{"reason": "unresolved_filter_field", "component": "loan.grade"}],
             parse_ossie(yaml.safe_dump(doc, allow_unicode=True)))
@@ -321,7 +319,7 @@ class TestEntitySpec:
         """英文散文首词是坏名字(「Bank」)→ 宁可不给:英文库表名本身就是
         业务词,读侧回退(显示名缺省 → 数据集名)已经正确。"""
         doc = _doc()
-        doc["semantic_model"][0]["datasets"][0]["description"] = (
+        doc["datasets"][0]["description"] = (
             "Bank accounts with statement issuance frequency")
         specs = candidate_specs(
             [{"reason": "unresolved_filter_field", "component": "loan.grade"}],
@@ -330,7 +328,7 @@ class TestEntitySpec:
 
     def test_skipped_when_entity_already_declared(self):
         doc = _doc()
-        doc["semantic_model"][0]["datasets"][0]["entity"] = {"display_name": "贷款"}
+        doc["datasets"][0]["entity"] = {"display_name": "贷款"}
         specs = candidate_specs(
             [{"reason": "unresolved_filter_field", "component": "loan.grade"}],
             parse_ossie(yaml.safe_dump(doc, allow_unicode=True)))
@@ -340,7 +338,7 @@ class TestEntitySpec:
         """主键空且推不出显示名 → 不起草:一条确认了也什么都没声明的
         草稿是纯噪声(entity: {} 在解析器里等于未声明)。"""
         doc = _doc()
-        doc["semantic_model"][0]["datasets"] = [{
+        doc["datasets"] = [{
             "name": "raw_events", "source": "raw_events", "primary_key": [],
             "fields": [{"name": "tag", "datatype": "String",
                         "expression": {"dialects": [{

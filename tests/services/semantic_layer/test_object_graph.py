@@ -30,54 +30,54 @@ from trove.services.semantic_layer.object_graph import (
 from trove.services.semantic_layer.ossie import parse_ossie
 
 GRAPH_YAML = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        entity:
-          display_name: 贷款
-          natural_keys: [loan_id]
-          aliases: [借款, loan]
-        fields:
-          - name: loan_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-          - name: amount
-            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
-      - name: customer
-        source: customer
-        primary_key: [customer_id]
-        fields:
-          - name: customer_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
-          - name: region
-            expression: {dialects: [{dialect: ANSI_SQL, expression: region}]}
-    relationships:
-      - name: loan_to_customer
-        from: loan
-        to: customer
-        from_columns: [customer_id]
-        to_columns: [customer_id]
-        display_name: 属于
-      - name: customer_to_loan
-        from: customer
-        to: loan
-        from_columns: [loan_id]
-        to_columns: [loan_id]
-    metrics:
-      - name: total_loan
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
-      - name: customer_count
-        expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(customer.customer_id)}]}
-    hierarchies:
-      - name: region_hierarchy
-        display_name: 地区层级
-        dataset: customer
-        levels: [region, customer_id]
-      - name: bare_hierarchy
-        dataset: customer
-        levels: [customer_id]
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    entity:
+      display_name: 贷款
+      natural_keys: [loan_id]
+      aliases: [借款, loan]
+    fields:
+      - name: loan_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+      - name: amount
+        expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
+  - name: customer
+    source: customer
+    primary_key: [customer_id]
+    fields:
+      - name: customer_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
+      - name: region
+        expression: {dialects: [{dialect: ANSI_SQL, expression: region}]}
+relationships:
+  - name: loan_to_customer
+    from: loan
+    to: customer
+    from_columns: [customer_id]
+    to_columns: [customer_id]
+    display_name: 属于
+  - name: customer_to_loan
+    from: customer
+    to: loan
+    from_columns: [loan_id]
+    to_columns: [loan_id]
+metrics:
+  - name: total_loan
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+  - name: customer_count
+    expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(customer.customer_id)}]}
+hierarchies:
+  - name: region_hierarchy
+    display_name: 地区层级
+    dataset: customer
+    levels: [region, customer_id]
+  - name: bare_hierarchy
+    dataset: customer
+    levels: [customer_id]
 """
 
 
@@ -273,20 +273,20 @@ def test_fan_out_agrees_on_declared_edges_end_to_end():
     from trove.services.semantic_layer.compiler import JoinResolver
 
     yaml_text = """
-semantic_model:
-  - name: demo
-    datasets:
-      - {name: a, primary_key: [id]}
-      - {name: b, primary_key: [id]}
-    relationships:
-      - {name: r_dedup, from: a, to: b, from_columns: [bid], to_columns: [id],
-         cardinality: M:N, fan_out: dedup}
-      - {name: r_bridge, from: a, to: b, from_columns: [x], to_columns: [id],
-         cardinality: M:N, fan_out: bridge:orders}
-      - {name: r_bare, from: a, to: b, from_columns: [y], to_columns: [id],
-         cardinality: MANY-TO-MANY}
-      - {name: r_safe, from: a, to: b, from_columns: [z], to_columns: [id],
-         cardinality: N:1}
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - {name: a, primary_key: [id]}
+  - {name: b, primary_key: [id]}
+relationships:
+  - {name: r_dedup, from: a, to: b, from_columns: [bid], to_columns: [id],
+     cardinality: M:N, fan_out: dedup}
+  - {name: r_bridge, from: a, to: b, from_columns: [x], to_columns: [id],
+     cardinality: M:N, fan_out: bridge:orders}
+  - {name: r_bare, from: a, to: b, from_columns: [y], to_columns: [id],
+     cardinality: MANY-TO-MANY}
+  - {name: r_safe, from: a, to: b, from_columns: [z], to_columns: [id],
+     cardinality: N:1}
 """
     model = parse_ossie(yaml_text, preferred_dialect="sqlite")
     resolver = JoinResolver(model)

@@ -44,27 +44,25 @@ async def test_semantic_detail_drift_detected(client, api_app, api_kb):
     path = kb.kb_dir / "test_db" / "semantics.yml"
     drifted = yaml.safe_dump({
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "test_db",
-            "datasets": [
-                {
-                    "name": "students",
-                    "fields": [
-                        {"name": "grade", "datatype": "Integer",
-                         "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
-                        {"name": "ghost", "datatype": "String",
-                         "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "ghost"}]}},
-                    ],
-                },
-                {"name": "courses", "source": "courses", "primary_key": ["course_id"]},
-            ],
-            "metrics": [{
-                "name": "平均成绩",
-                "description": "学生平均分",
-                "expression": {
-                    "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
-                },
-            }],
+        "name": "test_db",
+        "datasets": [
+            {
+                "name": "students",
+                "fields": [
+                    {"name": "grade", "datatype": "Integer",
+                     "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
+                    {"name": "ghost", "datatype": "String",
+                     "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "ghost"}]}},
+                ],
+            },
+            {"name": "courses", "source": "courses", "primary_key": ["course_id"]},
+        ],
+        "metrics": [{
+            "name": "平均成绩",
+            "description": "学生平均分",
+            "expression": {
+                "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
+            },
         }],
     }, default_flow_style=False, allow_unicode=True, sort_keys=False)
     path.write_text(drifted, encoding="utf-8")

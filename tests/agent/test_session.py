@@ -943,19 +943,17 @@ class TestCandidateCapture:
         (ds_dir / "semantics.yml").write_text(
             yaml.safe_dump({
                 "version": "0.2.0.dev0",
-                "semantic_model": [{
-                    "name": datasource,
-                    "datasets": [{
-                        "name": "loan", "source": "loan",
-                        "primary_key": ["loan_id"],
-                        "fields": [{
-                            "name": "amount", "datatype": "Decimal",
-                            "expression": {"dialects": [{
-                                "dialect": "ANSI_SQL",
-                                "expression": "amount"}]}}],
-                    }],
-                    "metrics": [],
+                "name": datasource,
+                "datasets": [{
+                    "name": "loan", "source": "loan",
+                    "primary_key": ["loan_id"],
+                    "fields": [{
+                        "name": "amount", "datatype": "Decimal",
+                        "expression": {"dialects": [{
+                            "dialect": "ANSI_SQL",
+                            "expression": "amount"}]}}],
                 }],
+                "metrics": [],
             }, allow_unicode=True, sort_keys=False),
             encoding="utf-8")
         return kb
@@ -2047,31 +2045,31 @@ class TestObjectColumnsInSummary:
     """
 
     _ENTITY_YAML = """\
-semantic_model:
-  - name: demo
-    datasets:
-      - name: students
-        source: students
-        entity:
-          display_name: 学生
-        fields:
-          - name: name
-            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: students
+    source: students
+    entity:
+      display_name: 学生
+    fields:
+      - name: name
+        expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+      - name: id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
 """
 
     _NO_ENTITY_YAML = """\
-semantic_model:
-  - name: demo
-    datasets:
-      - name: students
-        source: students
-        fields:
-          - name: name
-            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: students
+    source: students
+    fields:
+      - name: name
+        expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+      - name: id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
 """
 
     class _StubKb:
@@ -2200,7 +2198,7 @@ semantic_model:
         # (路径取 provider 自己读的那一份,不猜目录布局)。
         src = Path(sqlite_registry._test_semantic_provider._kb_path)
         doc = yaml.safe_load(src.read_text(encoding="utf-8"))
-        for d in doc["semantic_model"][0]["datasets"]:
+        for d in doc["datasets"]:
             if d["name"] == "students":
                 d["entity"] = {"display_name": "学生"}
         kb_dir = tmp_home / "kb"

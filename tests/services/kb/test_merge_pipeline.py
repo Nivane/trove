@@ -276,13 +276,14 @@ class TestBaselineIsNotAnAsset:
         ds_dir.mkdir(parents=True)
         (ds_dir / "semantics.yml").write_text(
             yaml.safe_dump(
-                {"semantic_model": [{"name": "demo", "datasets": [], "metrics": []}]},
+                {"version": "0.2.0.dev0", "name": "demo", "datasets": [], "metrics": []},
                 allow_unicode=True, sort_keys=False),
             encoding="utf-8")
         (ds_dir / ".generated").mkdir()
         (ds_dir / ".generated" / "semantics.yml").write_text(
-            yaml.safe_dump({"semantic_model": [{"name": "BASELINE", "datasets": [],
-                                                "metrics": []}]},
+            yaml.safe_dump({"version": "0.2.0.dev0",
+"name": "BASELINE", "datasets": [],
+                                                "metrics": []},
                            allow_unicode=True, sort_keys=False),
             encoding="utf-8")
 

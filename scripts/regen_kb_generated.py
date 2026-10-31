@@ -60,6 +60,10 @@ import yaml
 from trove.services.kb.deterministic_gen import generate_terms, generate_templates
 from trove.services.kb.ossie_format import terms_to_ossie_document
 from trove.services.kb.provenance import META_KEY, dump_asset
+from trove.services.semantic_layer.ossie import (
+    document_refusal,
+    stamp_ossie_version,
+)
 
 _DUMP_KWARGS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -263,10 +267,14 @@ def regen_metrics(kb: Path, lang: str) -> tuple[dict[str, Any], str, bool]:
         sys.exit(f"缺 {sem_path}")
 
     terms = generate_terms(_load_yaml(kb / "schema_notes.yml").get("tables") or [], lang=lang)
-    new_metrics = terms_to_ossie_document(terms, kb.name)["semantic_model"][0]["metrics"]
+    new_metrics = terms_to_ossie_document(terms, kb.name).get("metrics") or []
 
     doc = _load_yaml(sem_path)
-    model = (doc.get("semantic_model") or [{}])[0]
+    refusal = document_refusal(doc)
+    if refusal:
+        sys.exit(f"{sem_path} 不可读: {refusal}")
+    # 0.2 扁平根:doc 本身就是模型。
+    model = doc
     old_metrics = model.get("metrics") or []
     datasets = {
         d.get("name", ""): {f.get("name", "") for f in (d.get("fields") or [])}
@@ -365,6 +373,9 @@ def _write_pending(pending: list[tuple[Path, dict[str, Any]]]) -> None:
     "人改过",机器写入伪装成人的编辑;不带 ``_meta`` 的文件(semantics.yml)
     保持仓内惯例,不引入来源块。"""
     for path, doc in pending:
+        if path.name == "semantics.yml":
+            # 写路径版本闭包:version 首键、老扁平版升到当前(不合规即抛)。
+            doc = stamp_ossie_version(doc)
         text = (
             dump_asset(doc, _GENERATOR)
             if META_KEY in doc

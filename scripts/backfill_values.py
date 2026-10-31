@@ -51,6 +51,10 @@ from trove.services.kb.enum_probe import probe_values
 from trove.services.kb.init_pipeline import _backfill_values
 from trove.services.kb.lint import is_temporal_field
 from trove.services.kb.service import resolve_kb_root
+from trove.services.semantic_layer.ossie import (
+    document_refusal,
+    stamp_ossie_version,
+)
 
 #: 与 regen_kb_generated.py / probe_enums.py 同一套 dump 参数：语义资产
 #: 的 YAML 往返 byte-identical 是既成事实（--check 门依赖它），本脚本的
@@ -117,24 +121,22 @@ def _covered_with_vocabulary(
     """探测到、但**已有**值词表(或时间字段)因此不会被写的字段 —— 只用于
     报告(说明"探到了但没动",免得 review 时以为探测漏了)。"""
     names: list[str] = []
-    for entry in doc.get("semantic_model", []) or []:
-        if not isinstance(entry, dict):
+    # 0.2 扁平根:doc 本身就是模型。
+    for dataset in doc.get("datasets", []) or []:
+        if not isinstance(dataset, dict):
             continue
-        for dataset in entry.get("datasets", []) or []:
-            if not isinstance(dataset, dict):
+        columns = probed.get(str(dataset.get("name", ""))) or {}
+        for fld in dataset.get("fields", []) or []:
+            if not isinstance(fld, dict):
                 continue
-            columns = probed.get(str(dataset.get("name", ""))) or {}
-            for fld in dataset.get("fields", []) or []:
-                if not isinstance(fld, dict):
-                    continue
-                if str(fld.get("name", "")) not in columns:
-                    continue
-                has_vocab = (
-                    "values" in fld or bool(fld.get("enum_display"))
-                    or bool((fld.get("ai_context") or {}).get("value_aliases"))
-                )
-                if has_vocab or is_temporal_field(fld):
-                    names.append(f"{dataset.get('name')}.{fld.get('name')}")
+            if str(fld.get("name", "")) not in columns:
+                continue
+            has_vocab = (
+                "values" in fld or bool(fld.get("enum_display"))
+                or bool((fld.get("ai_context") or {}).get("value_aliases"))
+            )
+            if has_vocab or is_temporal_field(fld):
+                names.append(f"{dataset.get('name')}.{fld.get('name')}")
     return names
 
 
@@ -172,10 +174,16 @@ async def _run(args) -> int:
 
     raw = semantics_path.read_text(encoding="utf-8")
     doc = yaml.safe_load(raw) or {}
+    refusal = document_refusal(doc)
+    if refusal:
+        print(f"error: {semantics_path} 不可读: {refusal}", file=sys.stderr)
+        return 2
+    doc = stamp_ossie_version(doc)
     if yaml.safe_dump(doc, **_DUMP_KWARGS) != raw:
         print(
             f"error: {semantics_path} YAML 往返非 byte-identical，拒绝重写"
-            "（重写会把格式化差异混进 diff）", file=sys.stderr)
+            "（重写会把格式化差异混进 diff；version 应在首键，"
+            "旧形状先跑 scripts/migrate_semantics_v02.py）", file=sys.stderr)
         return 2
 
     # 先算报告用的"探到但不动"清单,再做回填(回填就地改 doc)。

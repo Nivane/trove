@@ -145,7 +145,7 @@ def test_dataset_metadata_upsert_preserves_entity_block():
         "display_name": "贷款", "natural_keys": ["loan_id"]}
 
 
-_LOOKUP_DOC = {"semantic_model": [{
+_LOOKUP_DOC = {"version": "0.2.0.dev0",
     "name": "m",
     "datasets": [
         {"name": "loan", "entity": {"display_name": "贷款"},
@@ -153,8 +153,7 @@ _LOOKUP_DOC = {"semantic_model": [{
         {"name": "customer"},
     ],
     "hierarchies": [{"name": "h", "dataset": "loan", "levels": ["a"]}],
-    "relationships": [{"name": "r", "from": "loan", "to": "customer"}],
-}]}
+    "relationships": [{"name": "r", "from": "loan", "to": "customer"}],}
 
 
 def test_find_entity_resolves_the_new_kinds():

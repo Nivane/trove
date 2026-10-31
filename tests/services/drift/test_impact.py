@@ -40,12 +40,11 @@ def _kb(tmp_path: Path) -> Path:
     _write(kb, "demo", "decisions.yml", DECISIONS)
     _write(kb, "demo", "examples.yml", EXAMPLES)
     _write(kb, "demo", "lessons.yml", LESSONS)
-    _write(kb, "demo", "semantics.yml", {"version": "0.2.0.dev0", "semantic_model": [{
+    _write(kb, "demo", "semantics.yml", {"version": "0.2.0.dev0", 
         "name": "demo", "datasets": [{"name": "loan", "source": "loan"}],
         "metrics": [{"name": "refund_rate", "expression": {"dialects": [
             {"dialect": "ANSI_SQL", "expression": "SUM(loan.refund) / SUM(loan.amount)"}]}}],
-        "topics": [{"name": "credits", "datasets": ["loan"], "metrics": ["refund_rate"]}],
-    }]})
+        "topics": [{"name": "credits", "datasets": ["loan"], "metrics": ["refund_rate"]}],})
     return kb
 
 

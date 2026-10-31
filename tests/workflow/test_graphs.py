@@ -112,22 +112,22 @@ class TestGenSQLSemanticLayerTerms:
     """实时语义层 metric 以 term 形态合并进 gen_sql 提示词(KB 优先去重)。"""
 
     OSSIE_SAMPLE = """
-semantic_model:
-  - name: financial_analytics
-    datasets:
-      - name: loan
-        source: financial.loan
-    metrics:
-      - name: total_loan_amount
-        description: Total amount of all loans
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
-        ai_context:
-          synonyms:
-            - "total loans"
-    """
+version: "0.2.0.dev0"
+name: financial_analytics
+datasets:
+  - name: loan
+    source: financial.loan
+metrics:
+  - name: total_loan_amount
+    description: Total amount of all loans
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
+    ai_context:
+      synonyms:
+        - "total loans"
+"""
 
     async def test_live_terms_merged_into_gen_prompt(self, tmp_path, demo_registry):
         from trove.services.semantic_layer.provider import SemanticLayerProvider
@@ -2312,28 +2312,28 @@ examples:
         ds_dir.mkdir(parents=True)
         (ds_dir / "semantics.yml").write_text(
             """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: students
-        fields:
-          - name: county
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: students.county
-            datatype: String
-            enum_display:
-              Alameda: 阿拉米达
-              Orange: 橙县
-            description: 学生所在县
-    metrics:
-      - name: 学生数量
-        description: 学生总数
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: students
+    fields:
+      - name: county
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(students.id)
+              expression: students.county
+        datatype: String
+        enum_display:
+          Alameda: 阿拉米达
+          Orange: 橙县
+        description: 学生所在县
+metrics:
+  - name: 学生数量
+    description: 学生总数
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(students.id)
 """,
             encoding="utf-8",
         )

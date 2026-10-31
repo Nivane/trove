@@ -107,7 +107,8 @@ class TestMirrorGate:
         kb = KbService(tmp_path / "proj")
         notes = kb.kb_dir / "demo" / "schema_notes.yml"
         _write(notes, _SCHEMA_NOTES)
-        _write_future(kb.kb_dir / "demo" / "semantics.yml", {"semantic_model": []})
+        _write_future(kb.kb_dir / "demo" / "semantics.yml",
+                      {"version": "0.2.0.dev0"})
         await kb.force_sync("demo")
 
         status = await kb.kb_status("demo")
@@ -134,33 +135,31 @@ class TestSemanticGate:
         """语义资产的拒绝 = 整份不采纳(不是跳过看一眼)。"""
         kb_yml = tmp_path / "semantics.yml"
         doc = {
-            "semantic_model": [{
-                "name": "demo",
-                "datasets": [{"name": "loan"}],
-                "metrics": [{
-                    "name": "平均贷款金额",
-                    "expression": {"dialects": [
-                        {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"},
-                    ]},
-                }],
+            "version": "0.2.0.dev0",
+            "name": "demo",
+            "datasets": [{"name": "loan"}],
+            "metrics": [{
+                "name": "平均贷款金额",
+                "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"},
+                ]},
             }],
         }
         _write(kb_yml, doc)
         provider = self._provider(tmp_path, kb_yml)
         assert [m.name for m in provider.model().metrics] == ["平均贷款金额"]
 
-        # 换成本代码读不懂的新格式:内容也换了,但绝不能生效
-        future = dict(doc)
-        future["semantic_model"] = [{
-            "name": "demo",
-            "datasets": [{"name": "loan"}],
+        # 换成本代码读不懂的新版本:内容也换了,但绝不能生效
+        future = {
+            **doc,
+            "version": "9.9.9",
             "metrics": [{
                 "name": "未来指标",
                 "expression": {"dialects": [
                     {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"},
                 ]},
             }],
-        }]
+        }
         _write_future(kb_yml, future)
         provider._reload()
         assert [m.name for m in provider.model().metrics] == ["平均贷款金额"]
@@ -169,25 +168,108 @@ class TestSemanticGate:
         """当前格式照常生效(门不能把正常路径也挡住)。"""
         kb_yml = tmp_path / "semantics.yml"
         doc = {
-            "semantic_model": [{
-                "name": "demo",
-                "datasets": [{"name": "loan"}],
-                "metrics": [{
-                    "name": "第一版",
-                    "expression": {"dialects": [
-                        {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"},
-                    ]},
-                }],
+            "version": "0.2.0.dev0",
+            "name": "demo",
+            "datasets": [{"name": "loan"}],
+            "metrics": [{
+                "name": "第一版",
+                "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"},
+                ]},
             }],
         }
         _write(kb_yml, doc)
         provider = self._provider(tmp_path, kb_yml)
         assert [m.name for m in provider.model().metrics] == ["第一版"]
 
-        doc["semantic_model"][0]["metrics"][0]["name"] = "第二版"
+        doc["metrics"][0]["name"] = "第二版"
         _write(kb_yml, doc)
         provider._reload()
         assert [m.name for m in provider.model().metrics] == ["第二版"]
+
+
+_LEGACY_SEMANTICS = """\
+semantic_model:
+  - name: demo
+    datasets:
+      - name: loan
+    metrics:
+      - name: 旧版指标
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount)
+"""
+
+_CURRENT_SEMANTICS = {
+    "version": "0.2.0.dev0",
+    "name": "demo",
+    "datasets": [{"name": "loan"}],
+    "metrics": [{
+        "name": "平均贷款金额",
+        "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"},
+        ]},
+    }],
+}
+
+
+class TestOssieGate:
+    """C1:根形状/版本门在镜像、体检报告与 provider 三条路径上同一道门。"""
+
+    async def test_legacy_semantics_keeps_last_known_good_until_migrated(
+            self, tmp_path):
+        """v0.1 包装 → 镜像保留上一次读懂的样子;迁移后拒绝自动消失。"""
+        kb = KbService(tmp_path / "proj")
+        sem = kb.kb_dir / "demo" / "semantics.yml"
+        _write(sem, _CURRENT_SEMANTICS)
+        await kb.force_sync("demo")
+        assert await kb.list_items() == {"demo": {"metric": 1, "term": 1}}
+
+        sem.write_text(_LEGACY_SEMANTICS, encoding="utf-8")
+        kb.refused_assets.clear()
+        await kb.force_sync("demo")
+
+        # 不是清空、不是采纳:镜像仍是上一次读懂的条目
+        assert await kb.list_items() == {"demo": {"metric": 1, "term": 1}}
+        reason = kb.refused_assets["demo/semantics.yml"]
+        assert "migrate_semantics_v02.py" in reason
+
+        # 只读体检同一结论 + 可操作的迁移标记(不依赖"同步恰好跑过")
+        report = {r["file"]: r for r in kb.asset_report("demo")}["semantics.yml"]
+        assert report["needs_ossie_migration"] is True
+        assert "migrate_semantics_v02.py" in report["refused"]
+
+        # 迁移回扁平根 → 拒绝消失,新内容照常入镜像
+        migrated = {**_CURRENT_SEMANTICS, "metrics": [{
+            "name": "迁移后指标",
+            "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"},
+            ]},
+        }]}
+        _write(sem, migrated)
+        await kb.force_sync("demo")
+        assert kb.refused_assets == {}
+        hits = await kb.search_terms("迁移后指标", "demo")
+        assert [h.term for h in hits] == ["迁移后指标"]
+
+    async def test_legacy_semantics_is_refused_by_the_provider(self, tmp_path):
+        """provider 与镜像同一姿态:整份不采纳,保留 last-known-good。"""
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+        kb_yml = tmp_path / "semantics.yml"
+        _write(kb_yml, _CURRENT_SEMANTICS)
+        provider = SemanticLayerProvider(
+            directory=tmp_path / "empty-semantic",
+            datasource="demo",
+            dialect="sqlite",
+            kb_semantics_path=kb_yml,
+        )
+        assert [m.name for m in provider.model().metrics] == ["平均贷款金额"]
+
+        kb_yml.write_text(_LEGACY_SEMANTICS, encoding="utf-8")
+        provider._reload()
+        assert [m.name for m in provider.model().metrics] == ["平均贷款金额"]
 
 
 class TestWritersRestamp:

@@ -43,33 +43,31 @@ from trove.services.semantic_layer.ossie import parse_ossie
 def _doc(metrics: list[dict] | None = None) -> dict:
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "demo",
-            "datasets": [
-                {
-                    "name": "loans", "source": "loan",
-                    "primary_key": ["loan_id"],
-                    "fields": [
-                        {"name": "loan_id", "datatype": "Integer",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "loan_id"}]}},
-                        {"name": "amount", "datatype": "Decimal",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "amount"}]}},
-                    ],
-                },
-                {
-                    "name": "districts", "source": "district",
-                    "primary_key": ["A1"],
-                    "fields": [
-                        {"name": "A3", "datatype": "String",
-                         "expression": {"dialects": [{
-                             "dialect": "ANSI_SQL", "expression": "A3"}]}},
-                    ],
-                },
-            ],
-            "metrics": metrics or [],
-        }],
+        "name": "demo",
+        "datasets": [
+            {
+                "name": "loans", "source": "loan",
+                "primary_key": ["loan_id"],
+                "fields": [
+                    {"name": "loan_id", "datatype": "Integer",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "loan_id"}]}},
+                    {"name": "amount", "datatype": "Decimal",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "amount"}]}},
+                ],
+            },
+            {
+                "name": "districts", "source": "district",
+                "primary_key": ["A1"],
+                "fields": [
+                    {"name": "A3", "datatype": "String",
+                     "expression": {"dialects": [{
+                         "dialect": "ANSI_SQL", "expression": "A3"}]}},
+                ],
+            },
+        ],
+        "metrics": metrics or [],
     }
 
 

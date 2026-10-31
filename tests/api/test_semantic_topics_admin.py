@@ -24,7 +24,7 @@ def _seed_topics(api_app, topics: list[dict]) -> None:
     kb = api_app.state.kb
     path = kb.semantics_path("test_db")
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    doc["semantic_model"][0]["topics"] = topics
+    doc["topics"] = topics
     path.write_text(
         yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
@@ -184,7 +184,7 @@ async def test_detail_reports_broken_topics_with_topic_target(client, api_app, a
     kb = api_app.state.kb
     path = kb.semantics_path("test_db")
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    model = doc["semantic_model"][0]
+    model = doc
     # 一个与 平均成绩(锚定 students)无关的已声明数据集
     model["datasets"].append(
         {"name": "courses", "source": "courses", "primary_key": ["course_id"]})

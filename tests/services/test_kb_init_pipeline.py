@@ -31,7 +31,7 @@ async def test_init_kb_with_llm_creates_files(tmp_path, sqlite_registry):
     assert "COUNT(students.id)" in semantics
     # 结构层:datasets 带 primary_key + fields(含 datatype);关系命名推断
     import yaml
-    model = yaml.safe_load(semantics)["semantic_model"][0]
+    model = yaml.safe_load(semantics)
     students = next(d for d in model["datasets"] if d["name"] == "students")
     assert students["primary_key"] == ["id"]
     assert {f["name"] for f in students["fields"]} >= {"id", "county", "grade"}
@@ -155,7 +155,7 @@ async def test_init_kb_backfills_probed_values(tmp_path):
 
     import yaml
     text = (kb.kb_dir / "labels_db" / "semantics.yml").read_text(encoding="utf-8")
-    model = yaml.safe_load(text)["semantic_model"][0]
+    model = yaml.safe_load(text)
     labels = next(d for d in model["datasets"] if d["name"] == "labels")
     fields = {f["name"]: f for f in labels["fields"]}
     assert fields["tag"]["values"] == [f"t{i:02d}" for i in range(30)]
@@ -215,7 +215,7 @@ async def test_init_kb_drafts_entity_naming(tmp_path, sqlite_registry):
     import yaml
     model = yaml.safe_load(
         (kb.kb_dir / "test_db" / "semantics.yml").read_text(encoding="utf-8")
-    )["semantic_model"][0]
+    )
     students = next(d for d in model["datasets"] if d["name"] == "students")
     assert "entity" not in students
 
@@ -284,23 +284,21 @@ async def test_entity_naming_skips_declared_and_empty(tmp_path, sqlite_registry)
     ds_dir.joinpath("semantics.yml").write_text(
         yaml.safe_dump({
             "version": "0.2.0.dev0",
-            "semantic_model": [{
-                "name": "demo",
-                "datasets": [
-                    {"name": "loan", "source": "loan", "primary_key": ["id"],
-                     "entity": {"display_name": "贷款"},
-                     "fields": [{"name": "id", "datatype": "Integer",
-                                 "expression": {"dialects": [{
-                                     "dialect": "ANSI_SQL",
-                                     "expression": "id"}]}}]},
-                    {"name": "widget", "source": "widget",
-                     "fields": [{"name": "a", "datatype": "String",
-                                 "expression": {"dialects": [{
-                                     "dialect": "ANSI_SQL",
-                                     "expression": "a"}]}}]},
-                ],
-                "metrics": [],
-            }],
+            "name": "demo",
+            "datasets": [
+                {"name": "loan", "source": "loan", "primary_key": ["id"],
+                 "entity": {"display_name": "贷款"},
+                 "fields": [{"name": "id", "datatype": "Integer",
+                             "expression": {"dialects": [{
+                                 "dialect": "ANSI_SQL",
+                                 "expression": "id"}]}}]},
+                {"name": "widget", "source": "widget",
+                 "fields": [{"name": "a", "datatype": "String",
+                             "expression": {"dialects": [{
+                                 "dialect": "ANSI_SQL",
+                                 "expression": "a"}]}}]},
+            ],
+            "metrics": [],
         }, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )

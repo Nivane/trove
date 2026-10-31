@@ -91,35 +91,35 @@
       下面用金融演示库的词汇写一份示例：
     </p>
 
-<pre><code>semantic_model:
-- name: financial
-  datasets:
-  - name: loan
-    primary_key: [loan_id]
-    fields: [...]
-    entity:                       <span class="cmt"># ① 对象声明：这个数据集是什么业务对象</span>
-      display_name: 贷款
-      natural_keys: [loan_id]
-      aliases: [借款, 贷款单]
-  - name: customer
-    primary_key: [customer_id]
-    fields: [...]
-    entity:
-      display_name: 客户
-      aliases: [用户]
-  relationships:
-  - name: loan_to_customer        <span class="cmt"># ② 关系声明：这条边在业务里叫什么</span>
-    from: loan
-    to: customer
-    from_columns: [customer_id]
-    to_columns: [customer_id]
-    cardinality: N:1
-    display_name: 属于
-  hierarchies:                    <span class="cmt"># ③ 层级声明：维度链，粗 → 细</span>
-  - name: region_chain
-    display_name: 地区层级
-    dataset: district
-    levels: [region, province, city]</code></pre>
+<pre><code>version: "0.2.0.dev0"
+name: financial
+datasets:
+- name: loan
+  primary_key: [loan_id]
+  fields: [...]
+  entity:                       <span class="cmt"># ① 对象声明：这个数据集是什么业务对象</span>
+    display_name: 贷款
+    natural_keys: [loan_id]
+    aliases: [借款, 贷款单]
+- name: customer
+  primary_key: [customer_id]
+  fields: [...]
+  entity:
+    display_name: 客户
+    aliases: [用户]
+relationships:
+- name: loan_to_customer        <span class="cmt"># ② 关系声明：这条边在业务里叫什么</span>
+  from: loan
+  to: customer
+  from_columns: [customer_id]
+  to_columns: [customer_id]
+  cardinality: N:1
+  display_name: 属于
+hierarchies:                    <span class="cmt"># ③ 层级声明：维度链，粗 → 细</span>
+- name: region_chain
+  display_name: 地区层级
+  dataset: district
+  levels: [region, province, city]</code></pre>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L165">models.py:165 <span class="ref-line">SemanticEntity</span></a>
@@ -183,16 +183,17 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L155">ossie.py:155 <span class="ref-line">_entity_declaration</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L826">lint.py:826 <span class="ref-line">_lint_hierarchies</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L297">ossie.py:297 <span class="ref-line">_entity_declaration</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L809">lint.py:809 <span class="ref-line">_lint_hierarchies</span></a>
     </p>
 
     <div class="callout note">
       <span class="callout-tag">放错层 = 一次无痕的失败</span>
       <div>
         <p><code>entity</code> 只有<strong>一个</strong>合法位置：数据集子块下。
-        <code>hierarchies</code> 与 <code>time_spine</code> 同层，在 <code>semantic_model[0]</code> 下。
-        写在文档顶层会被解析器忽略——「看起来声明了、投影里却没有」是最难查的一类问题。</p>
+        <code>hierarchies</code> 与 <code>time_spine</code> 同层，在 OSSIE 0.2 扁平根的文档根
+        （与 <code>datasets</code> / <code>metrics</code> 并列）。
+        <code>entity</code> 写在文档根会被解析器忽略——「看起来声明了、投影里却没有」是最难查的一类问题。</p>
         <p>所以这条边界守两次：解析层出声（日志警告），写盘层拦下（lint 报错，附上该写到哪的完整路径）。</p>
       </div>
     </div>
@@ -394,15 +395,15 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L368">init_pipeline.py:368 <span class="ref-line">_draft_entity_naming</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L366">init_pipeline.py:366 <span class="ref-line">_draft_entity_naming</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L215">candidates.py:215 <span class="ref-line">_entity_spec</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1129">manage.py:1129 <span class="ref-line">create_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1147">manage.py:1147 <span class="ref-line">create_draft</span></a>
     </p>
 
     <p>
       确认时的写路径与语义层其他改动完全同一条：先跑一次「应用后的文档」lint，
       <strong>有阻断级问题就拒绝写盘</strong>（
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L280">issues.py:280 <span class="ref-line">blocking_issues</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L279">issues.py:279 <span class="ref-line">blocking_issues</span></a>），
       通过才写入并留一次 git 提交。本体声明的 lint 是分级的：
     </p>
 
@@ -425,8 +426,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L253">issues.py:253 <span class="ref-line">_ADVISORY_CODES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L723">lint.py:723 <span class="ref-line">_lint_entities</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L252">issues.py:252 <span class="ref-line">_ADVISORY_CODES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lint.py#L706">lint.py:706 <span class="ref-line">_lint_entities</span></a>
     </p>
 
     <p>
@@ -562,7 +563,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 47609ca</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

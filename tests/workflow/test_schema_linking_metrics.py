@@ -13,55 +13,55 @@ from trove.workflow.nodes.schema_linking import (
 )
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        fields:
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.amount
-            datatype: Integer
-            description: 贷款金额
-      - name: district
-        fields:
-          - name: A2
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district.A2
-            datatype: String
-            ai_context:
-              synonyms:
-                - region
-            description: 地区名
-      - name: client
-        fields:
-          - name: gender
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: client.gender
-            datatype: String
-            description: 客户性别
-    metrics:
-      - name: 平均贷款金额
-        description: 所有贷款的平均金额
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    fields:
+      - name: amount
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+              expression: loan.amount
+        datatype: Integer
+        description: 贷款金额
+  - name: district
+    fields:
+      - name: A2
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district.A2
+        datatype: String
         ai_context:
           synonyms:
-            - 贷款均值
-      - name: 客户数量
-        description: 客户总数
+            - region
+        description: 地区名
+  - name: client
+    fields:
+      - name: gender
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(client.client_id)
+              expression: client.gender
+        datatype: String
+        description: 客户性别
+metrics:
+  - name: 平均贷款金额
+    description: 所有贷款的平均金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
+    ai_context:
+      synonyms:
+        - 贷款均值
+  - name: 客户数量
+    description: 客户总数
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(client.client_id)
 """
 
 

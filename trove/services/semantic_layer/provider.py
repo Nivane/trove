@@ -31,7 +31,7 @@ from trove.services.semantic_layer.models import (
     SemanticModel,
 )
 from trove.services.semantic_layer import rls
-from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.ossie import document_refusal, parse_ossie
 
 logger = logging.getLogger(__name__)
 
@@ -233,16 +233,18 @@ class SemanticLayerProvider:
         self._drift = None  # 模型变了 → 漂移报告下次访问时重算
 
     def _refusal(self, files: list[Path]) -> str | None:
-        """版本门:任一资产的格式比本代码新 → 拒绝原因,否则 ``None``。
+        """版本门:任一资产不是本代码能解释的 OSSIE 根形状 → 拒绝原因。
 
         语义资产是**唯一的**权威来源(编译器的表达式、join、口径全从这里
         出),所以读它的前一步必须是"这份文件是我能解释的那一版吗"。按旧
         解释读一份新格式文件,产出的不是"少读了几个字段",而是一个错的语义
         模型 —— 而错的语义模型会直接内联进权威 SQL。
 
-        无 `_meta` / 老格式放行(存量库按当前解释读,迁移是人显式触发)。
-        只解析顶层的 `_meta`:资产文件小,而这条路径已被 mtime 缓存键挡在
-        每轮之外。
+        两道门:资产 `_meta` 的格式声明(:func:`check_format`)与文档根的
+        OSSIE 版本/形状(:func:`document_refusal`)。缺 version / legacy
+        包装 / 比代码新 / 版本不可解析都**整份不采纳**(last-known-good),
+        由迁移脚本或升级 Trove 处理。只解析顶层:文件小,而这条路径已被
+        mtime 缓存键挡在每轮之外。
         """
         for f in files:
             try:
@@ -253,6 +255,9 @@ class SemanticLayerProvider:
                 # 于是门静默失效 —— 那正是这道门要防的事。
                 continue
             refusal = check_format(read_meta(doc))
+            if refusal:
+                return f"{f.name}: {refusal}"
+            refusal = document_refusal(doc)
             if refusal:
                 return f"{f.name}: {refusal}"
         return None

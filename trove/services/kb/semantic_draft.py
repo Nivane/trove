@@ -160,7 +160,8 @@ async def draft_semantic_annotations(
     分块起草;每块解析失败/回收失败 → 保持原结构(增强是锦上添花,
     绝不阻断 init)。返回原 doc(原地合并)。
     """
-    model_entry = doc["semantic_model"][0]
+    # 0.2 扁平根:doc 本身就是模型。
+    model_entry = doc
     datasets = model_entry.setdefault("datasets", [])
     for chunk in (datasets[i:i + chunk_size] for i in range(0, len(datasets), chunk_size)):
         messages = [

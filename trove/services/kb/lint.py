@@ -25,7 +25,7 @@ from trove.services.kb.lesson_distill import MAX_PATTERN_LEN
 from trove.services.semantic_layer.models import MAX_FIELD_VALUES
 # metric 锚定数据集只有一种判定方式(与装载侧共用,避免"lint 说锚在 A、
 # 运行时锚在 B"这类两处不一致)。
-from trove.services.semantic_layer.ossie import _dataset_refs
+from trove.services.semantic_layer.ossie import _dataset_refs, document_refusal
 
 _ID_LIKE_SUFFIXES = ("_id", "_to", "_from", "_code", "id")
 
@@ -350,44 +350,27 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
 
 
 def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> list[str]:
-    """Lint a full ``semantics.yml`` document (every ``semantic_model`` entry).
+    """Lint a full ``semantics.yml`` document (OSSIE 0.2 flat root).
 
-    ``lint_semantics`` takes a single OSSIE model mapping; this is the
-    document-level wrapper shared by the admin issues view, the git
-    pre-commit gate and the pre-write gate — so all three judge exactly
-    the same bytes.
+    ``lint_semantics`` takes the model mapping; under 0.2 the document root
+    *is* that mapping. Root shapes/versions the reader cannot interpret are
+    refused up front (``document_refusal``), so the three consumers — the
+    admin issues view, the git pre-commit gate and the pre-write gate —
+    judge exactly the same bytes.
     """
+    if not isinstance(data, dict):
+        return ["OSSIE 文档格式错误: 文档根必须是映射（mapping）"]
+    refusal = document_refusal(data)
+    if refusal is not None:
+        return [f"OSSIE 文档格式错误: {refusal}"]
     issues: list[str] = []
-    if "masking" in (data or {}):
-        # masking 挂在模型入口下(与 time_spine 同层);设计稿 §5.5 注释的
-        # 「semantics.yml 顶层」是单模型文件的松散说法。写错层会被解析器
-        # 静默忽略 = 静默不脱敏,所以在写盘前拦下而不是留给运行时。
+    if "entity" in data:
+        # entity 只有**一个**声明位置(``datasets[].entity``);写在文档根
+        # 会被解析器忽略 = 「对象看起来声明了、代理里却没有」,一次无痕的
+        # 失败。与 ossie 侧的 logger.warning 成对。
         issues.append(
-            "文档顶层的 masking 会被忽略 —— 请写在 semantic_model[0] 下"
-            "(与 time_spine 同层)")
-    if "topics" in (data or {}):
-        # 同 masking:写错层会被解析器忽略。主题域是**收敛边界**,静默忽略
-        # 意味着「看起来按主题收敛了、其实没收」,比不脱敏更难发现。
-        issues.append(
-            "文档顶层的 topics 会被忽略 —— 请写在 semantic_model[0] 下"
-            "(与 time_spine 同层)")
-    if "entity" in (data or {}):
-        # 同 masking/topics:entity 只有**一个**声明位置(数据集子块
-        # ``datasets[].entity``);放错层被静默忽略 = 「对象看起来声明了、
-        # 投影里却没有」,一次无痕的失败。与 ossie 侧的 logger.warning
-        # 成对(解析层出声、写盘层拦下 —— N3 的双守卫先例)。
-        issues.append(
-            "文档顶层的 entity 会被忽略 —— 请写在 semantic_model[0] 下的"
-            "数据集上(semantic_model[0].datasets[].entity)")
-    if "hierarchies" in (data or {}):
-        # 同 topics:层级写在模型入口下(与 time_spine 同层);放错层会被
-        # 解析器忽略,钻取链看起来生效、其实不存在。
-        issues.append(
-            "文档顶层的 hierarchies 会被忽略 —— 请写在 semantic_model[0] 下"
-            "(与 time_spine 同层)")
-    for entry in (data or {}).get("semantic_model", []) or []:
-        if isinstance(entry, dict):
-            issues += lint_semantics(entry, dialect=dialect)
+            "文档根上的 entity 会被忽略 —— 请写在 datasets[].entity")
+    issues += lint_semantics(data, dialect=dialect)
     return issues
 
 

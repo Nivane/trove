@@ -17,49 +17,50 @@ from trove.core.types import DatasourceConfig
 from trove.services.decision.rules import parse_rule
 from trove.services.decision.service import DecisionService
 from trove.services.kb.service import KbService
+from trove.services.semantic_layer.ossie import OSSIE_VERSION
 
 NOW = datetime(2026, 9, 27, 10, 0, 0)
 TODAY = date(2026, 9, 27)
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        source: loan
-        description: "loan records; columns: region, amount, date"
-        ai_context:
-          synonyms: [loan, 贷款]
-        fields:
-          - name: region
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.region}]
-            datatype: TEXT
-            semantic_role: dimension
-          - name: amount
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.amount}]
-            datatype: DOUBLE
-            semantic_role: measure
-          - name: date
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.date}]
-            datatype: DATE
-            semantic_role: time
-    metrics:
-      - name: loan_balance
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    source: loan
+    description: "loan records; columns: region, amount, date"
+    ai_context:
+      synonyms: [loan, 贷款]
+    fields:
+      - name: region
         expression:
-          dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
-        agg_time_dimension: loan.date
-      - name: loan_cost
+          dialects: [{dialect: sqlite, expression: loan.region}]
+        datatype: TEXT
+        semantic_role: dimension
+      - name: amount
         expression:
-          dialects: [{dialect: sqlite, expression: SUM(loan.cost)}]
-        agg_time_dimension: loan.date
-      - name: loan_net
-        type: derived
+          dialects: [{dialect: sqlite, expression: loan.amount}]
+        datatype: DOUBLE
+        semantic_role: measure
+      - name: date
         expression:
-          dialects: [{dialect: sqlite, expression: loan_balance - loan_cost}]
-        agg_time_dimension: loan.date
+          dialects: [{dialect: sqlite, expression: loan.date}]
+        datatype: DATE
+        semantic_role: time
+metrics:
+  - name: loan_balance
+    expression:
+      dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
+    agg_time_dimension: loan.date
+  - name: loan_cost
+    expression:
+      dialects: [{dialect: sqlite, expression: SUM(loan.cost)}]
+    agg_time_dimension: loan.date
+  - name: loan_net
+    type: derived
+    expression:
+      dialects: [{dialect: sqlite, expression: loan_balance - loan_cost}]
+    agg_time_dimension: loan.date
 """
 
 RULE = {
@@ -353,7 +354,8 @@ class TestAgainstTheKb:
         and the digest is on the document, so the caller passes it in."""
         out = await svc.evaluate(rule(), "demo", NOW, rule_digest="sha256:abc")
         assert out.evidence["rule_digest"] == "sha256:abc"
-        assert out.evidence["model_version"] == ""
+        # 扁平 OSSIE 文档的 version 就在模型上(旧包装下这里恒为 "")
+        assert out.evidence["model_version"] == OSSIE_VERSION
 
     async def test_a_failed_evaluation_records_the_digest_too(self, svc):
         """When a rule starts erroring, "which version" is the first question."""

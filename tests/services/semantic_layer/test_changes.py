@@ -214,7 +214,7 @@ async def test_merge_first_creation_path(kb: KbService, tmp_path: Path):
     assert out["status"] == "merged"
     doc = yaml.safe_load(kb2.semantics_path(DS).read_text(encoding="utf-8"))
     assert doc["version"] == "0.2.0.dev0"
-    assert doc["semantic_model"][0]["metrics"][0]["name"] == "refund_rate"
+    assert doc["metrics"][0]["name"] == "refund_rate"
 
 
 async def test_merge_invalid_leaves_mainline_and_staging(kb: KbService):

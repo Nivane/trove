@@ -494,7 +494,12 @@ YAML_ASSETS: tuple[YamlAsset, ...] = (
     YamlAsset(
         "semantics.yml",
         ("semantics_path",),
-        (("scripts/regen_kb_generated.py", "_write_pending"),),
+        (
+            ("scripts/regen_kb_generated.py", "_write_pending"),
+            # 迁移脚本的原子写原语:路径由 --kb-dir/--path 参数决定,不是
+            # service 的写路径(见 BYPASSES 的理由)。
+            ("scripts/migrate_semantics_v02.py", "_write_atomic"),
+        ),
     ),
     YamlAsset(
         "examples.yml",
@@ -770,6 +775,7 @@ KB_YAML_WRITERS: dict[str, frozenset[str]] = {
     "semantics.yml": frozenset({
         "scripts/backfill_values.py::_run",
         "scripts/import_official_semantics.py::main",
+        "scripts/migrate_semantics_v02.py::main",
         "scripts/regen_kb_generated.py::main",
         "trove/services/kb/service.py::KbService.append_term",
         "trove/services/kb/service.py::KbService.init_semantics",
@@ -844,6 +850,11 @@ BYPASSES: dict[str, str] = {
     "scripts/import_official_semantics.py::main": (
         "官方数据库文档 → semantics.yml 的确定性导入（零 LLM），"
         "与 kb init 的生成器同源但用于存量库"
+    ),
+    "scripts/migrate_semantics_v02.py::main": (
+        "存量 KB 根形状升级工具：v0.1 包装 → OSSIE 0.2 扁平根，"
+        "只经纯转换器（ossie_migrate.convert_text，含数据等价 + 解析回环两道校验），"
+        "人工触发且默认 dry-run"
     ),
     "scripts/regen_kb_generated.py::main": (
         "生成器拥有条目的重刷（metrics/examples）：只改 _meta 声明为生成器的条目，"

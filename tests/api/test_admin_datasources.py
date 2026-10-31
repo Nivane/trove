@@ -148,7 +148,7 @@ async def test_list_without_kb_mirror(client, api_app):
     # 完整初始化 = 三个关键文件齐全(schema_notes/semantics/examples)
     for name, content in {
         "schema_notes.yml": "tables: []\n",
-        "semantics.yml": "semantic_model: []\n",
+        "semantics.yml": "version: 0.2.0.dev0\n",
         "examples.yml": "examples: []\n",
     }.items():
         (ds_dir / name).write_text(content, encoding="utf-8")
@@ -373,7 +373,7 @@ async def test_update_blocked_when_kb_initialized(client, api_app):
     ds_dir.mkdir(parents=True, exist_ok=True)
     for name, content in {
         "schema_notes.yml": "tables: []\n",
-        "semantics.yml": "semantic_model: []\n",
+        "semantics.yml": "version: 0.2.0.dev0\n",
         "examples.yml": "examples: []\n",
     }.items():
         (ds_dir / name).write_text(content, encoding="utf-8")

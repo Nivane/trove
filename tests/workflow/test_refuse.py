@@ -465,19 +465,19 @@ class TestAutoConfirmPhysicalColumn:
         kb.kb_dir.mkdir(parents=True, exist_ok=True)
         (kb.kb_dir / "test_db").mkdir(parents=True, exist_ok=True)
         (kb.semantics_path("test_db")).write_text(
-            "semantic_model:\n"
-            "- name: school\n"
-            "  datasets:\n"
-            "  - name: students\n"
-            "    source: students\n"
-            "    primary_key: [id]\n"
-            "    fields:\n"
-            "    - name: id\n"
-            "      expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}\n"
-            "    - name: name\n"
-            "      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
-            "    - name: grade\n"
-            "      expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}\n",
+            'version: "0.2.0.dev0"\n'
+            "name: school\n"
+            "datasets:\n"
+            "- name: students\n"
+            "  source: students\n"
+            "  primary_key: [id]\n"
+            "  fields:\n"
+            "  - name: id\n"
+            "    expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}\n"
+            "  - name: name\n"
+            "    expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
+            "  - name: grade\n"
+            "    expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}\n",
             encoding="utf-8",
         )
 
@@ -627,8 +627,8 @@ class TestChatConfirmDraft:
         kb.kb_dir.mkdir(parents=True, exist_ok=True)
         (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
         kb.semantics_path("demo").write_text(
-            "semantic_model:\n- name: fin\n  datasets:\n  - name: loan\n"
-            "  metrics: []\n",
+            'version: "0.2.0.dev0"\nname: fin\ndatasets:\n- name: loan\n'
+            "metrics: []\n",
             encoding="utf-8")
 
     async def _seed_pending_draft(self, kb, question="平均贷款金额是多少?"):
@@ -751,17 +751,17 @@ class TestRefuseConfirmReanswerLoop:
         ds_dir.mkdir(parents=True, exist_ok=True)
         # 初始模型:只有 loan 数据集 + 字段,无聚合 metric
         (kb.semantics_path("demo")).write_text(
-            "semantic_model:\n"
-            "  - name: demo\n"
-            "    datasets:\n"
-            "      - name: loan\n"
-            "        source: loan\n"
-            "        primary_key: [loan_id]\n"
-            "        fields:\n"
-            "          - name: loan_id\n"
-            "            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}\n"
-            "          - name: amount\n"
-            "            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n",
+            'version: "0.2.0.dev0"\n'
+            "name: demo\n"
+            "datasets:\n"
+            "  - name: loan\n"
+            "    source: loan\n"
+            "    primary_key: [loan_id]\n"
+            "    fields:\n"
+            "      - name: loan_id\n"
+            "        expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}\n"
+            "      - name: amount\n"
+            "        expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n",
             encoding="utf-8",
         )
         provider = SemanticLayerProvider(
@@ -814,41 +814,41 @@ class TestRefuseConfirmReanswerLoop:
 
 
 _SCHOOL_SEMANTICS = """\
-semantic_model:
-- name: school
-  datasets:
-  - name: students
-    source: students
-    primary_key: [id]
-    fields:
-    - name: id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-    - name: grade
-      expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}
-    - name: county
-      expression: {dialects: [{dialect: ANSI_SQL, expression: county}]}
-    - name: club_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
-    ai_context:
-      synonyms: [student]
-  - name: clubs
-    source: clubs
-    primary_key: [club_id]
-    fields:
-    - name: club_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
-    - name: name
-      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
-  relationships:
-  - name: student_clubs
-    from: students
-    to: clubs
-    from_columns: [club_id]
-    to_columns: [club_id]
-    cardinality: M:N
-  metrics:
-  - name: average grade
-    expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}
+version: "0.2.0.dev0"
+name: school
+datasets:
+- name: students
+  source: students
+  primary_key: [id]
+  fields:
+  - name: id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+  - name: grade
+    expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}
+  - name: county
+    expression: {dialects: [{dialect: ANSI_SQL, expression: county}]}
+  - name: club_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
+  ai_context:
+    synonyms: [student]
+- name: clubs
+  source: clubs
+  primary_key: [club_id]
+  fields:
+  - name: club_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
+  - name: name
+    expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+relationships:
+- name: student_clubs
+  from: students
+  to: clubs
+  from_columns: [club_id]
+  to_columns: [club_id]
+  cardinality: M:N
+metrics:
+- name: average grade
+  expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}
 """
 
 
@@ -951,9 +951,9 @@ draft:
         # 的一类,本用例钉住重规划→拒绝链路仍在(0483 可路由形状另有自愈
         # 用例,见 test_semantic_first.TestPlanContradictionReplan)。
         (kb.semantics_path("demo")).write_text(
-            "semantic_model:\n"
-            "- name: school\n"
-            "  datasets:\n"
+            'version: "0.2.0.dev0"\n'
+            "name: school\n"
+            "datasets:\n"
             "  - name: students\n"
             "    source: students\n"
             "    primary_key: [id]\n"
@@ -972,7 +972,7 @@ draft:
             "      expression: {dialects: [{dialect: ANSI_SQL, expression: teacher_id}]}\n"
             "    - name: name\n"
             "      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
-            "  metrics:\n"
+            "metrics:\n"
             "  - name: average grade\n"
             "    expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}\n"
             "  - name: number of students\n"

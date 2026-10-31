@@ -20,24 +20,24 @@ from trove.services.kb.service import KbService
 from trove.storage.migrations import StorageSchemaTooNew
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-      - name: district
-      - name: client
-    metrics:
-      - name: 平均贷款金额
-        description: 贷款金额均值
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
-      - name: 客户数量
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(client.client_id)
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+  - name: district
+  - name: client
+metrics:
+  - name: 平均贷款金额
+    description: 贷款金额均值
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
+  - name: 客户数量
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(client.client_id)
 """
 
 EXAMPLES = """

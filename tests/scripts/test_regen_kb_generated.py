@@ -143,25 +143,23 @@ def _write_kb(tmp_path):
         }],
     }, sort_keys=False), encoding="utf-8")
     (tmp_path / "semantics.yml").write_text(yaml.safe_dump({
-        "semantic_model": [{
-            "name": "t",
-            "datasets": [{
-                "name": "district",
-                "fields": [{"name": "district_id"}, {"name": "A9"}, {"name": "A10"}],
-            }],
-            "metrics": [
-                {"name": "total Number of cities, ranging from 1 to 11.",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                              "expression": "SUM(district.A9)"}]}},
-                {"name": "total Unemployment rate in 1995",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                              "expression": "SUM(district.A10)"}]}},
-                {"name": "hand_written",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                              "expression": "MAX(district.A9)"}]}},
-            ],
-        }],
         "version": "0.2.0.dev0",
+        "name": "t",
+        "datasets": [{
+            "name": "district",
+            "fields": [{"name": "district_id"}, {"name": "A9"}, {"name": "A10"}],
+        }],
+        "metrics": [
+            {"name": "total Number of cities, ranging from 1 to 11.",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                          "expression": "SUM(district.A9)"}]}},
+            {"name": "total Unemployment rate in 1995",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                          "expression": "SUM(district.A10)"}]}},
+            {"name": "hand_written",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                          "expression": "MAX(district.A9)"}]}},
+        ],
     }, sort_keys=False), encoding="utf-8")
 
 
@@ -170,7 +168,7 @@ class TestRegenMetrics:
         _write_kb(tmp_path)
         doc, diff, changed = regen_metrics(tmp_path, "en")
         assert changed
-        metrics = doc["semantic_model"][0]["metrics"]
+        metrics = doc["metrics"]
         names = [m["name"] for m in metrics]
         # 噪音名归一
         assert "total Number of cities" in names
@@ -192,7 +190,7 @@ class TestRegenMetrics:
     def test_foreign_key_aborts(self, tmp_path):
         _write_kb(tmp_path)
         doc = yaml.safe_load((tmp_path / "semantics.yml").read_text())
-        doc["semantic_model"][0]["metrics"][0]["custom_extensions"] = {"x": 1}
+        doc["metrics"][0]["custom_extensions"] = {"x": 1}
         (tmp_path / "semantics.yml").write_text(
             yaml.safe_dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False),
             encoding="utf-8")
@@ -219,19 +217,17 @@ def _write_share_kb(tmp_path):
         }],
     }, sort_keys=False), encoding="utf-8")
     (tmp_path / "semantics.yml").write_text(yaml.safe_dump({
-        "semantic_model": [{
-            "name": "t",
-            "datasets": [{
-                "name": "loan",
-                "fields": [{"name": "loan_id"}, {"name": "status"}, {"name": "amount"}],
-            }],
-            "metrics": [
-                {"name": "hand_written",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                              "expression": "MAX(loan.amount)"}]}},
-            ],
-        }],
         "version": "0.2.0.dev0",
+        "name": "t",
+        "datasets": [{
+            "name": "loan",
+            "fields": [{"name": "loan_id"}, {"name": "status"}, {"name": "amount"}],
+        }],
+        "metrics": [
+            {"name": "hand_written",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                          "expression": "MAX(loan.amount)"}]}},
+        ],
     }, sort_keys=False), encoding="utf-8")
 
 
@@ -243,12 +239,12 @@ class TestRegenShareMetrics:
         doc, _, changed = regen_metrics(tmp_path, "en")
         assert changed
         exprs = [m["expression"]["dialects"][0]["expression"]
-                 for m in doc["semantic_model"][0]["metrics"]]
+                 for m in doc["metrics"]]
         assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
                 " * 100.0 / COUNT(*)") in exprs
         assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
                 " AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)") in exprs
-        assert "hand_written" in [m["name"] for m in doc["semantic_model"][0]["metrics"]]
+        assert "hand_written" in [m["name"] for m in doc["metrics"]]
 
     def test_regeneration_idempotent(self, tmp_path):
         """重跑零改动 = 分类器认得生成器自己的占比产物(不认得就会重复追加)。"""
@@ -279,7 +275,7 @@ class TestRegenShareMetrics:
                                           " THEN loan.amount ELSE 0 END)"
                                           " * 100.0 / NULLIF(SUM(loan.amount), 0)"}]}},
         ]
-        doc["semantic_model"][0]["metrics"] = legacy + doc["semantic_model"][0]["metrics"]
+        doc["metrics"] = legacy + doc["metrics"]
         (tmp_path / "semantics.yml").write_text(
             yaml.safe_dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False),
             encoding="utf-8")
@@ -287,11 +283,11 @@ class TestRegenShareMetrics:
         rebuilt, _, changed = regen_metrics(tmp_path, "en")
         assert changed
         exprs = [m["expression"]["dialects"][0]["expression"]
-                 for m in rebuilt["semantic_model"][0]["metrics"]]
+                 for m in rebuilt["metrics"]]
         assert not any(e.startswith("SUM(CASE WHEN") for e in exprs)  # 旧形态全被换掉
         assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
                 " * 100.0 / COUNT(*)") in exprs
-        assert "hand_written" in [m["name"] for m in rebuilt["semantic_model"][0]["metrics"]]
+        assert "hand_written" in [m["name"] for m in rebuilt["metrics"]]
 
 
 def _write_examples(tmp_path):
@@ -415,7 +411,7 @@ class TestWritePending:
     def test_no_meta_file_stays_unstamped(self, tmp_path):
         """semantics.yml 不带 _meta,落盘不引入来源块(仓内惯例)。"""
         path = tmp_path / "semantics.yml"
-        doc = {"semantic_model": [{"name": "x", "datasets": [], "metrics": []}]}
+        doc = {"version": "0.2.0.dev0", "name": "x", "datasets": [], "metrics": []}
         _write_pending([(path, doc)])
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert "_meta" not in written

@@ -8,75 +8,75 @@ identifier/time 结构列不做原始名子串匹配(与 schema_linking 同哲�
 from trove.services.kb.service import KbService
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        fields:
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.amount
-            datatype: Integer
-            description: 贷款金额
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.status
-            datatype: String
-            enum_display:
-              A: 已结清
-              B: 未结清
-            description: 贷款状态
-          - name: date
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan.date
-            datatype: Date
-            dimension:
-              is_time: true
-            description: 贷款日期
-      - name: district
-        fields:
-          - name: A2
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district.A2
-            datatype: String
-            ai_context:
-              synonyms:
-                - region
-            description: 地区名
-      - name: client
-        fields:
-          - name: client_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: client.client_id
-            datatype: Integer
-            description: 客户主键
-    metrics:
-      - name: 平均贷款金额
-        description: 所有贷款的平均金额
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    fields:
+      - name: amount
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+              expression: loan.amount
+        datatype: Integer
+        description: 贷款金额
+      - name: status
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: loan.status
+        datatype: String
+        enum_display:
+          A: 已结清
+          B: 未结清
+        description: 贷款状态
+      - name: date
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: loan.date
+        datatype: Date
+        dimension:
+          is_time: true
+        description: 贷款日期
+  - name: district
+    fields:
+      - name: A2
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district.A2
+        datatype: String
         ai_context:
           synonyms:
-            - 贷款均值
-            - 平均贷款
-      - name: 客户数量
-        description: 客户总数
+            - region
+        description: 地区名
+  - name: client
+    fields:
+      - name: client_id
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(client.client_id)
+              expression: client.client_id
+        datatype: Integer
+        description: 客户主键
+metrics:
+  - name: 平均贷款金额
+    description: 所有贷款的平均金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
+    ai_context:
+      synonyms:
+        - 贷款均值
+        - 平均贷款
+  - name: 客户数量
+    description: 客户总数
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(client.client_id)
 """
 
 ALL_TABLES = ["loan", "district", "client"]

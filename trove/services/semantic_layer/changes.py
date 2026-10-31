@@ -33,7 +33,10 @@ from trove.services.semantic_layer.issues import blocking_issues
 from trove.services.semantic_layer.manage import (
     _ACTIONS, _KINDS, _apply_draft, _dump_yaml, _load_yaml,
 )
-from trove.services.semantic_layer.ossie import OSSIE_VERSION
+from trove.services.semantic_layer.ossie import (
+    document_refusal,
+    stamp_ossie_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +402,9 @@ class ChangeService:
         rec.base_digest = rec.base_digest or current_digest
 
         data = _load_yaml(semantics)
+        refusal = document_refusal(data)
+        if refusal:
+            raise ChangeInvalid(f"主线语义文档不可读: {refusal}")
         base_doc = copy.deepcopy(data) if data else {}
         working = copy.deepcopy(data) if data else {}
         for p in rec.payloads:
@@ -408,8 +414,10 @@ class ChangeService:
                 _apply_draft(working, fake, dialect)
             except (ValueError, TypeError) as e:
                 raise ChangeInvalid(f"{fail_prefix}: {e}") from e
-        if "version" not in working and "semantic_model" in working:
-            working["version"] = OSSIE_VERSION
+        try:
+            working = stamp_ossie_version(working)
+        except ValueError as e:
+            raise ChangeInvalid(f"{fail_prefix}: {e}") from e
         # 写前门禁(**分级**,拍板 Q4):结构性错位拦下,拍板豁免的语义
         # 缺口只提示不拦 —— 与 git pre-commit 门禁(KbService.semantics_lint)
         # 共用 issues.blocking_issues 这一个判据,两处不各自分级。
