@@ -123,7 +123,10 @@ default-groups = ["dev"]
 # filelock 是传递依赖(huggingface-hub 拉入),本仓不直接 import —— 用约束
 # 而非直接依赖把版本抬到修复线:4.2.1 起修掉三条 Windows 锁文件类公告
 # (GHSA-567q-5qvw-pf92 / GHSA-9vhv-jxww-xfm5 / GHSA-v4x8-3wr5-3wq8)。
-constraint-dependencies = ["filelock>=4.2.1"]
+# joserfc 同款(authlib / fastmcp 拉入):1.7.6 起修掉 Compact JWS 尺寸守卫
+# (GHSA-9pg5-8c7x-5hfx)与 JWE recipients 数组 CPU 耗尽
+# (GHSA-jpxq-7h8p-2q76)两条公告。
+constraint-dependencies = ["filelock>=4.2.1", "joserfc>=1.7.6"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
