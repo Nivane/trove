@@ -104,7 +104,8 @@ class TestKbInit:
         result = await reg.get("kb").handler("init --overwrite --force")
         assert "Initialized" in result
         text = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
-        assert "semantic_model" in text
+        assert text.startswith("version:")
+        assert "semantic_model" not in text
         assert "COUNT(students.id)" in text
         baseline = kb.kb_dir / ds / ".generated" / "semantics.yml"
         assert baseline.exists(), "重新生成一次之后,后续 init 才有祖先可合并"

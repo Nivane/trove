@@ -59,7 +59,7 @@ def _base_doc(*, loan_extra: dict | None = None,
         "metrics": [],
     }
     model.update(model_extra or {})
-    return {"semantic_model": [model]}
+    return {"version": "0.2.0.dev0", **model}
 
 
 def _messages(doc: dict) -> list[str]:
@@ -126,7 +126,7 @@ class TestLintEntities:
 
     def test_alias_conflicting_with_other_dataset_synonym_warns(self):
         doc = _base_doc(loan_extra={"entity": {"aliases": ["分期"]}})
-        doc["semantic_model"][0]["datasets"][1]["ai_context"] = {
+        doc["datasets"][1]["ai_context"] = {
             "synonyms": ["分期"]}
         hits = _hits(doc, "实体别名「分期」")
         assert len(hits) == 1 and "customer" in hits[0]
@@ -134,14 +134,14 @@ class TestLintEntities:
     def test_alias_conflicting_with_other_entity_alias_warns(self):
         """别名跨实体重复:同一对只报一次(报后来者),判定确定。"""
         doc = _base_doc(loan_extra={"entity": {"aliases": ["账户"]}})
-        doc["semantic_model"][0]["datasets"][1]["entity"] = {
+        doc["datasets"][1]["entity"] = {
             "aliases": ["账户"]}
         hits = _hits(doc, "实体别名「账户」")
         assert len(hits) == 1 and "customer" in hits[0]
 
     def test_distinct_aliases_do_not_warn(self):
         doc = _base_doc(loan_extra={"entity": {"aliases": ["借款"]}})
-        doc["semantic_model"][0]["datasets"][1]["entity"] = {
+        doc["datasets"][1]["entity"] = {
             "aliases": ["客户"]}
         assert _hits(doc, "实体别名") == []
 
@@ -307,7 +307,7 @@ class TestHierarchyCoverageGap:
 
     def test_absent_hierarchies_is_silent(self):
         doc = _cov_doc(metric_filter="region = '个人'")
-        doc["semantic_model"][0]["hierarchies"] = []
+        doc["hierarchies"] = []
         assert _hits(doc, self.NEEDLE) == []
 
     def test_gap_maps_to_metric_target_advisory_and_does_not_block(self):
@@ -328,13 +328,15 @@ class TestDocumentPlacement:
     def test_top_level_entity_is_hard_error(self):
         doc = _base_doc()
         doc["entity"] = {"display_name": "贷款"}
-        hits = _hits(doc, "文档顶层的 entity 会被忽略")
+        hits = _hits(doc, "文档根上的 entity 会被忽略")
         assert len(hits) == 1 and "datasets[].entity" in hits[0]
 
-    def test_top_level_hierarchies_is_hard_error(self):
-        doc = _base_doc()
-        doc["hierarchies"] = [{"name": "geo"}]
-        assert _hits(doc, "文档顶层的 hierarchies 会被忽略")
+    def test_top_level_hierarchies_are_valid(self):
+        """0.2 扁平根:``hierarchies`` 与 datasets/metrics 同在文档根。"""
+        doc = _base_doc(model_extra={"hierarchies": [
+            {"name": "geo", "dataset": "loan",
+             "levels": ["loan_id", "amount"]}]})
+        assert _messages(doc) == []
 
     def test_correctly_placed_declarations_are_not_misplaced(self):
         doc = _base_doc(
@@ -343,7 +345,7 @@ class TestDocumentPlacement:
             model_extra={"hierarchies": [
                 {"name": "geo", "dataset": "loan",
                  "levels": ["loan_id", "amount"]}]})
-        assert _hits(doc, "文档顶层的") == []
+        assert _hits(doc, "文档根上的") == []
 
 
 # ── 结构化映射(kind 词汇表 N13)────────────────────────────
@@ -369,7 +371,7 @@ class TestStructuredIssuesNewKinds:
 
     def test_alias_conflict_maps_to_entity_target(self):
         doc = _base_doc(loan_extra={"entity": {"aliases": ["分期"]}})
-        doc["semantic_model"][0]["datasets"][1]["ai_context"] = {
+        doc["datasets"][1]["ai_context"] = {
             "synonyms": ["分期"]}
         item = structured_issues(_hits(doc, "实体别名"))[0]
         assert item["code"] == "entity_alias_conflict"
@@ -385,11 +387,10 @@ class TestStructuredIssuesNewKinds:
         assert item["severity"] == SEVERITY_ERROR
         assert item["target"] == {"kind": "hierarchy", "name": "geo"}
 
-    def test_misplaced_issues_map_to_document_target(self):
-        doc = _base_doc()
-        doc["hierarchies"] = []
-        item = structured_issues(_hits(doc, "文档顶层的 hierarchies"))[0]
-        assert item["code"] == "hierarchies_misplaced"
+    def test_format_issues_map_to_document_target(self):
+        item = structured_issues(_messages(
+            {"semantic_model": [{"name": "demo"}]}))[0]
+        assert item["code"] == "ossie_format"
         assert item["severity"] == SEVERITY_ERROR
         assert item["target"] == {"kind": "document", "name": ""}
 
@@ -403,7 +404,7 @@ class TestStructuredIssuesNewKinds:
             "主题域「t」重复定义",                     # topic
             "数据集「loan」的实体自然键「ghost」不是本数据集已声明字段(x)",  # entity
             "层级「geo」重复定义",                     # hierarchy
-            "文档顶层的 masking 会被忽略 —— 请写在 semantic_model[0] 下",  # document
+            "文档根上的 entity 会被忽略 —— 请写在 datasets[].entity",  # document
             "半句没见过的问题描述",                    # unknown
         ]
         kinds = {i["target"]["kind"] for i in structured_issues(samples)}
@@ -452,7 +453,7 @@ class TestBlockingIssuesGrading:
                  "levels": ["loan_id", "loan_id"]}]}
         doc = _base_doc(loan_extra=extra, model_extra=model_extra)
         if kind == "alias":
-            doc["semantic_model"][0]["datasets"][1]["ai_context"] = {
+            doc["datasets"][1]["ai_context"] = {
                 "synonyms": ["分期"]}
         issues = _messages(doc)
         assert issues  # 提示得到……
@@ -461,7 +462,7 @@ class TestBlockingIssuesGrading:
     def test_legacy_warning_still_blocks(self):
         """兼容安全带:既有 warning 的判据不因分级而放宽。"""
         doc = _base_doc()
-        doc["semantic_model"][0]["datasets"][0]["unique_keys"] = [["ghost"]]
+        doc["datasets"][0]["unique_keys"] = [["ghost"]]
         issues = _messages(doc)
         assert any("unique_keys" in i for i in issues)
         assert blocking_issues(issues) == issues
@@ -491,30 +492,30 @@ def _seed_kb(tmp_path, text: str) -> KbService:
 
 
 #: 仅含语义缺口(实体自然键回退缺失)的文档 —— 唯一 issue 是可豁免 warning。
-_ADVISORY_YAML = """semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    entity: {display_name: 贷款}
-    fields:
-    - name: loan_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-  metrics: []
+_ADVISORY_YAML = """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  entity: {display_name: 贷款}
+  fields:
+  - name: loan_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+metrics: []
 """
 
 #: 结构性错位(自然键引用未声明字段)—— 必须拦下。
-_STRUCTURAL_YAML = """semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    primary_key: [loan_id]
-    entity: {natural_keys: [ghost]}
-    fields:
-    - name: loan_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-  metrics: []
+_STRUCTURAL_YAML = """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  primary_key: [loan_id]
+  entity: {natural_keys: [ghost]}
+  fields:
+  - name: loan_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+metrics: []
 """
 
 
@@ -552,20 +553,20 @@ class TestWriteGateIntegration:
 
     async def test_single_level_hierarchy_does_not_block_confirm(self, tmp_path):
         """存量样例兼容:单级层级只是 warning,绝不拦写盘。"""
-        kb = _seed_kb(tmp_path, """semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    primary_key: [loan_id]
-    fields:
-    - name: loan_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-  hierarchies:
-  - name: product_hierarchy
-    dataset: loan
-    levels: [loan_id]
-  metrics: []
+        kb = _seed_kb(tmp_path, """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  primary_key: [loan_id]
+  fields:
+  - name: loan_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+hierarchies:
+- name: product_hierarchy
+  dataset: loan
+  levels: [loan_id]
+metrics: []
 """)
         manager = SemanticManager(kb)
         draft = await manager.create_draft(
@@ -578,20 +579,20 @@ class TestWriteGateIntegration:
 
     async def test_misplaced_entity_blocks_write(self, tmp_path):
         """放错层 = 硬错(N3:解析层出声 + 写盘层拦下,与 masking 成对)。"""
-        kb = _seed_kb(tmp_path, """semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    primary_key: [loan_id]
-    fields:
-    - name: loan_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-  metrics: []
+        kb = _seed_kb(tmp_path, """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  primary_key: [loan_id]
+  fields:
+  - name: loan_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+metrics: []
 entity: {display_name: 贷款}
 """)
         before = kb.semantics_path("demo").read_text(encoding="utf-8")
-        with pytest.raises(ValueError, match="文档顶层的 entity"):
+        with pytest.raises(ValueError, match="文档根上的 entity"):
             await SemanticManager(kb).auto_apply(
                 "demo", "dataset", "extra", {"source": "extra"})
         assert kb.semantics_path("demo").read_text(encoding="utf-8") == before
@@ -618,16 +619,16 @@ entity: {display_name: 贷款}
 
     def test_git_precommit_gate_still_refuses_legacy_warning(self, tmp_path):
         """分级只豁免点名名单:既有 warning 的 git 门禁判据不变。"""
-        kb = _seed_kb(tmp_path, """semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    unique_keys: [[ghost_col]]
-    fields:
-    - name: loan_id
-      expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-  metrics: []
+        kb = _seed_kb(tmp_path, """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  unique_keys: [[ghost_col]]
+  fields:
+  - name: loan_id
+    expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+metrics: []
 """)
         lint = kb.semantics_lint("demo", dialect="sqlite")
         assert any("unique_keys" in i for i in lint([kb.semantics_path("demo")]))

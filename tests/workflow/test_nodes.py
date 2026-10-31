@@ -167,30 +167,30 @@ class TestSchemaLinkingRelationshipBlock:
     """
 
     MODEL = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-      - name: account
-      - name: district
-      - name: client
-    relationships:
-      - name: loan_to_account
-        from: loan
-        to: account
-        from_columns: [account_id]
-        to_columns: [account_id]
-      - name: account_to_district
-        from: account
-        to: district
-        from_columns: [district_id]
-        to_columns: [district_id]
-    metrics:
-      - name: total_loan_amount
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+  - name: account
+  - name: district
+  - name: client
+relationships:
+  - name: loan_to_account
+    from: loan
+    to: account
+    from_columns: [account_id]
+    to_columns: [account_id]
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns: [district_id]
+    to_columns: [district_id]
+metrics:
+  - name: total_loan_amount
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
 """
 
     def _provider(self, tmp_path):
@@ -236,28 +236,28 @@ semantic_model:
         assert "Relationships:" not in update["schema_context"]
 
     MODEL_WITH_FIELDS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: district
-        source: demo.district
-        primary_key: [district_id]
-        fields:
-          - name: A3
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: A3
-            datatype: String
-            description: district name
-            ai_context:
-              synonyms: [region, area]
-          - name: A2
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: A2
-            datatype: String
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: district
+    source: demo.district
+    primary_key: [district_id]
+    fields:
+      - name: A3
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: A3
+        datatype: String
+        description: district name
+        ai_context:
+          synonyms: [region, area]
+      - name: A2
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: A2
+        datatype: String
 """
 
     async def test_renders_dimensions_and_field_hints(self, tmp_path, demo_registry):
@@ -284,9 +284,9 @@ semantic_model:
         from trove.services.semantic_layer.provider import SemanticLayerProvider
 
         model_with_m2n = self.MODEL.replace(
-            "      - name: loan_to_account\n        from: loan\n        to: account",
-            "      - name: loan_to_account\n        from: loan\n        to: account\n"
-            "        cardinality: M:N",
+            "  - name: loan_to_account\n    from: loan\n    to: account",
+            "  - name: loan_to_account\n    from: loan\n    to: account\n"
+            "    cardinality: M:N",
         )
         semantic_dir = tmp_path / "semantic" / "demo"
         semantic_dir.mkdir(parents=True)

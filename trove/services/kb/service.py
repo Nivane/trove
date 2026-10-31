@@ -67,6 +67,13 @@ from trove.services.kb.ossie_format import (
     qualify_mapping,
     terms_to_ossie_document,
 )
+from trove.services.semantic_layer.ossie import (
+    MIGRATE_SEMANTICS_COMMAND,
+    document_refusal,
+    is_legacy_document,
+    is_newer_document,
+    stamp_ossie_version,
+)
 from trove.services.kb.baseline import backup_asset, read_baseline, write_baseline
 from trove.services.kb.merge import entry_count, merge3
 from trove.services.kb.provenance import (
@@ -527,6 +534,17 @@ def _write_doc(path: Path, doc: dict, generator: str) -> None:
     path.write_text(dump_asset(doc, generator), encoding="utf-8")
 
 
+def _without_version(doc: dict) -> dict:
+    """合并前一刀:``version`` 是写端盖章的标量,不参与三方合并。
+
+    三方各带一个 ``version``(祖先/磁盘/生成)会让它变成永恒冲突 —— 而它
+    不是内容,是版本戳。合并后由 ``stamp_ossie_version`` 统一盖章。
+    """
+    if not isinstance(doc, dict):
+        return doc
+    return {k: v for k, v in doc.items() if k != "version"}
+
+
 def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     """Parse one YAML file into (kind, item_key, payload) entries."""
     asset = _load_asset(path)
@@ -855,6 +873,11 @@ class KbService:
         # 而不是清空:文件是新的、代码是旧的这种状态下,旧镜像至少是
         # "上一次我们读懂了的样子"。
         refusal = check_format(meta)
+        if not refusal and yml.name == "semantics.yml":
+            # 根形状/版本门与格式门同一姿态:拒绝发生在 _entries_of **之前**,
+            # 旧镜像行原样保留(last-known-good)。按旧解释读一份新根形状,
+            # 产出的不是"少几个字段",是一个错的语义模型。
+            refusal = document_refusal(doc)
         if refusal:
             logger.error("KB asset %s refused: %s", rel_path, refusal)
             self.refused_assets[rel_path] = refusal
@@ -2353,6 +2376,16 @@ class KbService:
                     "error": str(e),
                 })
                 continue
+            ossie_refusal = (
+                document_refusal(asset.doc) if yml.name == "semantics.yml" else None
+            )
+            needs_ossie_migration = yml.name == "semantics.yml" and (
+                is_legacy_document(asset.doc)
+                or (
+                    isinstance(asset.doc, dict) and bool(asset.doc)
+                    and not str(asset.doc.get("version") or "").strip()
+                )
+            )
             report.append({
                 "file": yml.name,
                 "format": meta.format,
@@ -2364,7 +2397,8 @@ class KbService:
                 # 从文件本身算,不看内存里"上次同步拒绝过没有" —— 这个方法是
                 # 只读体检,不该依赖"同步恰好跑过"。两个字段因此分工明确:
                 # 这里是"该不该拒绝",refused_assets 是"镜像实际采纳了没有"。
-                "refused": check_format(meta),
+                "refused": check_format(meta) or ossie_refusal,
+                "needs_ossie_migration": needs_ossie_migration,
                 # 有基线 → 下一次 --overwrite 会**合并**(人的编辑存活);
                 # 没有 → 只能保留现状或强制重生成,这是人拍板时的关键信息。
                 "has_baseline": read_baseline(yml) is not None,
@@ -2520,10 +2554,17 @@ class KbService:
         path = ds_dir / "semantics.yml"
         if path.exists():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            if not isinstance(data, dict) or "semantic_model" not in data:
+            if not isinstance(data, dict):
                 raise ValueError(
-                    "semantics.yml uses the legacy flat terms format — delete the "
-                    "file and re-run /kb init --overwrite to migrate")
+                    "semantics.yml 根必须是映射（mapping）")
+            if "semantic_model" in data:
+                raise ValueError(
+                    "semantics.yml 仍是旧版 v0.1 数组包装;请先迁移: "
+                    f"{MIGRATE_SEMANTICS_COMMAND}")
+            refusal = document_refusal(data)
+            if refusal:
+                raise ValueError(f"semantics.yml 不可写: {refusal}")
+            data = stamp_ossie_version(data)
             append_term_to_document(data, entry)
         else:
             data = terms_to_ossie_document([entry], model_name=datasource)
@@ -2603,7 +2644,7 @@ class KbService:
         self, filename: str, doc: dict, datasource: str,
         overwrite: bool = False, generator: str = "kb_init", force: bool = False,
     ) -> bool:
-        """Write a full YAML document as-is(顶层键保留,如 OSSIE ``version``)。"""
+        """Write a full YAML document(``semantics.yml`` 写前统一盖 OSSIE 版本)。"""
         return self._init_write(
             filename, doc, datasource,
             overwrite=overwrite, generator=generator, force=force,
@@ -2616,6 +2657,16 @@ class KbService:
         ds_dir = self.kb_dir / datasource
         ds_dir.mkdir(parents=True, exist_ok=True)
         path = ds_dir / filename
+        if filename == "semantics.yml":
+            # 写路径的版本闭包:任何生成物落盘前统一盖章(version 第一键、
+            # 老扁平版升到当前、新版本拒绝)。生成器自己也会盖 —— 这里是
+            # 最后一道,防的是调用方直接给 dict。
+            try:
+                doc = stamp_ossie_version(doc)
+            except ValueError as e:
+                logger.error("%s/%s not written: %s", datasource, filename, e)
+                self.refused_assets[f"{datasource}/{filename}"] = str(e)
+                return False
         if not path.exists():
             self._write_init(path, doc, generator, baseline=doc)
             return True
@@ -2628,7 +2679,29 @@ class KbService:
             logger.error("%s/%s not written: %s", datasource, filename, refusal)
             self.refused_assets[f"{datasource}/{filename}"] = refusal
             return False
+        if filename == "semantics.yml":
+            disk_doc = _load_asset(path).doc
+            doc_refusal = document_refusal(disk_doc)
+            if doc_refusal:
+                # 盘上的文档按当前解释不可读:不能被三方合并(祖先不是同一个
+                # 形状),也不能被 force 覆盖 —— 除非它只是「老/缺版本」这类
+                # 人可以显式整体替换的资产。**更新的版本永远不可改写**。
+                if is_newer_document(disk_doc) or not force:
+                    logger.error(
+                        "%s/%s not written: %s", datasource, filename, doc_refusal)
+                    self.refused_assets[f"{datasource}/{filename}"] = doc_refusal
+                    return False
         base = read_baseline(path)
+        base_refusal = (
+            document_refusal(base)
+            if filename == "semantics.yml" and base is not None else None)
+        if base_refusal and not force:
+            # 祖先不是同一个根形状 → 三方合并没有意义(会造出一份从未存在
+            # 过的文件)。视为「无可用基线」;人的显式 force 才整体重生成。
+            logger.error(
+                "%s/%s has no usable baseline (%s) — refusing to replace it "
+                "(see kb migrate)", datasource, filename, base_refusal)
+            return False
         if force or base is None:
             if base is None and not force:
                 logger.error(
@@ -2639,8 +2712,15 @@ class KbService:
             merged = doc  # 强制重生成 = 覆盖,今天的行为
         else:
             ours = _load_asset(path).doc
-            result = merge3(base, ours, doc, filename)
-            merged = result.doc
+            if filename == "semantics.yml":
+                result = merge3(
+                    _without_version(base), _without_version(ours),
+                    _without_version(doc), filename,
+                )
+                merged = stamp_ossie_version(result.doc)
+            else:
+                result = merge3(base, ours, doc, filename)
+                merged = result.doc
             self.merge_reports.append({"file": filename, **result.as_dict()})
             if result.conflicts:
                 logger.warning(

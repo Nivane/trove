@@ -24,38 +24,36 @@ from trove.services.semantic_layer.manage import _apply_draft, _draft_diff
 
 DOC = {
     "version": "0.2.0.dev0",
-    "semantic_model": [{
-        "name": "test_db",
-        "datasets": [
-            {"name": "students", "source": "students",
-             "primary_key": ["id"],
-             "fields": [
-                 {"name": "id", "datatype": "Integer",
-                  "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                               "expression": "id"}]}},
-                 {"name": "grade", "datatype": "Integer",
-                  "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                               "expression": "grade"}]}},
-                 {"name": "enrolled_at", "datatype": "Date",
-                  "dimension": {"is_time": True},
-                  "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                               "expression": "enrolled_at"}]}},
-             ]},
-            {"name": "courses", "source": "courses",
-             "fields": [
-                 {"name": "course_id", "datatype": "Integer",
-                  "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                               "expression": "course_id"}]}},
-             ]},
-        ],
-        "metrics": [{
-            "name": "平均成绩",
-            "description": "学生平均分",
-            "expression": {"dialects": [{"dialect": "ANSI_SQL",
-                                         "expression": "AVG(students.grade)"}]},
-            "filter": "students.grade > 0",
-            "agg_time_dimension": "students.enrolled_at",
-        }],
+    "name": "test_db",
+    "datasets": [
+        {"name": "students", "source": "students",
+         "primary_key": ["id"],
+         "fields": [
+             {"name": "id", "datatype": "Integer",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                           "expression": "id"}]}},
+             {"name": "grade", "datatype": "Integer",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                           "expression": "grade"}]}},
+             {"name": "enrolled_at", "datatype": "Date",
+              "dimension": {"is_time": True},
+              "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                           "expression": "enrolled_at"}]}},
+         ]},
+        {"name": "courses", "source": "courses",
+         "fields": [
+             {"name": "course_id", "datatype": "Integer",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                           "expression": "course_id"}]}},
+         ]},
+    ],
+    "metrics": [{
+        "name": "平均成绩",
+        "description": "学生平均分",
+        "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                     "expression": "AVG(students.grade)"}]},
+        "filter": "students.grade > 0",
+        "agg_time_dimension": "students.enrolled_at",
     }],
 }
 
@@ -69,11 +67,11 @@ def test_structured_issues_maps_known_families():
         "关系「loan_to_account」未声明基数(cardinality),编译器将保守 MISS",
         "表 students 字段「grade」重复定义",
         "表 students.grade 含空/非法 synonym",
-        "文档顶层的 masking 会被忽略 —— 请写在 semantic_model[0] 下(与 time_spine 同层)",
+        "OSSIE 文档格式错误: 旧版 v0.1 文档（semantic_model 列表包装）已不再支持；请先迁移",
     ])
     assert [i["code"] for i in items] == [
         "dup_metric", "relationship_missing_cardinality", "dup_field",
-        "bad_synonym", "masking_misplaced",
+        "bad_synonym", "ossie_format",
     ]
     assert [i["severity"] for i in items] == [
         SEVERITY_ERROR, SEVERITY_WARNING, SEVERITY_ERROR,
@@ -231,8 +229,8 @@ def test_validate_warning_also_blocks():
 def test_validate_judges_whole_document():
     """草稿本身干净,但文档已坏 → 同样 ok=False(confirm 会拿整份文档过门禁)。"""
     broken = copy.deepcopy(DOC)
-    broken["semantic_model"][0]["metrics"].append(
-        dict(broken["semantic_model"][0]["metrics"][0]))
+    broken["metrics"].append(
+        dict(broken["metrics"][0]))
     out = validate_draft(broken, kind="metric", action="upsert", name="新指标",
                          payload={"expression": "COUNT(students.id)"},
                          dialect="sqlite")
@@ -282,7 +280,7 @@ def test_apply_metric_rejects_undeclared_dataset_without_stub():
                             "payload": {"expression": "AVG(loan.amount)",
                                         "datasets": ["loan"]}}, "sqlite")
     assert data == before
-    assert {d["name"] for d in data["semantic_model"][0]["datasets"]} == {
+    assert {d["name"] for d in data["datasets"]} == {
         "students", "courses"}
 
 
@@ -291,10 +289,10 @@ def test_apply_metric_accepts_declared_dataset():
     _apply_draft(data, {"kind": "metric", "action": "upsert", "name": "课程数",
                         "payload": {"expression": "COUNT(courses.course_id)",
                                     "datasets": ["courses"]}}, "sqlite")
-    metrics = {m["name"] for m in data["semantic_model"][0]["metrics"]}
+    metrics = {m["name"] for m in data["metrics"]}
     assert "课程数" in metrics
     # 声明过的数据集不会再多出一条重复条目
-    assert [d["name"] for d in data["semantic_model"][0]["datasets"]] == [
+    assert [d["name"] for d in data["datasets"]] == [
         "students", "courses"]
 
 
@@ -366,7 +364,7 @@ def test_draft_diff_marks_removed_values():
 def _apply_learner_topic(doc: dict, payload: dict, action: str = "upsert"):
     _apply_draft(doc, {"kind": "topic", "action": action,
                        "name": "learners", "payload": payload}, "sqlite")
-    return doc["semantic_model"][0].get("topics") or []
+    return doc.get("topics") or []
 
 
 def test_apply_topic_upsert_update_delete_roundtrip():

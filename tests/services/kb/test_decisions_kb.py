@@ -154,9 +154,9 @@ class TestSave:
         edit into this commit."""
         d = kb.kb_dir / "demo"
         d.mkdir(parents=True)
-        (d / "semantics.yml").write_text("semantic_model: []\n", encoding="utf-8")
+        (d / "semantics.yml").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
         await kb.save_decisions("demo", DecisionDoc(rules=[parse_rule(RULE)]))
-        assert (d / "semantics.yml").read_text(encoding="utf-8") == "semantic_model: []\n"
+        assert (d / "semantics.yml").read_text(encoding="utf-8") == "version: 0.2.0.dev0\n"
 
 
 class TestLintGate:
@@ -207,7 +207,7 @@ class TestSaveIsVersioned:
         kb, repo = git_kb
         d = kb.kb_dir / "demo"
         d.mkdir(parents=True)
-        (d / "semantics.yml").write_text("semantic_model: []\n", encoding="utf-8")
+        (d / "semantics.yml").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
         await kb.save_decisions("demo", DecisionDoc(rules=[parse_rule(RULE)]))
 

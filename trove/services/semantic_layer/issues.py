@@ -65,7 +65,6 @@ _HINTS: dict[str, str] = {
     "bad_synonym": "同义词不能为空;与其它实体重复的同义词会让检索互相抢命中",
     "mask_invalid": "mask 取 none | partial | hash | null;裸 null 会被 YAML 解析成不脱敏",
     "mask_hash_without_salt": "hash 需要模型级 masking.hash_salt_ref(无 salt 可被彩虹表还原)",
-    "masking_misplaced": "masking 写在 semantic_model[0] 下(与 time_spine 同层),顶层会被忽略",
     "row_filter": "row_filter 只能引用本表已声明的字段",
     "unique_keys": "unique_keys 须为列名数组,且列已在 fields 中声明",
     "relationship_undeclared_dataset": "关系的 from/to 必须是已声明的数据集",
@@ -90,8 +89,8 @@ _HINTS: dict[str, str] = {
     "hierarchy_levels_sparse": "层级至少两级(粗 → 细);单级链条没有可钻的下一级,补一级或删除该层级",
     "hierarchy_level_dup": "同一级别只写一次(装载侧保序去重,重复多半是写错)",
     "hierarchy_coverage_gap": "该口径在层级级别字段上收敛,会静默排除层级其他分支:如非刻意,改用维度过滤,或单列独立指标并写明口径",
-    "entity_misplaced": "entity 写在 semantic_model[0].datasets[].entity(挂在数据集下),顶层会被忽略",
-    "hierarchies_misplaced": "hierarchies 写在 semantic_model[0] 下(与 time_spine 同层),顶层会被忽略",
+    "entity_misplaced": "entity 写在 datasets[].entity(挂在数据集下),文档根会被忽略",
+    "ossie_format": "补齐 OSSIE 0.2 扁平根与 version;旧 v0.1 包装用 scripts/migrate_semantics_v02.py 迁移",
     "kind_unknown": "kind 必须为 metric / field / dataset / topic / entity / relationship / hierarchy 之一",
     "lint": "见原文;这条问题尚未归类,请按 lint 描述修正",
 }
@@ -173,10 +172,10 @@ _RULES: list[tuple[re.Pattern[str], str, str, Callable[[re.Match[str]], tuple[st
     (re.compile(r"^字段目标必须是 dataset\.field 形式"), "field_target_invalid", SEVERITY_ERROR, lambda _m: _TARGET_UNKNOWN),
     # ── 文档级 ──
     (re.compile(r"^字段 .+ 声明 mask: hash"), "mask_hash_without_salt", SEVERITY_ERROR, _document_target),
-    (re.compile(r"^文档顶层的 masking 会被忽略"), "masking_misplaced", SEVERITY_ERROR, _document_target),
-    # 新声明的两个放错层(与 masking 同款双守卫:解析层出声、写盘层拦下)
-    (re.compile(r"^文档顶层的 entity 会被忽略"), "entity_misplaced", SEVERITY_ERROR, _document_target),
-    (re.compile(r"^文档顶层的 hierarchies 会被忽略"), "hierarchies_misplaced", SEVERITY_ERROR, _document_target),
+    # 根形状/版本门(解析端拒绝的同一判据在 lint 侧结构化)
+    (re.compile(r"^OSSIE 文档格式错误"), "ossie_format", SEVERITY_ERROR, _document_target),
+    # entity 放错层(解析层出声、写盘层拦下)
+    (re.compile(r"^文档(?:根|顶层)的 entity 会被忽略"), "entity_misplaced", SEVERITY_ERROR, _document_target),
     # ── 关系家族 ──
     (re.compile(r"^关系「(?P<name>[^」]*)」引用未声明的数据集"), "relationship_undeclared_dataset", SEVERITY_ERROR, _relationship_target),
     (re.compile(r"^关系「(?P<name>[^」]*)」未声明基数"), "relationship_missing_cardinality", SEVERITY_WARNING, _relationship_target),

@@ -138,7 +138,7 @@ async def test_semantics_resource_returns_model(mcp_components):
 
     server = build_mcp_server(mcp_components)
     text = await _read(server, "trove://test_db/semantics")
-    assert "semantic_model" in text  # OSSIE 语义模型原文
+    assert "datasets" in text  # OSSIE 语义模型原文(0.2 扁平根)
 
 
 async def test_schema_resource_missing_placeholder(mcp_components):

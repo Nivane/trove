@@ -352,9 +352,9 @@ class Hierarchy:
 
 @dataclass
 class SemanticModel:
-    """One parsed semantic model (OSSIE `semantic_model` entry).
+    """One parsed semantic model (the OSSIE 0.2 flat document root).
 
-    version: OSSIE 文档级 ``version``(semantic_model 上方,透传)。
+    version: 文档根 ``version``(0.2 扁平根的第一键,透传)。
     examples: model 级 ai_context.examples(示例问句)。
     custom_extensions: model 级 vendor 扩展(透传保留)。
     time_spine: 模型级时间轴声明(见 TimeSpine);空 = 不启用空档填充。

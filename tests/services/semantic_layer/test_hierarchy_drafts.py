@@ -47,7 +47,7 @@ def _hierarchies(kb) -> list:
 
 
 def _hierarchy_doc(kb) -> dict:
-    return _semantics_doc(kb)["semantic_model"][0]
+    return _semantics_doc(kb)
 
 
 _PAYLOAD = {"dataset": "loan", "display_name": "地理",
@@ -68,7 +68,7 @@ class TestHierarchyKindWiring:
         model = _minimal({"name": "loan"})
         _apply_draft(model, {"kind": "hierarchy", "action": "upsert",
                              "name": "geo", "payload": _PAYLOAD}, None)
-        assert model["semantic_model"][0]["hierarchies"] == [
+        assert model["hierarchies"] == [
             {"name": "geo", "dataset": "loan", "display_name": "地理",
              "levels": ["account_no", "loan_id"]}]
 

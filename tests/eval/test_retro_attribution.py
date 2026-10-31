@@ -47,75 +47,74 @@ from trove.services.semantic_layer.verify import (
 )
 
 _MODEL = """
-version: "0.1"
-semantic_model:
-  - name: shop
-    datasets:
-      - name: account
-        source: account
-        primary_key: [account_id]
-        entity: {display_name: 账户, natural_keys: [account_id]}
-        fields:
-          - name: account_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account_id
-          - name: district_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district_id
-      - name: district
-        source: district
-        primary_key: [district_id]
-        entity: {display_name: 地区, natural_keys: [district_id]}
-        fields:
-          - name: district_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: district_id
-      - name: trans
-        source: trans
-        fields:
-          - name: account_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account_id
-      - name: disp
-        source: disp
-        fields:
-          - name: account_id
-            datatype: Integer
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account_id
-    relationships:
-      - name: account_to_district
-        from: account
-        to: district
-        from_columns: [district_id]
-        to_columns: [district_id]
-        cardinality: "1:N"
-      - name: trans_to_account
-        from: trans
-        to: account
-        from_columns: [account_id]
-        to_columns: [account_id]
-        cardinality: "1:N"
-      - name: disp_to_account
-        from: disp
-        to: account
-        from_columns: [account_id]
-        to_columns: [account_id]
-        cardinality: "1:N"
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: account
+    source: account
+    primary_key: [account_id]
+    entity: {display_name: 账户, natural_keys: [account_id]}
+    fields:
+      - name: account_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account_id
+      - name: district_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district_id
+  - name: district
+    source: district
+    primary_key: [district_id]
+    entity: {display_name: 地区, natural_keys: [district_id]}
+    fields:
+      - name: district_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: district_id
+  - name: trans
+    source: trans
+    fields:
+      - name: account_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account_id
+  - name: disp
+    source: disp
+    fields:
+      - name: account_id
+        datatype: Integer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account_id
+relationships:
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns: [district_id]
+    to_columns: [district_id]
+    cardinality: "1:N"
+  - name: trans_to_account
+    from: trans
+    to: account
+    from_columns: [account_id]
+    to_columns: [account_id]
+    cardinality: "1:N"
+  - name: disp_to_account
+    from: disp
+    to: account
+    from_columns: [account_id]
+    to_columns: [account_id]
+    cardinality: "1:N"
 """
 
 
@@ -263,8 +262,8 @@ def test_composed_path_premise_is_the_parent_key():
 
 def test_composed_without_declared_parent_key_is_coverage_gap():
     """父键没声明 → 覆盖缺口(另有计数),不是「没实测」的判不了。"""
-    text = _MODEL.replace("        primary_key: [account_id]\n", "") \
-                 .replace("        entity: {display_name: 账户, natural_keys: [account_id]}\n", "")
+    text = _MODEL.replace("    primary_key: [account_id]\n", "") \
+                 .replace("    entity: {display_name: 账户, natural_keys: [account_id]}\n", "")
     idx = _index(text=text)
     verdicts = classify_path(idx, SqlPath(True, ("disp", "trans"), (
         JoinRef("trans", "account_id", "disp", "account_id"),), ()))
@@ -339,8 +338,8 @@ def test_bucket_premise_false_needed_when_pred_is_clean():
     assert "pred_missing_table" in f.flags
 
 
-_MN_MODEL = _MODEL.replace('        cardinality: "1:N"\n      - name: trans_to_account',
-                           '        cardinality: "M:N"\n      - name: trans_to_account')
+_MN_MODEL = _MODEL.replace('    cardinality: "1:N"\n  - name: trans_to_account',
+                           '    cardinality: "M:N"\n  - name: trans_to_account')
 
 
 def test_bucket_path_blocked_for_mn_without_exemption():

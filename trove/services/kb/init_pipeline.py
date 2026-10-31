@@ -338,30 +338,28 @@ def _backfill_values(
     added: dict[str, int] = {}
     if not probed:
         return added
-    for entry in semantic_doc.get("semantic_model", []) or []:
-        if not isinstance(entry, dict):
+    # 0.2 扁平根:semantic_doc 本身就是模型。
+    for dataset in semantic_doc.get("datasets", []) or []:
+        if not isinstance(dataset, dict):
             continue
-        for dataset in entry.get("datasets", []) or []:
-            if not isinstance(dataset, dict):
+        ds_name = str(dataset.get("name", ""))
+        columns = probed.get(ds_name) or {}
+        if not columns:
+            continue
+        for fld in dataset.get("fields", []) or []:
+            if not isinstance(fld, dict):
                 continue
-            ds_name = str(dataset.get("name", ""))
-            columns = probed.get(ds_name) or {}
-            if not columns:
+            values = columns.get(str(fld.get("name", "")))
+            if not values:
                 continue
-            for fld in dataset.get("fields", []) or []:
-                if not isinstance(fld, dict):
-                    continue
-                values = columns.get(str(fld.get("name", "")))
-                if not values:
-                    continue
-                if "values" in fld or fld.get("enum_display"):
-                    continue
-                if (fld.get("ai_context") or {}).get("value_aliases"):
-                    continue
-                if is_temporal_field(fld):
-                    continue
-                fld["values"] = [str(v) for v in values]
-                added[f"{ds_name}.{fld.get('name', '')}"] = len(values)
+            if "values" in fld or fld.get("enum_display"):
+                continue
+            if (fld.get("ai_context") or {}).get("value_aliases"):
+                continue
+            if is_temporal_field(fld):
+                continue
+            fld["values"] = [str(v) for v in values]
+            added[f"{ds_name}.{fld.get('name', '')}"] = len(values)
     return added
 
 

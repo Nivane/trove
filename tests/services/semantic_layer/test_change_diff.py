@@ -8,57 +8,56 @@ import pytest
 from trove.services.semantic_layer import models as sem_models
 from trove.services.semantic_layer.diff import _entity_rows, build_change_diff
 
-RICH_YAML = """version: 0.2.0.dev0
-semantic_model:
-- name: demo
-  datasets:
-  - name: loan
-    source: loan
-    primary_key: [loan_id]
-    entity:
-      display_name: 贷款
-      natural_keys: [loan_id]
-      aliases: [借款]
-    fields:
-    - name: amount
-      datatype: Real
-      expression:
-        dialects:
-        - {dialect: ANSI_SQL, expression: amount}
-    - name: region
-      datatype: String
-      expression:
-        dialects:
-        - {dialect: ANSI_SQL, expression: region}
-  - name: customer
-    source: customer
-    primary_key: [customer_id]
-    fields:
-    - name: customer_id
-      datatype: Integer
-      expression:
-        dialects:
-        - {dialect: ANSI_SQL, expression: customer_id}
-  relationships:
-  - name: loan_to_customer
-    from: loan
-    to: customer
-    from_columns: [customer_id]
-    to_columns: [customer_id]
-    display_name: 属于
-  metrics:
-  - name: total_loan
+RICH_YAML = """version: "0.2.0.dev0"
+name: demo
+datasets:
+- name: loan
+  source: loan
+  primary_key: [loan_id]
+  entity:
+    display_name: 贷款
+    natural_keys: [loan_id]
+    aliases: [借款]
+  fields:
+  - name: amount
+    datatype: Real
     expression:
       dialects:
-      - {dialect: ANSI_SQL, expression: SUM(loan.amount)}
-  topics:
-  - name: credits
-    datasets: [loan]
-  hierarchies:
-  - name: product_hierarchy
-    display_name: 产品层级
-    dataset: loan
-    levels: [loan_id, amount]
+      - {dialect: ANSI_SQL, expression: amount}
+  - name: region
+    datatype: String
+    expression:
+      dialects:
+      - {dialect: ANSI_SQL, expression: region}
+- name: customer
+  source: customer
+  primary_key: [customer_id]
+  fields:
+  - name: customer_id
+    datatype: Integer
+    expression:
+      dialects:
+      - {dialect: ANSI_SQL, expression: customer_id}
+relationships:
+- name: loan_to_customer
+  from: loan
+  to: customer
+  from_columns: [customer_id]
+  to_columns: [customer_id]
+  display_name: 属于
+metrics:
+- name: total_loan
+  expression:
+    dialects:
+    - {dialect: ANSI_SQL, expression: SUM(loan.amount)}
+topics:
+- name: credits
+  datasets: [loan]
+hierarchies:
+- name: product_hierarchy
+  display_name: 产品层级
+  dataset: loan
+  levels: [loan_id, amount]
 """
 
 
@@ -191,15 +190,15 @@ def test_dataset_row_compares_field_names_only():
 def test_build_change_diff_adapts_draft_diff():
     """details = 逐 payload 的 _draft_diff 原样透传（带 carryover 语义）。"""
     base = {"version": "0.2.0.dev0",
-            "semantic_model": [{"name": "demo", "datasets": [], "metrics": [
+"name": "demo", "datasets": [], "metrics": [
                 {"name": "total_loan", "expression": {"dialects": [
-                    {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]}}]}]}
+                    {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]}}]}
     payloads = [{"kind": "metric", "action": "upsert", "name": "total_loan",
                  "payload": {"expression": "SUM(loan.amount) - SUM(loan.refund)"}}]
     after = {"version": "0.2.0.dev0",
-             "semantic_model": [{"name": "demo", "datasets": [], "metrics": [
+"name": "demo", "datasets": [], "metrics": [
                  {"name": "total_loan", "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount) - SUM(loan.refund)"}]}}]}]}
+                     {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount) - SUM(loan.refund)"}]}}]}
     diff = build_change_diff(base, after, payloads, dialect="sqlite")
     assert diff.entities["metrics"].modified == ["total_loan"]
     assert diff.details and diff.details[0]["name"] == "total_loan"
@@ -209,12 +208,14 @@ def test_build_change_diff_adapts_draft_diff():
 
 
 def test_added_and_removed():
-    base = {"semantic_model": [{"name": "demo", "datasets": [],
+    base = {"version": "0.2.0.dev0",
+"name": "demo", "datasets": [],
             "metrics": [{"name": "a", "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "SUM(t.x)"}]}}]}]}
-    after = {"semantic_model": [{"name": "demo", "datasets": [],
+                {"dialect": "ANSI_SQL", "expression": "SUM(t.x)"}]}}]}
+    after = {"version": "0.2.0.dev0",
+"name": "demo", "datasets": [],
              "metrics": [{"name": "b", "expression": {"dialects": [
-                 {"dialect": "ANSI_SQL", "expression": "SUM(t.y)"}]}}]}]}
+                 {"dialect": "ANSI_SQL", "expression": "SUM(t.y)"}]}}]}
     diff = build_change_diff(base, after, [])
     assert diff.entities["metrics"].added == ["b"]
     assert diff.entities["metrics"].removed == ["a"]
@@ -222,6 +223,7 @@ def test_added_and_removed():
 
 def test_unparseable_docs_degrade_to_details_only():
     """坏文档不抛：实体层退化为空比对（diff 是评审辅助,不是门禁）。"""
-    diff = build_change_diff({"not": "a model"}, None, [])
+    bad = {"version": "0.2.0.dev0", "metrics": [{"name": "m"}]}  # 无 expression
+    diff = build_change_diff(bad, None, [])
     assert diff.entities == {}
     assert diff.details == []

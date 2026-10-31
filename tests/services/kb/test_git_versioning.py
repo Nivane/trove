@@ -46,7 +46,7 @@ def _kb_with_git(repo: Path, kb_sub: str = ".trove/kb") -> KbService:
 
 def test_commit_creates_audit_commit(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model:\n  - name: demo\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\nname: demo\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init demo")
 
@@ -61,7 +61,7 @@ def test_commit_not_in_repo_is_noop(tmp_path: Path):
     kb = KbService(tmp_path / "proj")  # tmp 下无 .git
     kb.kb_dir.mkdir(parents=True, exist_ok=True)
     (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: x")
 
@@ -71,7 +71,7 @@ def test_commit_not_in_repo_is_noop(tmp_path: Path):
 
 def test_commit_disabled_is_noop(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=False).commit("demo", "semantic: x")
 
@@ -82,7 +82,7 @@ def test_commit_disabled_is_noop(git_repo: Path):
 def test_commit_nothing_changed_is_noop(git_repo: Path):
     kb = _kb_with_git(git_repo)
     path = kb.semantics_path("demo")
-    path.write_text("semantic_model: []\n", encoding="utf-8")
+    path.write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init demo")
 
     # 同一内容再提交 → 无变更
@@ -95,7 +95,7 @@ def test_commit_nothing_changed_is_noop(git_repo: Path):
 def test_commit_explicit_files_only(git_repo: Path):
     """只 stage 指定的文件,不扫进同一数据源的其他 YAML。"""
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     (kb.kb_dir / "demo" / "examples.yml").write_text("examples: []\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit(
@@ -111,7 +111,7 @@ def test_commit_deleted_datasource(git_repo: Path):
     """delete_kb:整个数据源目录删除也能记录。"""
     kb = _kb_with_git(git_repo)
     path = kb.semantics_path("demo")
-    path.write_text("semantic_model: []\n", encoding="utf-8")
+    path.write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init demo")
     path.unlink()
 
@@ -239,7 +239,7 @@ def test_commit_falls_back_when_no_identity(tmp_path: Path, monkeypatch):
     # 想构造的前提。不清它,这条测试只在探测不出身份的机器上才过。
     _git(repo, "config", "user.useConfigOnly", "true")
     kb = _kb_with_git(repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init demo")
 
@@ -255,10 +255,10 @@ def test_commit_refused_by_lint_gate(git_repo: Path):
     """lint 发现问题 → commit 拒绝,暂存回滚,文件保留在工作区改动。"""
     kb = _kb_with_git(git_repo)
     kb.semantics_path("demo").write_text(
-        "semantic_model:\n  - name: demo\n    datasets:\n"
-        "      - name: loan\n        fields:\n"
-        "          - name: amount\n"
-        "            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n",
+        'version: "0.2.0.dev0"\nname: demo\ndatasets:\n'
+        "  - name: loan\n    fields:\n"
+        "      - name: amount\n"
+        "        expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n",
         encoding="utf-8")
 
     def bad_lint(paths):
@@ -278,7 +278,7 @@ def test_commit_refused_by_lint_gate(git_repo: Path):
 
 def test_commit_passes_clean_lint(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit(
         "demo", "semantic: ok", lint=lambda paths: [])
@@ -290,7 +290,7 @@ async def test_confirm_draft_goes_through_semantics_lint(git_repo: Path):
     """confirm 提交前跑真实 semantics lint:坏语义文件提交被拒。"""
     kb = _kb_with_git(git_repo)
     kb.semantics_path("demo").write_text(
-        "semantic_model: []\n", encoding="utf-8")
+        "version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init")
 
     from trove.services.semantic_layer.manage import SemanticManager
@@ -306,15 +306,14 @@ async def test_confirm_draft_goes_through_semantics_lint(git_repo: Path):
     # 现在写一份真正坏的文件(重复指标定义)→ semantics_lint 拒绝入库
     import yaml
     bad = {
-        "semantic_model": [{
-            "name": "demo",
-            "metrics": [
-                {"name": "m", "expression": {"dialects": [
-                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
-                {"name": "m", "expression": {"dialects": [
-                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
-            ],
-        }],
+        "version": "0.2.0.dev0",
+        "name": "demo",
+        "metrics": [
+            {"name": "m", "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
+            {"name": "m", "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
+        ],
     }
     kb.semantics_path("demo").write_text(
         yaml.safe_dump(bad, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -335,7 +334,7 @@ async def test_confirm_draft_goes_through_semantics_lint(git_repo: Path):
 
 def test_commit_carries_trailers(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
 
     result = GitKb(kb.kb_dir, enabled=True).commit(
         "demo", "semantic: confirm metric x",
@@ -397,10 +396,10 @@ async def test_confirm_draft_generator_trailer_distinguishes_batch(git_repo: Pat
 
 async def test_history_lists_commits(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
     kb.semantics_path("demo").write_text(
-        "semantic_model:\n  - name: demo\n", encoding="utf-8")
+        "version: 0.2.0.dev0\nname: demo\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v2")
 
     history = await kb.git_history("demo")
@@ -413,11 +412,11 @@ async def test_history_lists_commits(git_repo: Path):
 
 async def test_rollback_restores_previous_content(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
     v1 = _git(git_repo, "log", "-1", "--format=%H").stdout.strip()
     kb.semantics_path("demo").write_text(
-        "semantic_model:\n  - name: demo\n    metrics:\n      - name: m\n",
+        'version: "0.2.0.dev0"\nname: demo\nmetrics:\n  - name: m\n',
         encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v2")
 
@@ -431,7 +430,7 @@ async def test_rollback_restores_previous_content(git_repo: Path):
 
 async def test_rollback_bad_sha_fails(git_repo: Path):
     kb = _kb_with_git(git_repo)
-    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    kb.semantics_path("demo").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
 
     result = await kb.git_rollback("demo", "deadbeef" * 5)
@@ -471,7 +470,7 @@ def _seed_empty_semantics(kb: KbService) -> str:
     ds_dir = kb.kb_dir / "demo"
     ds_dir.mkdir(parents=True, exist_ok=True)
     path = kb.semantics_path("demo")
-    path.write_text("semantic_model: []\n", encoding="utf-8")
+    path.write_text("version: 0.2.0.dev0\n", encoding="utf-8")
     return path.read_text(encoding="utf-8")
 
 
@@ -523,8 +522,8 @@ async def test_confirm_draft_clean_semantics_still_writes(tmp_path: Path):
     ds_dir = kb.kb_dir / "demo"
     ds_dir.mkdir(parents=True, exist_ok=True)
     kb.semantics_path("demo").write_text(
-        "semantic_model:\n- name: demo\n  datasets:\n  - name: loan\n"
-        "  metrics: []\n",
+        'version: "0.2.0.dev0"\nname: demo\ndatasets:\n- name: loan\n'
+        "metrics: []\n",
         encoding="utf-8")
     manager = SemanticManager(kb)
     draft = await manager.create_draft(

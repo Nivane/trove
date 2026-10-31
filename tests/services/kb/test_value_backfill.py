@@ -157,22 +157,20 @@ def _doc() -> dict:
 
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "fin",
-            "datasets": [{
-                "name": "district",
-                "fields": [
-                    fld("district_id", "Integer", semantic_role="identifier"),
-                    fld("A2"),
-                    fld("A3"),
-                    fld("A4"),
-                    fld("updated_at", "Date", semantic_role="time"),
-                ],
-            }],
-            "metrics": [{"name": "m", "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "COUNT(district.district_id)"}]}}],
-            "relationships": [],
+        "name": "fin",
+        "datasets": [{
+            "name": "district",
+            "fields": [
+                fld("district_id", "Integer", semantic_role="identifier"),
+                fld("A2"),
+                fld("A3"),
+                fld("A4"),
+                fld("updated_at", "Date", semantic_role="time"),
+            ],
         }],
+        "metrics": [{"name": "m", "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "COUNT(district.district_id)"}]}}],
+        "relationships": [],
     }
 
 
@@ -192,7 +190,7 @@ class TestBackfillValues:
     def test_adds_missing_values_only(self):
         doc = _doc()
         added = _backfill_values(doc, PROBED)
-        fields = {f["name"]: f for f in doc["semantic_model"][0]["datasets"][0]["fields"]}
+        fields = {f["name"]: f for f in doc["datasets"][0]["fields"]}
         assert fields["A2"]["values"] == ["Benesov", "Sokolov"]
         assert fields["A3"]["values"] == ["east Bohemia", "west Bohemia"]
         assert added == {"district.A2": 2, "district.A3": 2, "district.A4": 2}
@@ -211,7 +209,7 @@ class TestBackfillValues:
     def test_does_not_touch_existing_vocabulary(self):
         """已有 values / enum_display / value_aliases 的字段一律不动。"""
         doc = _doc()
-        fields = {f["name"]: f for f in doc["semantic_model"][0]["datasets"][0]["fields"]}
+        fields = {f["name"]: f for f in doc["datasets"][0]["fields"]}
         fields["A2"]["values"] = ["hand-written"]
         fields["A3"]["enum_display"] = {"east Bohemia": "east"}
         fields["A4"]["ai_context"] = {"value_aliases": {"1000": ["one thousand"]}}
@@ -225,7 +223,7 @@ class TestBackfillValues:
     def test_explicit_empty_values_key_is_respected(self):
         """``values: []`` 是**声明过**的键(作者显式说过"没有"),不当缺失补。"""
         doc = _doc()
-        fields = {f["name"]: f for f in doc["semantic_model"][0]["datasets"][0]["fields"]}
+        fields = {f["name"]: f for f in doc["datasets"][0]["fields"]}
         fields["A2"]["values"] = []
         added = _backfill_values(doc, PROBED)
         assert "district.A2" not in added
@@ -235,7 +233,7 @@ class TestBackfillValues:
         """时间字段不写(日期取值是时点,不是取值词表;lint 同样会拦)。"""
         doc = _doc()
         _backfill_values(doc, PROBED)
-        fields = {f["name"]: f for f in doc["semantic_model"][0]["datasets"][0]["fields"]}
+        fields = {f["name"]: f for f in doc["datasets"][0]["fields"]}
         assert "values" not in fields["updated_at"]
         assert "values" not in fields["district_id"]  # 探测结果里没有的列不动
 
@@ -244,7 +242,7 @@ class TestBackfillValues:
         doc = _doc()
         added = _backfill_values(doc, {"ghost": {"A2": ["x"]}, "district": {"ghost": ["y"]}})
         assert added == {}
-        names = [f["name"] for f in doc["semantic_model"][0]["datasets"][0]["fields"]]
+        names = [f["name"] for f in doc["datasets"][0]["fields"]]
         assert names == ["district_id", "A2", "A3", "A4", "updated_at"]
 
     def test_never_renames_anything(self):
@@ -259,13 +257,13 @@ class TestBackfillValues:
         assert _backfill_values(doc, {}) == {}
         assert all(
             "values" not in f
-            for f in doc["semantic_model"][0]["datasets"][0]["fields"]
+            for f in doc["datasets"][0]["fields"]
         )
 
 
 def _names(doc: dict) -> tuple:
     """文档里所有指标/数据集/字段名(回填前后必须逐字相同)。"""
-    entry = doc["semantic_model"][0]
+    entry = doc
     return (
         tuple(m["name"] for m in entry.get("metrics", [])),
         tuple(d["name"] for d in entry.get("datasets", [])),
@@ -295,18 +293,18 @@ class TestValuesLoader:
     def test_absent_key_defaults_empty(self):
         """存量模型(无 values 键)解析结果一字不变 —— 空列表。"""
         yaml_text = """
-semantic_model:
-  - name: m
-    datasets:
-      - name: client
-        fields:
-          - name: gender
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: gender
-            semantic_role: enum
-            enum_display: {F: female, M: male}
+version: "0.2.0.dev0"
+name: m
+datasets:
+  - name: client
+    fields:
+      - name: gender
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: gender
+        semantic_role: enum
+        enum_display: {F: female, M: male}
 """
         gender = parse_ossie(yaml_text, preferred_dialect="sqlite").datasets[0].fields[0]
         assert gender.values == []
@@ -318,14 +316,14 @@ semantic_model:
         raw += [f" ' v{i} '" for i in range(2, MAX_FIELD_VALUES + 5)]
         raw += ["{bad: 1}", "['nested']"]
         yaml_text = (
-            "semantic_model:\n"
-            "  - name: m\n"
-            "    datasets:\n"
-            "      - name: t\n"
-            "        fields:\n"
-            "          - name: c\n"
-            "            expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}\n"
-            "            values: [" + ", ".join(raw) + "]\n"
+            'version: "0.2.0.dev0"\n'
+            "name: m\n"
+            "datasets:\n"
+            "  - name: t\n"
+            "    fields:\n"
+            "      - name: c\n"
+            "        expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}\n"
+            "        values: [" + ", ".join(raw) + "]\n"
         )
         values = parse_ossie(yaml_text, preferred_dialect="sqlite").datasets[0].fields[0].values
         assert len(values) == MAX_FIELD_VALUES
@@ -339,14 +337,14 @@ semantic_model:
     def test_bad_shape_ignored(self):
         """``values`` 写成映射(不是数组)→ 空列表(不猜),lint 会在写盘前拦。"""
         yaml_text = """
-semantic_model:
-  - name: m
-    datasets:
-      - name: t
-        fields:
-          - name: c
-            expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}
-            values: {a: b}
+version: "0.2.0.dev0"
+name: m
+datasets:
+  - name: t
+    fields:
+      - name: c
+        expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}
+        values: {a: b}
 """
         assert parse_ossie(yaml_text, preferred_dialect="sqlite").datasets[0].fields[0].values == []
 

@@ -51,7 +51,7 @@ def _config(**kw) -> AgentConfig:
 async def test_enabled_by_kb_semantics_file(tmp_path):
     kb_path = tmp_path / "kb" / DS / "semantics.yml"
     kb_path.parent.mkdir(parents=True)
-    kb_path.write_text("semantic_model: {}\n")
+    kb_path.write_text("version: 0.2.0.dev0\n")
     adapter = _Adapter()
     provider = await build_provider(
         _Kb(kb_path), _config(), DS, adapter, root=tmp_path)
@@ -101,7 +101,7 @@ async def test_open_source_dir_does_not_report_itself_enabled(tmp_path):
 
 async def test_injected_schema_skips_the_live_read(tmp_path):
     kb_path = tmp_path / "semantics.yml"
-    kb_path.write_text("semantic_model: {}\n")
+    kb_path.write_text("version: 0.2.0.dev0\n")
     adapter = _Adapter()
     schema = SchemaInfo(tables=[TableInfo(name="t", columns=[
         ColumnInfo(name="c", type="text")])])
@@ -113,7 +113,7 @@ async def test_injected_schema_skips_the_live_read(tmp_path):
 
 async def test_dialect_is_taken_from_the_adapter(tmp_path):
     kb_path = tmp_path / "semantics.yml"
-    kb_path.write_text("semantic_model: {}\n")
+    kb_path.write_text("version: 0.2.0.dev0\n")
     provider = await build_provider(
         _Kb(kb_path), _config(), DS, _Adapter(dialect="snowflake"), root=tmp_path)
     assert provider._read == "snowflake"

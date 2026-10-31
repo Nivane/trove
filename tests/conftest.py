@@ -86,7 +86,7 @@ async def make_test_semantic_provider(registry, kb_dir):
     adapter = await registry.get(ds)
     schema = await adapter.get_schema()
     doc = generate_semantic_document(schema, model_name=ds, terms=_test_terms(schema))
-    model_entry = doc["semantic_model"][0]
+    model_entry = doc
     # 测试夹具的中文别名(生产由 kb init 起草):让中文测试问题能锚定数据集
     _ZH_ALIASES = {
         "students": ["学生", "成绩"],

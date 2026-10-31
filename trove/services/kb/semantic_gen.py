@@ -30,7 +30,7 @@ from typing import Any
 
 from trove.core.types import SchemaInfo, TableInfo
 from trove.services.kb.ossie_format import _metric_from_entry
-from trove.services.semantic_layer.ossie import OSSIE_VERSION
+from trove.services.semantic_layer.ossie import stamp_ossie_version
 
 _ANSI = "ANSI_SQL"
 
@@ -213,7 +213,7 @@ def generate_semantic_document(
     terms: list[dict[str, Any]] | None = None,
     enums: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """schema → OSSIE semantic_model 文档 dict(结构层,确定性)。
+    """schema → OSSIE 0.2 扁平根文档 dict(结构层,确定性)。
 
     Args:
         schema: adapter 的物理 schema(TableInfo/ColumnInfo 列表)。
@@ -242,10 +242,8 @@ def generate_semantic_document(
     metrics = _metrics_from_terms(terms)
     if metrics:
         model["metrics"] = metrics
-    doc: dict[str, Any] = {"semantic_model": [model]}
-    # OSSIE v0.2.0.dev0 文档级 version(透传;解析端容缺省)
-    doc["version"] = OSSIE_VERSION
-    return doc
+    # OSSIE 0.2 扁平根:version 第一键,模型字段直接在文档根。
+    return stamp_ossie_version(model)
 
 
 def _apply_enum_roles(

@@ -1,15 +1,23 @@
-"""Apache Ossie semantic model parser (core spec, v0.2.0.dev0).
+"""Apache Ossie semantic model parser (core spec, v0.2 flat root).
 
-Reads the parts relevant to NL→SQL plus the spec's extensibility surface:
-- `semantic_model → datasets` (source, primary_key, unique_keys, fields
-  with datatype / dimension.is_time / label / synonyms) — table anchoring
-  + the declared filter/group-by vocabulary;
+Reads the parts relevant to NL→SQL plus the spec's extensibility surface.
+The document root is the model itself (OSSIE 0.2): `version` / `name` /
+`datasets` / `relationships` / `metrics` / `custom_extensions`, plus Trove
+extensions (`masking` / `topics` / `hierarchies` / `time_spine`) at the
+same level. The legacy v0.1 `semantic_model: [model]` list root is
+**refused** with a migration command — reading a newer/older root shape
+with the wrong interpreter produces a *wrong* semantic model, not a
+partially read one.
+
+- `datasets` (source, primary_key, unique_keys, fields with datatype /
+  dimension.is_time / label / synonyms) — table anchoring + the declared
+  filter/group-by vocabulary;
 - `relationships` (from → to, key pairs) — the declared join graph;
 - `metrics` (name, multi-dialect aggregate expression, datatype,
   ai_context synonyms/examples) — business metrics;
 - `custom_extensions` (vendor_name + data) — preserved/passed through;
 - model-level `ai_context` (instructions / synonyms / examples) and the
-  top-level `version` string;
+  root `version` string (required, gated against `OSSIE_VERSION`);
 - field-level `mask` + model-level `masking` (default_policy /
   bypass_scopes / hash_salt_ref) — the masking **declaration**; applying it
   to result sets is `authz/masking.py` (P4);
@@ -18,8 +26,8 @@ Reads the parts relevant to NL→SQL plus the spec's extensibility surface:
 - dataset-level `entity` (display_name / natural_keys / aliases) and
   model-level `hierarchies` (name / display_name / dataset / levels) —
   the object-view declarations (Trove 扩展); relationship-level
-  `display_name`. 全部可选,缺省 = 存量模型逐字节同前;放错层(文档根)
-  出声但忽略,与 masking/topics 同一条告警先例。
+  `display_name`. 全部可选,缺省 = 存量模型逐字节同前;`entity` 只认
+  `datasets[].entity`,写在文档根出声但忽略。
 """
 import logging
 import re
@@ -46,10 +54,144 @@ from trove.services.semantic_layer.models import (
 logger = logging.getLogger(__name__)
 
 #: 我们写出/消费的 OSSIE core spec 版本(文档级 ``version`` 的唯一权威)。
-#: 三个写入点(kb 结构生成 / flat↔OSSIE 桥接 / 变更暂存补写)都引用这里。
+#: 全部写入点(kb 结构生成 / flat↔OSSIE 桥接 / 变更暂存 / 导入落点)都经
+#: :func:`stamp_ossie_version` 盖章。
 OSSIE_VERSION = "0.2.0.dev0"
 
 _ANSI = "ANSI_SQL"
+
+#: 旧 v0.1 根形状的迁移命令(写进拒绝文案,保证可执行)。
+MIGRATE_SEMANTICS_COMMAND = (
+    "uv run python scripts/migrate_semantics_v02.py "
+    "--kb-dir .trove/kb --all --write"
+)
+
+_LEGACY_ROOT_REFUSAL = (
+    "旧版 v0.1 文档（semantic_model 列表包装）已不再支持；请先迁移："
+    f"{MIGRATE_SEMANTICS_COMMAND}（或运行 /kb migrate 查看原因）"
+)
+
+#: 闭集版本比较器:数字段 + 可选 dev/a/beta/rc 阶段 + 可选数字。
+#: 刻意不引入 ``packaging``(不是直接依赖),也**不猜**闭集外的写法。
+_VERSION_RE = re.compile(
+    r"^(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[.-]?(?P<stage>dev|alpha|a|beta|b|rc)[.-]?(?P<pre>\d*))?$",
+    re.IGNORECASE,
+)
+_STAGE_RANK = {
+    "dev": 0,
+    "alpha": 1,
+    "a": 1,
+    "beta": 2,
+    "b": 2,
+    "rc": 3,
+    None: 4,
+}
+
+
+class OssieFormatError(ValueError):
+    """语义文档根形状/版本不可解释(读端拒绝或写端拒绝降级)。"""
+
+
+def parse_version_key(text: object) -> tuple[tuple[int, ...], int, int] | None:
+    """OSSIE ``version`` → 可比较键;闭集外返回 ``None``(调用方拒绝)。
+
+    ``dev < alpha/a < beta/b < rc < release``;缺省数字段在比较时补 0,
+    因此 ``0.2`` == ``0.2.0``。``0.2.0`` **新于** ``0.2.0.dev0``。
+    """
+    if not isinstance(text, str):
+        return None
+    raw = text.strip()
+    m = _VERSION_RE.match(raw)
+    if m is None:
+        return None
+    release = tuple(int(part) for part in m.group("release").split("."))
+    stage = m.group("stage")
+    rank = _STAGE_RANK[stage.lower() if stage else None]
+    return release, rank, int(m.group("pre") or 0)
+
+
+def _version_cmp(left: tuple[tuple[int, ...], int, int],
+                 right: tuple[tuple[int, ...], int, int]) -> bool:
+    """补零后比较,避免 ``0.2`` 被当成短于 ``0.2.0``。"""
+    width = max(len(left[0]), len(right[0]))
+    a = left[0] + (0,) * (width - len(left[0]))
+    b = right[0] + (0,) * (width - len(right[0]))
+    return (a, left[1], left[2]) > (b, right[1], right[2])
+
+
+def is_legacy_document(data: object) -> bool:
+    """v0.1 列表包装(``semantic_model: [...]``)检测。"""
+    return isinstance(data, dict) and "semantic_model" in data
+
+
+def is_newer_document(data: object) -> bool:
+    """文档声明的 OSSIE 版本是否比本程序支持的新。
+
+    新版本**永远不可改写**(``force`` 也不行):覆盖它等于用旧解释毁掉一份
+    新资产。其它拒绝(legacy / 缺版本 / 坏版本)可以由人显式 ``force``
+    整体替换。
+    """
+    if not isinstance(data, dict):
+        return False
+    key = parse_version_key(data.get("version"))
+    current = parse_version_key(OSSIE_VERSION)
+    return key is not None and current is not None and _version_cmp(key, current) > 0
+
+
+def document_refusal(data: object) -> str | None:
+    """语义文档能否按当前解释读取;不能则返回可操作原因。
+
+    ``None`` = 可读。空文档(``{}`` / ``None``)是"尚未落盘"的新文档,
+    写路径会盖章,读路径按空模型处理。非空文档必须带可解析的
+    ``version``,且不得比 :data:`OSSIE_VERSION` 新。
+    """
+    if not data:
+        return None
+    if not isinstance(data, dict):
+        return "OSSIE 文档根必须是映射（mapping）"
+    if is_legacy_document(data):
+        return _LEGACY_ROOT_REFUSAL
+    version = data.get("version")
+    if version is None or (isinstance(version, str) and not version.strip()):
+        return "缺少 OSSIE version（0.2 扁平根要求非空字符串）"
+    if not isinstance(version, str):
+        return "OSSIE version 必须是字符串"
+    key = parse_version_key(version)
+    if key is None:
+        return f"无法解析的 OSSIE version: {version!r}"
+    if is_newer_document(data):
+        return (
+            f"文件声明的 OSSIE version {version} 比本程序支持的 "
+            f"{OSSIE_VERSION} 更新；请升级 Trove 或回退文件版本"
+        )
+    return None
+
+
+def stamp_ossie_version(doc: dict) -> dict:
+    """写路径统一盖章:返回 ``version`` 在第一键的扁平 0.2 文档。
+
+    缺 ``version`` 的**新构造**文档补当前版本;更老的扁平版升级到当前;
+    更新版本/坏版本/legacy 包装拒绝(绝不静默降级)。
+    """
+    if not isinstance(doc, dict):
+        raise OssieFormatError("OSSIE 文档根必须是映射（mapping）")
+    if is_legacy_document(doc):
+        raise OssieFormatError(_LEGACY_ROOT_REFUSAL)
+    version = doc.get("version")
+    if version is not None:
+        if not isinstance(version, str) or not version.strip():
+            raise OssieFormatError("OSSIE version 必须是非空字符串")
+        key = parse_version_key(version)
+        if key is None:
+            raise OssieFormatError(f"无法解析的 OSSIE version: {version!r}")
+        current = parse_version_key(OSSIE_VERSION)
+        if current is not None and _version_cmp(key, current) > 0:
+            raise OssieFormatError(
+                f"不能把更新的 OSSIE version {version} 写成本程序支持的 "
+                f"{OSSIE_VERSION}")
+    rest = {key: value for key, value in doc.items() if key != "version"}
+    return {"version": OSSIE_VERSION, **rest}
 
 # 正则回退:表达式 SQLGlot 解析失败时提取 数据集.字段 引用
 _DATASET_REF_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -176,44 +318,33 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     """Parse an Ossie semantic model YAML into SemanticModel.
 
     Args:
-        text: OSSIE YAML content (spec: top-level `semantic_model` list).
+        text: OSSIE YAML content (spec: 0.2 flat root; the model itself).
         preferred_dialect: active adapter dialect; expression picking
             prefers it, then ANSI_SQL, then the first available.
 
     Raises:
-        ValueError: no `semantic_model` entry or a metric has no
-            expression (structural problems, not per-metric drops).
+        ValueError: the root is unreadable or a metric has no expression
+            (structural problems, not per-metric drops).
     """
     data = yaml.safe_load(text) or {}
-    models = data.get("semantic_model") or []
-    if not models:
-        raise ValueError("no semantic_model found in OSSIE YAML")
-    if len(models) > 1:
-        logger.warning("OSSIE file has %d semantic models; using the first", len(models))
-    top = models[0]
-    if not isinstance(top, dict):
-        raise ValueError("semantic_model entry must be a mapping")
+    if not isinstance(data, dict):
+        raise OssieFormatError("OSSIE document root must be a mapping")
+    # 先过版本门:根形状/版本不认识的文档**一个字段都不读** —— 旧代码把
+    # 不认识的文档当认识的读,产出的不是「少读几个字段」,是一个错的语义
+    # 模型,它会进编译器、进权威 SQL、进答案。
+    refusal = document_refusal(data)
+    if refusal is not None:
+        raise OssieFormatError(refusal)
+    top = data
     version = str(data.get("version") or "").strip()
 
-    # 脱敏策略挂在**模型入口**下(与 time_spine / ai_context 同层):文档顶层
-    # 是被忽略的,而静默忽略 = 静默不脱敏 —— 出声,并在 lint 侧拦写盘。
-    if "masking" in data and "masking" not in top:
-        logger.warning(
-            "masking at document top level is ignored; declare it under "
-            "semantic_model[0] (same level as time_spine)")
-
-    # 对象视图声明同样只认**声明位置**:entity 在 dataset 子块下(不是模型级、
-    # 更不是文档根),hierarchies 在 semantic_model[0] 下。放错层静默忽略会
-    # 让「对象看起来声明了、投影里却没有」成为一次无痕的失败 —— 出声,并在
+    # `entity` 只认**声明位置**:datasets[].entity。写在文档根静默忽略会让
+    # 「对象看起来声明了、投影里却没有」成为一次无痕的失败 —— 出声,并在
     # lint 侧拦写盘(与 masking/topics 同一条双守卫先例)。
-    if "entity" in data and "entity" not in top:
+    if "entity" in data:
         logger.warning(
-            "entity at document top level is ignored; declare it under the "
-            "dataset it belongs to (semantic_model[0].datasets[].entity)")
-    if "hierarchies" in data and "hierarchies" not in top:
-        logger.warning(
-            "hierarchies at document top level is ignored; declare it under "
-            "semantic_model[0] (same level as time_spine)")
+            "entity at document root is ignored; declare it under "
+            "datasets[].entity (the dataset it belongs to)")
 
     declared = {d.get("name") for d in top.get("datasets", []) or [] if d.get("name")}
 
@@ -355,13 +486,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     # 模型级脱敏策略(缺省 = 惰性:A11 存量模型行为不变)
     masking = _masking_policy(top.get("masking"))
 
-    # 业务主题域(Trove 扩展,可选段)。与 masking 同层:`semantic_model[0]`
-    # 下。写在文档顶层会被忽略 —— 忽略一个**收敛边界**比忽略一个展示字段
-    # 更危险(主题看起来生效了,范围其实没收),所以出声 + lint 拦写盘。
-    if "topics" in data and "topics" not in top:
-        logger.warning(
-            "topics at document top level is ignored; declare it under "
-            "semantic_model[0] (same level as time_spine)")
+    # 业务主题域(Trove 扩展,可选段):0.2 扁平根下就在模型根。
     topics: list[TopicDomain] = []
     for t in top.get("topics", []) or []:
         if not isinstance(t, dict) or not str(t.get("name") or "").strip():

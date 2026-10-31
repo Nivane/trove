@@ -189,24 +189,27 @@ class TestIdentityAndStructure:
 
     def test_nested_entries_merge_at_their_own_granularity(self):
         """`datasets[].fields[]` 有自己的身份键 → 在字段粒度上合并。"""
-        base = {"semantic_model": [{"name": "demo", "datasets": [{
+        base = {"version": "0.2.0.dev0",
+"name": "demo", "datasets": [{
             "name": "loan", "fields": [
                 {"name": "amount", "description": "生成方的"},
                 {"name": "status", "description": "状态"},
-            ]}]}]}
-        ours = {"semantic_model": [{"name": "demo", "datasets": [{
+            ]}]}
+        ours = {"version": "0.2.0.dev0",
+"name": "demo", "datasets": [{
             "name": "loan", "fields": [
                 {"name": "amount", "description": "人写准的"},
                 {"name": "status", "description": "状态"},
-            ]}]}]}
-        theirs = {"semantic_model": [{"name": "demo", "datasets": [{
+            ]}]}
+        theirs = {"version": "0.2.0.dev0",
+"name": "demo", "datasets": [{
             "name": "loan", "fields": [
                 {"name": "amount", "description": "生成方新写的"},
                 {"name": "status", "description": "状态"},
                 {"name": "date", "description": "日期"},
-            ]}]}]}
+            ]}]}
         r = merge3(base, ours, theirs, "semantics.yml")
-        fields = r.doc["semantic_model"][0]["datasets"][0]["fields"]
+        fields = r.doc["datasets"][0]["fields"]
         assert [f["name"] for f in fields] == ["amount", "status", "date"]
         assert fields[0]["description"] == "人写准的", "字段粒度:人的编辑存活"
         assert fields[1]["description"] == "状态", "双方都没动的字段原样留着"
@@ -217,9 +220,9 @@ class TestIdentityAndStructure:
     def test_top_level_scalars_merge_by_the_same_rule(self):
         """OSSIE ``version`` 这类顶层标量走同一条规则。"""
         r = merge3(
-            {"version": "0.1.2", "semantic_model": []},
-            {"version": "0.1.2", "semantic_model": []},
-            {"version": "0.1.3", "semantic_model": []},
+            {"version": "0.1.2"},
+            {"version": "0.1.2"},
+            {"version": "0.1.3"},
             "semantics.yml",
         )
         assert r.doc["version"] == "0.1.3"

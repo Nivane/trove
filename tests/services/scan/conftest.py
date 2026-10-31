@@ -23,37 +23,37 @@ TODAY = date(2026, 9, 27)
 #: 与 ``trove/services/scan/service.py`` 的 provider 构造同源:语义模型
 #: 写在 KB 的 semantics.yml 里,provider 直接读它。
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        source: loan
-        description: "loan records; columns: region, amount, date"
-        fields:
-          - name: region
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.region}]
-            datatype: TEXT
-            semantic_role: dimension
-          - name: amount
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.amount}]
-            datatype: DOUBLE
-            semantic_role: measure
-          - name: date
-            expression:
-              dialects: [{dialect: sqlite, expression: loan.date}]
-            datatype: DATE
-            semantic_role: time
-    metrics:
-      - name: loan_balance
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    source: loan
+    description: "loan records; columns: region, amount, date"
+    fields:
+      - name: region
         expression:
-          dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
-        agg_time_dimension: loan.date
-      - name: loan_count
+          dialects: [{dialect: sqlite, expression: loan.region}]
+        datatype: TEXT
+        semantic_role: dimension
+      - name: amount
         expression:
-          dialects: [{dialect: sqlite, expression: COUNT(loan.amount)}]
-        agg_time_dimension: loan.date
+          dialects: [{dialect: sqlite, expression: loan.amount}]
+        datatype: DOUBLE
+        semantic_role: measure
+      - name: date
+        expression:
+          dialects: [{dialect: sqlite, expression: loan.date}]
+        datatype: DATE
+        semantic_role: time
+metrics:
+  - name: loan_balance
+    expression:
+      dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
+    agg_time_dimension: loan.date
+  - name: loan_count
+    expression:
+      dialects: [{dialect: sqlite, expression: COUNT(loan.amount)}]
+    agg_time_dimension: loan.date
 """
 
 ROWS = """

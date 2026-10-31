@@ -21,75 +21,74 @@ from trove.services.semantic_layer.object_graph import build_object_graph
 from trove.services.semantic_layer.ossie import parse_ossie
 
 RICH_YAML = """
-version: 0.2.0.dev0
-semantic_model:
-  - name: demo
-    description: 对象视图往返样例
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        entity:
-          display_name: 贷款
-          natural_keys: [loan_id]
-          aliases: [借款]
-        fields:
-          - name: loan_id
-            datatype: Integer
-            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-          - name: amount
-            datatype: Real
-            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
-      - name: customer
-        source: customer
-        primary_key: [customer_id]
-        fields:
-          - name: customer_id
-            datatype: Integer
-            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
-    relationships:
-      - name: loan_to_customer
-        from: loan
-        to: customer
-        from_columns: [customer_id]
-        to_columns: [customer_id]
-        display_name: 属于
-      - name: customer_to_loan
-        from: customer
-        to: loan
-        from_columns: [loan_id]
-        to_columns: [loan_id]
-        cardinality: N:1
-        fan_out: dedup
-    metrics:
-      - name: total_loan
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
-    hierarchies:
-      - name: product_hierarchy
-        display_name: 产品层级
-        dataset: loan
-        levels: [loan_id, amount]
+version: "0.2.0.dev0"
+name: demo
+description: 对象视图往返样例
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    entity:
+      display_name: 贷款
+      natural_keys: [loan_id]
+      aliases: [借款]
+    fields:
+      - name: loan_id
+        datatype: Integer
+        expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+      - name: amount
+        datatype: Real
+        expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
+  - name: customer
+    source: customer
+    primary_key: [customer_id]
+    fields:
+      - name: customer_id
+        datatype: Integer
+        expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
+relationships:
+  - name: loan_to_customer
+    from: loan
+    to: customer
+    from_columns: [customer_id]
+    to_columns: [customer_id]
+    display_name: 属于
+  - name: customer_to_loan
+    from: customer
+    to: loan
+    from_columns: [loan_id]
+    to_columns: [loan_id]
+    cardinality: N:1
+    fan_out: dedup
+metrics:
+  - name: total_loan
+    expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+hierarchies:
+  - name: product_hierarchy
+    display_name: 产品层级
+    dataset: loan
+    levels: [loan_id, amount]
 """
 
 PLAIN_YAML = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        fields:
-          - name: loan_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
-    relationships:
-      - name: loan_to_loan
-        from: loan
-        to: loan
-        from_columns: [loan_id]
-        to_columns: [loan_id]
-    metrics:
-      - name: total_loan
-        expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(loan.loan_id)}]}
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    fields:
+      - name: loan_id
+        expression: {dialects: [{dialect: ANSI_SQL, expression: loan_id}]}
+relationships:
+  - name: loan_to_loan
+    from: loan
+    to: loan
+    from_columns: [loan_id]
+    to_columns: [loan_id]
+metrics:
+  - name: total_loan
+    expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(loan.loan_id)}]}
 """
 
 
@@ -160,9 +159,7 @@ def _canonical_doc(view: dict) -> dict:
             }
             for h in view["hierarchies"]
         ]
-    doc: dict = {"semantic_model": [model]}
-    if view["version"]:
-        doc["version"] = view["version"]
+    doc: dict = {"version": view["version"] or "0.2.0.dev0", **model}
     return doc
 
 
@@ -295,7 +292,7 @@ def test_absent_declarations_stay_absent_in_the_circle():
     「未声明」在声明层保持缺席,不发明空脚手架(空块与缺席不同义)。"""
     canonical, view, _ = _circle(PLAIN_YAML)
     doc = yaml.safe_load(canonical)
-    model = doc["semantic_model"][0]
+    model = doc
     assert all("entity" not in ds for ds in model["datasets"])
     assert all("display_name" not in r for r in model["relationships"])
     assert "hierarchies" not in model

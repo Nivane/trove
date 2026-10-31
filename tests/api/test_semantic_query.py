@@ -4,58 +4,54 @@ import yaml
 
 SEMANTICS = yaml.safe_dump({
     "version": "0.1.0",
-    "semantic_model": [{
-        "name": "test_db",
-        "datasets": [{
-            "name": "students",
-            "source": "students",
-            "primary_key": ["id"],
-            "fields": [
-                {"name": "id", "datatype": "Integer",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]}},
-                {"name": "grade", "datatype": "Integer",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
-                {"name": "county", "datatype": "String",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "county"}]}},
-            ],
-        }],
-        "metrics": [{
-            "name": "平均成绩",
-            "description": "学生平均分",
-            "expression": {
-                "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
-            },
-            "ai_context": {"synonyms": ["均分"]},
-        }],
+    "name": "test_db",
+    "datasets": [{
+        "name": "students",
+        "source": "students",
+        "primary_key": ["id"],
+        "fields": [
+            {"name": "id", "datatype": "Integer",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]}},
+            {"name": "grade", "datatype": "Integer",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
+            {"name": "county", "datatype": "String",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "county"}]}},
+        ],
+    }],
+    "metrics": [{
+        "name": "平均成绩",
+        "description": "学生平均分",
+        "expression": {
+            "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
+        },
+        "ai_context": {"synonyms": ["均分"]},
     }],
 }, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 MASKED_SEMANTICS = yaml.safe_dump({
     "version": "0.2.0.dev0",
-    "semantic_model": [{
-        "name": "test_db",
-        "masking": {"default_policy": "apply"},
-        "datasets": [{
-            "name": "students",
-            "source": "students",
-            "primary_key": ["id"],
-            "fields": [
-                {"name": "id", "datatype": "Integer",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]}},
-                {"name": "grade", "datatype": "Integer",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
-                {"name": "county", "datatype": "String", "mask": "partial",
-                 "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "county"}]}},
-            ],
-        }],
-        "metrics": [{
-            "name": "平均成绩",
-            "description": "学生平均分",
-            "expression": {
-                "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
-            },
-        }],
+    "name": "test_db",
+    "masking": {"default_policy": "apply"},
+    "datasets": [{
+        "name": "students",
+        "source": "students",
+        "primary_key": ["id"],
+        "fields": [
+            {"name": "id", "datatype": "Integer",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]}},
+            {"name": "grade", "datatype": "Integer",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
+            {"name": "county", "datatype": "String", "mask": "partial",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "county"}]}},
+        ],
+    }],
+    "metrics": [{
+        "name": "平均成绩",
+        "description": "学生平均分",
+        "expression": {
+            "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
+        },
     }],
 }, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

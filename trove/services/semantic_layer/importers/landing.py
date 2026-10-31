@@ -24,7 +24,12 @@ from trove.services.semantic_layer.importers.base import (
 )
 from trove.services.semantic_layer.issues import blocking_issues, structured_issues
 from trove.services.semantic_layer.manage import _apply_draft
-from trove.services.semantic_layer.ossie import OSSIE_VERSION, parse_ossie
+from trove.services.semantic_layer.ossie import (
+    document_refusal,
+    is_legacy_document,
+    parse_ossie,
+    stamp_ossie_version,
+)
 
 _ANSI = "ANSI_SQL"
 _DUMP_KWARGS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -93,7 +98,7 @@ def build_document(imported: ImportedSemantic, *, model_name: str) -> dict[str, 
         model["metrics"] = metrics
     if relationships:
         model["relationships"] = relationships
-    return {"version": OSSIE_VERSION, "semantic_model": [model]}
+    return stamp_ossie_version(model)
 
 
 def build_payloads(imported: ImportedSemantic) -> list[dict[str, Any]]:
@@ -165,10 +170,14 @@ def load_document(path: Path) -> dict[str, Any]:
 
 
 def has_model(doc: dict[str, Any]) -> bool:
-    models = doc.get("semantic_model") if isinstance(doc, dict) else None
-    if not isinstance(models, list) or not models:
+    """现有文档里有没有可投影的模型(0.2 扁平根;legacy 也算占用)。"""
+    if not isinstance(doc, dict):
         return False
-    model = models[0] if isinstance(models[0], dict) else {}
+    if is_legacy_document(doc):
+        models = doc.get("semantic_model") or []
+        model = models[0] if models and isinstance(models[0], dict) else {}
+    else:
+        model = doc
     return bool(model.get("datasets") or model.get("metrics") or model.get("relationships"))
 
 
@@ -183,7 +192,13 @@ def preview_report(
     """零写入报告:目标文档 / 投影后的 lint / 落点建议。"""
     occupied = has_model(existing)
     blocking: list[str] = []
-    if occupied:
+    refusal = document_refusal(existing)
+    if refusal:
+        # 现有文件不可解释(legacy / 缺版本 / 更新版本):不往它上面投影,
+        # 只报阻断,让管理员先迁移/升级。
+        blocking.append(f"现有 semantics.yml 不可读: {refusal}")
+        projected = build_document(imported, model_name=datasource)
+    elif occupied:
         projected = copy.deepcopy(existing)
         for payload in build_payloads(imported):
             fake = {
@@ -226,6 +241,10 @@ async def land_bootstrap(
 ) -> dict[str, Any]:
     path = kb.semantics_path(datasource)
     existing = load_document(path)
+    if is_legacy_document(existing) and not force:
+        raise SemanticImportError(
+            f"数据源 {datasource} 的 semantics.yml 仍是旧版 v0.1 数组包装 —— "
+            "请先迁移(scripts/migrate_semantics_v02.py),或显式 --force 整体覆盖")
     if has_model(existing) and not force:
         raise SemanticImportError(
             f"数据源 {datasource} 已有非空语义模型 —— bootstrap 会整体覆盖。"
@@ -292,6 +311,10 @@ async def land_stage(
     dialect: str = "mysql",
 ) -> dict[str, Any]:
     existing = load_document(kb.semantics_path(datasource))
+    if is_legacy_document(existing):
+        raise SemanticImportError(
+            f"数据源 {datasource} 的 semantics.yml 仍是旧版 v0.1 数组包装 —— "
+            "请先迁移(scripts/migrate_semantics_v02.py),再走 stage 增量审批")
     if not has_model(existing):
         raise SemanticImportError(
             f"数据源 {datasource} 还没有语义模型 —— stage 是增量审批,"

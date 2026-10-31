@@ -56,7 +56,10 @@ class FileSpec:
 #: 误当成生成物。
 FILE_SPECS: dict[str, FileSpec | None] = {
     "schema_notes.yml": FileSpec("tables", "name"),
-    "semantics.yml": FileSpec("semantic_model", "name"),
+    # ``semantics.yml`` 自 OSSIE 0.2 起是**扁平根文档**(datasets/metrics/
+    # relationships/… 直接在根),没有单一 section 可定键 —— 走不在表里的
+    # 通用整文档规则:嵌套列表按 ``name`` 合并(datasets/fields/metrics/…),
+    # 顶层标量按三方规则合并。``version`` 由写端在合并前后剥/盖,不进这里。
     "examples.yml": FileSpec("examples", "question"),
     "lessons.yml": FileSpec("lessons", "pattern"),
     "rules.yml": None,

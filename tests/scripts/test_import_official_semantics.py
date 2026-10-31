@@ -46,46 +46,44 @@ def _dump(doc) -> str:
 def _kb_doc() -> dict:
     """三个 dataset:sales 无官方文档(必须一字不动)。"""
     return {
-        "semantic_model": [{
-            "name": "t",
-            "datasets": [
-                {
-                    "name": "loan",
-                    "fields": [
-                        {"name": "loan_id", "semantic_role": "key", "datatype": "integer",
-                         "ai_context": {"synonyms": ["loan number"]},
-                         "description": "unique identifier for each loan"},
-                        {"name": "status", "semantic_role": "dimension", "datatype": "text",
-                         "enum_display": {"A": "active", "B": "closed"},
-                         "ai_context": {"synonyms": []},
-                         "description": "status of the loan repayment"},
-                        {"name": "amount", "semantic_role": "measure", "datatype": "integer",
-                         "ai_context": {"synonyms": []},
-                         "description": "total amount of the loan"},
-                    ],
-                },
-                {
-                    "name": "district",
-                    "fields": [
-                        {"name": "district_id", "semantic_role": "key",
-                         "datatype": "integer", "description": "unique identifier for a district"},
-                        {"name": "A9", "semantic_role": "measure", "datatype": "integer",
-                         "description": "Number of cities, ranging from 1 to 11."},
-                        {"name": "region", "semantic_role": "dimension", "datatype": "text",
-                         "ai_context": {"synonyms": []},
-                         "description": "region or area of the district"},
-                    ],
-                },
-                {
-                    "name": "sales",
-                    "fields": [
-                        {"name": "amount", "semantic_role": "measure", "datatype": "integer",
-                         "description": "sales amount"},
-                    ],
-                },
-            ],
-        }],
         "version": "0.2.0.dev0",
+        "name": "t",
+        "datasets": [
+            {
+                "name": "loan",
+                "fields": [
+                    {"name": "loan_id", "semantic_role": "key", "datatype": "integer",
+                     "ai_context": {"synonyms": ["loan number"]},
+                     "description": "unique identifier for each loan"},
+                    {"name": "status", "semantic_role": "dimension", "datatype": "text",
+                     "enum_display": {"A": "active", "B": "closed"},
+                     "ai_context": {"synonyms": []},
+                     "description": "status of the loan repayment"},
+                    {"name": "amount", "semantic_role": "measure", "datatype": "integer",
+                     "ai_context": {"synonyms": []},
+                     "description": "total amount of the loan"},
+                ],
+            },
+            {
+                "name": "district",
+                "fields": [
+                    {"name": "district_id", "semantic_role": "key",
+                     "datatype": "integer", "description": "unique identifier for a district"},
+                    {"name": "A9", "semantic_role": "measure", "datatype": "integer",
+                     "description": "Number of cities, ranging from 1 to 11."},
+                    {"name": "region", "semantic_role": "dimension", "datatype": "text",
+                     "ai_context": {"synonyms": []},
+                     "description": "region or area of the district"},
+                ],
+            },
+            {
+                "name": "sales",
+                "fields": [
+                    {"name": "amount", "semantic_role": "measure", "datatype": "integer",
+                     "description": "sales amount"},
+                ],
+            },
+        ],
     }
 
 
@@ -149,7 +147,7 @@ def _run_main(monkeypatch, kb_dir: Path, docs_dir: Path, *flags: str) -> int:
 
 def _field(kb_dir: Path, dataset: str, name: str) -> dict:
     doc = yaml.safe_load((kb_dir / "semantics.yml").read_text(encoding="utf-8"))
-    for ds in doc["semantic_model"][0]["datasets"]:
+    for ds in doc["datasets"]:
         if ds["name"] == dataset:
             return next(f for f in ds["fields"] if f["name"] == name)
     raise AssertionError(dataset)
@@ -303,7 +301,7 @@ class TestApplyOfficial:
 
 
 def _field_of(doc: dict, dataset: str, name: str) -> dict:
-    for ds in doc["semantic_model"][0]["datasets"]:
+    for ds in doc["datasets"]:
         if ds["name"] == dataset:
             return next(f for f in ds["fields"] if f["name"] == name)
     raise AssertionError(dataset)
@@ -390,7 +388,7 @@ class TestCli:
         kb = _write_kb(tmp_path / "financial")
         docs = _write_docs(tmp_path / "fin_database_description")
         doc = yaml.safe_load((kb / "semantics.yml").read_text(encoding="utf-8"))
-        doc["semantic_model"][0]["datasets"] = [
+        doc["datasets"] = [
             {"name": "orders", "fields": [{"name": "order_id", "description": "x"}]}]
         raw = _dump(doc)
         (kb / "semantics.yml").write_text(raw, encoding="utf-8")
@@ -435,7 +433,7 @@ class TestCli:
 
         def rogue(doc, official):
             result = real(doc, official)
-            doc["semantic_model"][0]["metrics"] = [{"name": "tampered"}]
+            doc["metrics"] = [{"name": "tampered"}]
             return result
 
         monkeypatch.setattr(mod, "apply_official", rogue)
@@ -447,26 +445,27 @@ class TestCli:
 
 class TestWhitelist:
     def test_allowed_paths(self):
-        assert _allowed_change("semantic_model[0].datasets[1].fields[2].description")
-        assert _allowed_change("semantic_model[0].datasets[1].fields[2].enum_display")
-        assert _allowed_change("semantic_model[0].datasets[0].fields[0].enum_display.A")
+        assert _allowed_change("datasets[1].fields[2].description")
+        assert _allowed_change("datasets[1].fields[2].enum_display")
+        assert _allowed_change("datasets[0].fields[0].enum_display.A")
         # 新增键的路径带后缀(新增/删除/长度变化)
-        assert _allowed_change("semantic_model[0].datasets[0].fields[3].enum_display (新增)")
+        assert _allowed_change("datasets[0].fields[3].enum_display (新增)")
 
     def test_disallowed_paths(self):
         for path in (
-            "semantic_model[0].metrics[0].name",
-            "semantic_model[0].datasets[0].name",
-            "semantic_model[0].datasets[0].fields[0].ai_context",
-            "semantic_model[0].datasets (长度 3→2)",
+            "metrics[0].name",
+            "datasets[0].name",
+            "datasets[0].fields[0].ai_context",
+            "datasets (长度 3→2)",
             "version",
         ):
             assert not _allowed_change(path), path
 
     def test_changed_paths_reports_added_keys(self):
-        before = {"semantic_model": [{"datasets": [{"fields": [{"name": "a"}]}]}]}
-        after = {"semantic_model": [{"datasets": [{"fields": [
-            {"name": "a", "enum_display": {"X": "x"}}]}]}]}
+        before = {"version": "0.2.0.dev0", "datasets": [{"fields": [{"name": "a"}]}]}
+        after = {"version": "0.2.0.dev0",
+"datasets": [{"fields": [
+            {"name": "a", "enum_display": {"X": "x"}}]}]}
         paths = changed_paths(before, after)
-        assert paths == ["semantic_model[0].datasets[0].fields[0].enum_display (新增)"]
+        assert paths == ["datasets[0].fields[0].enum_display (新增)"]
         assert all(_allowed_change(p) for p in paths)

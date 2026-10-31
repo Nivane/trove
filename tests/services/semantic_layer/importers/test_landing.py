@@ -148,7 +148,7 @@ async def test_bootstrap_force_overwrites(tmp_path):
     assert report["landed"]["written"] is True
     assert report["landed"]["overwrote"] is True
     doc = load_document(tmp_path / ".trove/kb" / DS / "semantics.yml")
-    assert [d["name"] for d in doc["semantic_model"][0]["datasets"]] == [
+    assert [d["name"] for d in doc["datasets"]] == [
         "orders", "customers"]
 
 

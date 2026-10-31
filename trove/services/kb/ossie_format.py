@@ -1,9 +1,10 @@
-"""semantics.yml 的 OSSIE 格式桥接:flat term 条目 ↔ Apache Ossie semantic_model 文档。
+"""semantics.yml 的 OSSIE 格式桥接:flat term 条目 ↔ Apache Ossie 0.2 扁平文档。
 
 KB 的术语存储(``.trove/kb/<datasource>/semantics.yml``)遵循 Apache Ossie
-core spec(semantic_model → datasets/metrics,表达式带 dialects),而 SQLite
-镜像与全部下游契约保持扁平的 ``{term, aliases, mapping, tables, definition}``。
-本模块是唯一负责两种表示之间转换的地方:
+core spec(0.2 扁平根:datasets/metrics/relationships 直接在文档根,表达式
+带 dialects),而 SQLite 镜像与全部下游契约保持扁平的
+``{term, aliases, mapping, tables, definition}``。本模块是唯一负责两种表示
+之间转换的地方:
 
 - 写方向(init/learn):flat term dict → OSSIE 文档结构(safe_dump 前)。
 - 读方向(sync):OSSIE 文本 → flat term payload(进 kb_items 镜像)。
@@ -21,7 +22,11 @@ from typing import Any
 import yaml
 from sqlglot import exp, parse_one
 
-from trove.services.semantic_layer.ossie import OSSIE_VERSION, parse_ossie
+from trove.services.semantic_layer.ossie import (
+    MIGRATE_SEMANTICS_COMMAND,
+    parse_ossie,
+    stamp_ossie_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +55,12 @@ def _metric_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
 def terms_to_ossie_document(
     terms: list[dict[str, Any]], model_name: str = "",
 ) -> dict[str, Any]:
-    """flat term 列表 → OSSIE 文档 dict(``{version, semantic_model}``)。
+    """flat term 列表 → OSSIE 0.2 扁平根文档 dict(``version`` 第一键)。
 
     datasets 声明 = 各 term ``tables`` 的排序并集——推导锚定依赖声明集
     (``_dataset_refs`` 只信声明过的数据集),缺声明则锚定丢失。
     空/空白 mapping 的条目跳过并告警(parse_ossie 对无 dialect 的 metric
-    整体抛错,容忍单个坏 term)。文档带 OSSIE v0.2.0.dev0 ``version``。
+    整体抛错,容忍单个坏 term)。
     """
     datasets: set[str] = set()
     metrics: list[dict[str, Any]] = []
@@ -73,7 +78,7 @@ def terms_to_ossie_document(
     model: dict[str, Any] = {"name": model_name, "datasets": [{"name": t} for t in sorted(datasets)]}
     if metrics:
         model["metrics"] = metrics
-    return {"version": OSSIE_VERSION, "semantic_model": [model]}
+    return stamp_ossie_version(model)
 
 
 def _parse_model_or_none(text: str) -> Any:
@@ -219,19 +224,19 @@ def qualify_mapping(mapping: str, tables: list[str]) -> str:
 
 
 def append_term_to_document(data: dict[str, Any], entry: dict[str, Any]) -> None:
-    """把一条 flat term 追加进已加载的 OSSIE 文档 dict(原地修改)。
+    """把一条 flat term 追加进已加载的 OSSIE 0.2 扁平文档(原地修改)。
 
     dict 级追加而非 parse→re-dump:保留手写内容(多方言条目、
-    ai_context.instructions、额外 datasets 声明)。
+    ai_context.instructions、额外 datasets 声明)。legacy 包装拒绝
+    (只可经迁移脚本转换,绝不写出第二种根形状)。
     """
-    models = data.setdefault("semantic_model", [])
-    if models:
-        model = models[0]
-        model.setdefault("datasets", [])
-        model.setdefault("metrics", [])
-    else:
-        model = {"name": "", "datasets": [], "metrics": []}
-        models.append(model)
+    if "semantic_model" in data:
+        raise ValueError(
+            "semantics.yml 仍是旧版 v0.1 数组包装;请先迁移: "
+            f"{MIGRATE_SEMANTICS_COMMAND}")
+    model = data
+    model.setdefault("datasets", [])
+    model.setdefault("metrics", [])
 
     declared = {d["name"] for d in model["datasets"] if isinstance(d, dict) and d.get("name")}
     for t in entry.get("tables") or []:

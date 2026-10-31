@@ -44,7 +44,7 @@ async def _topic_manager(sqlite_registry, tmp_path, tmp_home, *, result_cache=Fa
     schema = await adapter.get_schema()
     doc = generate_semantic_document(
         schema, model_name="test_db", terms=_test_terms(schema))
-    doc["semantic_model"][0]["topics"] = TOPIC_DOCS
+    doc["topics"] = TOPIC_DOCS
     path = tmp_path / "semantic" / "test_db" / "semantics.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

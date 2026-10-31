@@ -37,7 +37,11 @@ from trove.services.semantic_layer.models import (
     SemanticModel,
     SemanticRelationship,
 )
-from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.ossie import (
+    OSSIE_VERSION,
+    document_refusal,
+    parse_ossie,
+)
 from trove.services.semantic_layer.topics import resolve_topic, topic_names
 
 logger = logging.getLogger(__name__)
@@ -279,13 +283,27 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
 
 
 def _model_of(data: dict[str, Any]) -> dict[str, Any]:
-    """semantic_model[0] 的原地引用;缺省时创建最小模型。"""
-    models = data.setdefault("semantic_model", [])
-    if models and isinstance(models[0], dict):
-        return models[0]
-    model: dict[str, Any] = {"name": "", "datasets": [], "metrics": []}
-    models.append(model)
-    return model
+    """OSSIE 0.2 扁平文档的模型根(原地引用);空文档创建最小根。
+
+    legacy 数组包装拒绝 —— 草稿确认/变更合并只能落在扁平根上,写出第二种
+    根形状会让下一轮读取器按错误的解释器读整份文件。
+    """
+    if not isinstance(data, dict):
+        raise ValueError("OSSIE 文档根必须是映射（mapping）")
+    refusal = document_refusal(data)
+    if refusal is not None:
+        raise ValueError(f"semantics.yml 不可写: {refusal}")
+    if not data:
+        data.update({
+            "version": OSSIE_VERSION,
+            "name": "",
+            "datasets": [],
+            "metrics": [],
+        })
+    data.setdefault("name", "")
+    data.setdefault("datasets", [])
+    data.setdefault("metrics", [])
+    return data
 
 
 def _metric_payload_to_ossie(name: str, payload: dict[str, Any], dialect: str | None) -> dict[str, Any]:
@@ -818,10 +836,10 @@ def _raw_expr(entry: dict[str, Any]) -> str:
 def _find_entity(data: dict[str, Any] | None, kind: str,
                  name: str) -> dict[str, Any] | None:
     """semantics.yml 原始 dict 里的目标实体(**原地引用**,只读不写)。"""
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or "semantic_model" in data:
+        # legacy 数组包装不在这里猜目标 —— 由 lint / 变更门给出迁移提示。
         return None
-    models = data.get("semantic_model") or []
-    model = models[0] if models and isinstance(models[0], dict) else {}
+    model = data
     datasets = [d for d in model.get("datasets", []) or [] if isinstance(d, dict)]
     if kind == "metric":
         return next((m for m in model.get("metrics", []) or []

@@ -419,15 +419,20 @@ REGISTRY: tuple[VersionPoint, ...] = (
         authority="trove/services/semantic_layer/ossie.py::OSSIE_VERSION",
         value="0.2.0.dev0",
         kind="format",
-        newer="pass_through",
-        older="pass_through",
+        newer="refuse",
+        older="adopt",
         evidence=(
             "tests/services/semantic_layer/test_ossie.py"
-            "::test_unknown_newer_version_is_preserved_without_refusal",
+            "::test_legacy_root_is_refused",
             "tests/services/semantic_layer/test_ossie.py"
-            "::test_written_documents_share_one_version_authority",
+            "::test_version_is_required",
+            "tests/services/semantic_layer/test_ossie.py"
+            "::test_unparseable_version_is_refused",
+            "tests/services/semantic_layer/test_ossie.py"
+            "::test_newer_version_is_refused",
+            "tests/services/semantic_layer/test_ossie.py"
+            "::test_older_flat_version_is_adopted",
         ),
-        gap="ossie-version-gate",
     ),
     VersionPoint(
         id="evalset-version",
@@ -671,9 +676,6 @@ UNVERSIONED_STORES: tuple[UnversionedStore, ...] = (
 
 #: 缺口集合(只减不增)。补齐时删条目、补正式门证据,并同步文档。
 GAPS: dict[str, str] = {
-    "ossie-version-gate": (
-        "OSSIE 解析端透传任意 version,0.2 破坏性根形状没有门;"
-        "计划在语义层升级对齐时加根形状检查(本批不实现)"),
     "evalset-newer-refusal": (
         "evalset 解析/写回原样保留任意整数 version,较新文件的未知字段"
         "保存时可能被丢弃;计划拒绝较新版本或保留未知字段(本批不实现)"),

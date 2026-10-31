@@ -20,60 +20,58 @@ def _rich_model() -> dict:
     """带三块声明的最小富模型:entity / display_name / hierarchies 全在场。"""
     return {
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "test_db",
-            "datasets": [
-                {
-                    "name": "students",
-                    "source": "students",
-                    "primary_key": ["id"],
-                    "entity": {
-                        "display_name": "学生",
-                        "natural_keys": ["id"],
-                        "aliases": ["学员"],
-                    },
-                    "fields": [{
-                        "name": "grade", "datatype": "Integer",
-                        "expression": {"dialects": [
-                            {"dialect": "ANSI_SQL", "expression": "students.grade"}]},
-                    }],
+        "name": "test_db",
+        "datasets": [
+            {
+                "name": "students",
+                "source": "students",
+                "primary_key": ["id"],
+                "entity": {
+                    "display_name": "学生",
+                    "natural_keys": ["id"],
+                    "aliases": ["学员"],
                 },
-                {"name": "courses", "source": "courses",
-                 "primary_key": ["course_id"]},
-            ],
-            "relationships": [
-                {
-                    "name": "students_to_courses",
-                    "from": "students",
-                    "to": "courses",
-                    "from_columns": ["id"],
-                    "to_columns": ["course_id"],
-                    "cardinality": "M:N",
-                    "fan_out": "dedup",
-                },
-                {
-                    "name": "courses_to_students",
-                    "from": "courses",
-                    "to": "students",
-                    "from_columns": ["course_id"],
-                    "to_columns": ["id"],
-                    "cardinality": "N:M",
-                    "display_name": "选课",
-                },
-            ],
-            "metrics": [{
-                "name": "平均成绩",
-                "description": "学生平均分",
-                "expression": {"dialects": [
-                    {"dialect": "ANSI_SQL",
-                     "expression": "AVG(students.grade)"}]},
-            }],
-            "hierarchies": [{
-                "name": "grade_hierarchy",
-                "display_name": "成绩层级",
-                "dataset": "students",
-                "levels": ["id", "grade"],
-            }],
+                "fields": [{
+                    "name": "grade", "datatype": "Integer",
+                    "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "students.grade"}]},
+                }],
+            },
+            {"name": "courses", "source": "courses",
+             "primary_key": ["course_id"]},
+        ],
+        "relationships": [
+            {
+                "name": "students_to_courses",
+                "from": "students",
+                "to": "courses",
+                "from_columns": ["id"],
+                "to_columns": ["course_id"],
+                "cardinality": "M:N",
+                "fan_out": "dedup",
+            },
+            {
+                "name": "courses_to_students",
+                "from": "courses",
+                "to": "students",
+                "from_columns": ["course_id"],
+                "to_columns": ["id"],
+                "cardinality": "N:M",
+                "display_name": "选课",
+            },
+        ],
+        "metrics": [{
+            "name": "平均成绩",
+            "description": "学生平均分",
+            "expression": {"dialects": [
+                {"dialect": "ANSI_SQL",
+                 "expression": "AVG(students.grade)"}]},
+        }],
+        "hierarchies": [{
+            "name": "grade_hierarchy",
+            "display_name": "成绩层级",
+            "dataset": "students",
+            "levels": ["id", "grade"],
         }],
     }
 
@@ -172,7 +170,7 @@ async def test_empty_model_is_empty_graph_not_404(client, api_app, api_kb):
     """N40:有文件、零数据集 = 合法空图(「读不到」与「没有东西」两回事)。"""
     _seed(api_app, {
         "version": "0.2.0.dev0",
-        "semantic_model": [{"name": "test_db", "datasets": [], "metrics": []}],
+        "name": "test_db", "datasets": [], "metrics": [],
     })
     resp = await client.get("/v1/admin/semantic/test_db/object-graph")
     assert resp.status_code == 200, resp.text

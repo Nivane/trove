@@ -204,7 +204,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         if not report:
             return f"No KB assets found for '{datasource}'."
         lines = [f"KB assets for '{datasource}':"]
-        pending = edited = 0
+        pending = edited = refused = 0
         for asset in report:
             if asset.get("error"):
                 lines.append(f"  {asset['file']}: unreadable — {asset['error']}")
@@ -212,8 +212,19 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             if asset.get("refused"):
                 lines.append(
                     f"  {asset['file']}: REFUSED (format {asset['format']}) — "
-                    f"upgrade Trove; the mirror keeps the last version it could read"
+                    f"{asset['refused']}"
                 )
+                if asset.get("needs_ossie_migration"):
+                    # 根形状升级只能由迁移脚本做(行式转换,保留人的注释);
+                    # /kb migrate 本身仍然零写入。
+                    lines.append(
+                        "    migrate: uv run python scripts/migrate_semantics_v02.py "
+                        f"--kb-dir {kb.kb_dir} --datasource {datasource} --write")
+                else:
+                    lines.append(
+                        "    upgrade Trove; the mirror keeps the last version it "
+                        "could read")
+                refused += 1
                 continue
             fmt = asset["format"]
             state = "current" if not asset.get("needs_migration") else "needs migration"
@@ -237,7 +248,12 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
                 f"{pending} asset(s) would be migrated; {edited} of them may carry "
                 f"human edits (merge, not overwrite)."
             )
-        else:
+        if refused:
+            lines.append(
+                f"{refused} asset(s) are refused by the current reader — migrate or "
+                "upgrade before they can be used again."
+            )
+        if not pending and not refused:
             lines.append("All assets are at the current format — nothing to migrate.")
         return "\n".join(lines)
 

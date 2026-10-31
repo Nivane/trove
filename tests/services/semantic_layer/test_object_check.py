@@ -35,22 +35,22 @@ from trove.services.semantic_layer.ossie import parse_ossie
 # from_columns=[account_id] / to_columns=[client_id] 是**故意不同名**的:
 # 按声明键分组的豁免测试要能区分"分了哪一端的键"。
 MN_YAML = """
-semantic_model:
-  - name: shop
-    datasets:
-      - name: trans
-        source: trans
-        primary_key: [trans_id]
-      - name: disp
-        source: disp_tbl
-        primary_key: [disp_id]
-    relationships:
-      - name: trans_disp
-        from: trans
-        to: disp
-        from_columns: [account_id]
-        to_columns: [client_id]
-        cardinality: M:N
+version: "0.2.0.dev0"
+name: shop
+datasets:
+  - name: trans
+    source: trans
+    primary_key: [trans_id]
+  - name: disp
+    source: disp_tbl
+    primary_key: [disp_id]
+relationships:
+  - name: trans_disp
+    from: trans
+    to: disp
+    from_columns: [account_id]
+    to_columns: [client_id]
+    cardinality: M:N
 """
 
 

@@ -13,27 +13,26 @@ from trove.services.kb.semantic_draft import (
 
 def _doc():
     return {
-        "semantic_model": [{
-            "name": "fin",
-            "datasets": [
-                {"name": "district", "source": "district", "primary_key": [],
-                 "fields": [
-                     {"name": "A3", "expression": {"dialects": [
-                         {"dialect": "ANSI_SQL", "expression": "A3"}]},
-                      "datatype": "String"},
-                     {"name": "A11", "expression": {"dialects": [
-                         {"dialect": "ANSI_SQL", "expression": "A11"}]},
-                      "datatype": "Decimal"},
-                 ]},
-                {"name": "loan", "source": "loan", "primary_key": [],
-                 "fields": [
-                     {"name": "amount", "expression": {"dialects": [
-                         {"dialect": "ANSI_SQL", "expression": "amount"}]},
-                      "datatype": "Decimal"},
-                 ]},
-            ],
-            "relationships": [],
-        }],
+        "version": "0.2.0.dev0",
+        "name": "fin",
+        "datasets": [
+            {"name": "district", "source": "district", "primary_key": [],
+             "fields": [
+                 {"name": "A3", "expression": {"dialects": [
+                     {"dialect": "ANSI_SQL", "expression": "A3"}]},
+                  "datatype": "String"},
+                 {"name": "A11", "expression": {"dialects": [
+                     {"dialect": "ANSI_SQL", "expression": "A11"}]},
+                  "datatype": "Decimal"},
+             ]},
+            {"name": "loan", "source": "loan", "primary_key": [],
+             "fields": [
+                 {"name": "amount", "expression": {"dialects": [
+                     {"dialect": "ANSI_SQL", "expression": "amount"}]},
+                  "datatype": "Decimal"},
+             ]},
+        ],
+        "relationships": [],
     }
 
 
@@ -45,7 +44,7 @@ def _field(model, dataset, name):
 class TestApplyAnnotations:
     def test_applies_synonyms_and_description(self):
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         applied, dropped = apply_annotations(model, [{
             "table": "district",
             "field_notes": [
@@ -60,7 +59,7 @@ class TestApplyAnnotations:
 
     def test_unknown_field_dropped(self):
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         applied, dropped = apply_annotations(model, [{
             "table": "loan",
             "field_notes": [{"name": "ghost", "synonyms": ["x"], "description": "y"}],
@@ -70,7 +69,7 @@ class TestApplyAnnotations:
 
     def test_unknown_table_dropped(self):
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         applied, dropped = apply_annotations(model, [{
             "table": "planet",
             "field_notes": [{"name": "A3", "synonyms": ["region"], "description": "z"}],
@@ -80,7 +79,7 @@ class TestApplyAnnotations:
     def test_junk_keys_and_new_fields_stripped(self):
         """LLM 越界输出(新增列/改 type/加表达式)→ 白名单只留 aliases+desc。"""
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         applied, dropped = apply_annotations(model, [{
             "table": "loan",
             "field_notes": [
@@ -102,7 +101,7 @@ class TestApplyAnnotations:
 
     def test_empty_entry_dropped(self):
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         applied, dropped = apply_annotations(model, [{
             "table": "loan",
             "field_notes": [{"name": "amount", "synonyms": [], "description": ""}],
@@ -115,7 +114,7 @@ class TestEnumLabels:
 
     def test_applies_labels_to_declared_codes(self):
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         model["datasets"][1]["fields"].append({
             "name": "gender", "expression": {"dialects": [
                 {"dialect": "ANSI_SQL", "expression": "gender"}]},
@@ -137,7 +136,7 @@ class TestEnumLabels:
     def test_undeclared_code_ignored(self):
         """LLM 发明枚举 code → 丢弃,不污染 enum_display。"""
         doc = _doc()
-        model = doc["semantic_model"][0]
+        model = doc
         model["datasets"][1]["fields"].append({
             "name": "gender", "expression": {"dialects": [
                 {"dialect": "ANSI_SQL", "expression": "gender"}]},
@@ -185,7 +184,7 @@ class TestDraftPipeline:
         llm = ScriptedLLM(DRAFT)
         doc = await draft_semantic_annotations(
             llm, "mock/model", _doc(), chunk_size=1)
-        model = doc["semantic_model"][0]
+        model = doc
         a3 = _field(model, "district", "A3")
         assert a3["ai_context"]["synonyms"] == ["region", "area"]
         # loan 块(第二块)无响应 → 保持原结构,不报错
@@ -194,12 +193,12 @@ class TestDraftPipeline:
     async def test_unparseable_response_keeps_structure(self):
         llm = ScriptedLLM("not yaml at all [[[")
         doc = await draft_semantic_annotations(llm, "mock/model", _doc())
-        assert all("ai_context" not in f for f in doc["semantic_model"][0]["datasets"][0]["fields"])
+        assert all("ai_context" not in f for f in doc["datasets"][0]["fields"])
 
     async def test_recovers_from_fenced_prose(self):
         llm = ScriptedLLM("Here is my reasoning...\n```yaml\n" + DRAFT + "\n```")
         doc = await draft_semantic_annotations(llm, "mock/model", _doc())
-        assert _field(doc["semantic_model"][0], "district", "A3")["ai_context"]["synonyms"] == [
+        assert _field(doc, "district", "A3")["ai_context"]["synonyms"] == [
             "region", "area"]
 
     async def test_chat_failure_skipped(self):
@@ -208,4 +207,4 @@ class TestDraftPipeline:
                 raise RuntimeError("boom")
 
         doc = await draft_semantic_annotations(BoomLLM(), "mock/model", _doc())
-        assert all("ai_context" not in f for f in doc["semantic_model"][0]["datasets"][0]["fields"])
+        assert all("ai_context" not in f for f in doc["datasets"][0]["fields"])

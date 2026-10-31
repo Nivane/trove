@@ -23,18 +23,18 @@ from trove.services.kb.embeddings import embed as det_embed
 from trove.services.kb.service import KbService
 
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-      - name: district
-      - name: client
-    metrics:
-      - name: 平均贷款金额
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+  - name: district
+  - name: client
+metrics:
+  - name: 平均贷款金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
 """
 
 EXAMPLES = """

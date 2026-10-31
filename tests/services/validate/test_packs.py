@@ -21,28 +21,27 @@ import yaml
 from trove.services.validate import run_validate
 
 _SEMANTICS = {
-    "semantic_model": [{
-        "name": "mini",
-        "datasets": [{
-            "name": "loan",
-            "source": "loan",
-            "primary_key": ["loan_id"],
-            "fields": [
-                {"name": "loan_id", "datatype": "Integer",
-                 "description": "Loan id.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
-                {"name": "amount", "datatype": "Decimal",
-                 "description": "Loan amount.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "amount"}]}},
-            ],
-        }],
-        "metrics": [{
-            "name": "total_amount",
-            "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]},
-        }],
+    "version": "0.2.0.dev0",
+    "name": "mini",
+    "datasets": [{
+        "name": "loan",
+        "source": "loan",
+        "primary_key": ["loan_id"],
+        "fields": [
+            {"name": "loan_id", "datatype": "Integer",
+             "description": "Loan id.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
+            {"name": "amount", "datatype": "Decimal",
+             "description": "Loan amount.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "amount"}]}},
+        ],
+    }],
+    "metrics": [{
+        "name": "total_amount",
+        "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]},
     }],
 }
 

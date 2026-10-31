@@ -35,30 +35,30 @@ tables:
 # 手写 OSSIE semantic_model(读端需覆盖人类手写的 spec YAML,
 # 而非只经写端生成);锚定由表达式推导:平均贷款金额 → loan 表。
 SEMANTICS = """
-semantic_model:
-  - name: demo
-    datasets:
-      - name: loan
-      - name: account
-      - name: district
-      - name: client
-    metrics:
-      - name: 平均贷款金额
-        description: 按问题所需维度分组的贷款金额均值
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
-        ai_context:
-          synonyms:
-            - 平均贷款
-            - 贷款均值
-      - name: 客户数量
-        description: 客户数
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(client.client_id)
+version: "0.2.0.dev0"
+name: demo
+datasets:
+  - name: loan
+  - name: account
+  - name: district
+  - name: client
+metrics:
+  - name: 平均贷款金额
+    description: 按问题所需维度分组的贷款金额均值
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
+    ai_context:
+      synonyms:
+        - 平均贷款
+        - 贷款均值
+  - name: 客户数量
+    description: 客户数
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(client.client_id)
 """
 
 EXAMPLES = """
@@ -76,17 +76,17 @@ examples:
 """
 
 OTHER_SEMANTICS = """
-semantic_model:
+version: "0.2.0.dev0"
+name: events
+datasets:
   - name: events
-    datasets:
-      - name: events
-    metrics:
-      - name: 页面浏览量
-        description: 浏览事件数
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(events.page_view)
+metrics:
+  - name: 页面浏览量
+    description: 浏览事件数
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(events.page_view)
 """
 
 
@@ -133,7 +133,7 @@ class TestTableAnchoredRetrieval:
         import yaml as _yaml
         sem = kb_dir / "demo" / "semantics.yml"
         doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
-        doc["semantic_model"][0]["metrics"].append({
+        doc["metrics"].append({
             "name": "金卡", "description": "黄金卡",
             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "card_type='gold'"}]},
         })
@@ -178,7 +178,7 @@ class TestTableAnchoredRetrieval:
 
         sem = kb_dir / "demo" / "semantics.yml"
         doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
-        doc["semantic_model"][0]["metrics"].append({
+        doc["metrics"].append({
             "name": "average approved amount",
             "description": "average approved loan amount",
             "expression": {"dialects": [
@@ -338,8 +338,12 @@ class TestSync:
         hits = await kb.search_examples("贷款", "demo")
         assert len(hits) > 0
 
-    async def test_legacy_flat_semantics_syncs_to_zero_and_purges(self, kb, kb_dir, caplog):
-        """旧 flat terms: 格式不兼容 → 零条目 + 旧镜像被清 + 迁移警告。"""
+    async def test_legacy_flat_semantics_keeps_last_known_good(self, kb, kb_dir):
+        """退役的 ``terms:`` 文件不带 OSSIE version → 拒绝采纳,保留旧镜像。
+
+        与「比自己新的版本」同一姿态:拒绝发生在替换镜像之前,文件是
+        不可解释的、镜像至少是上一次读懂的样子;拒绝原因进 refused_assets。
+        """
         write_kb(kb_dir)
         await kb.ensure_synced("demo")
         assert len(await kb.search_terms("平均贷款金额", "demo")) == 1
@@ -348,8 +352,9 @@ class TestSync:
             "terms:\n  - term: x\n    mapping: COUNT(*)\n", encoding="utf-8")
         await kb.ensure_synced("demo")
 
-        assert await kb.search_terms("平均贷款金额", "demo") == []
-        assert any("overwrite" in r.message for r in caplog.records)
+        assert len(await kb.search_terms("平均贷款金额", "demo")) == 1
+        assert "demo/semantics.yml" in kb.refused_assets
+        assert "version" in kb.refused_assets["demo/semantics.yml"]
 
     async def test_broken_ossie_metric_only_empties_semantics(self, kb, kb_dir, caplog):
         """无方言表达式的 metric 使整份 semantics 降级为零,其他文件不受影响。"""
@@ -357,8 +362,9 @@ class TestSync:
         await kb.ensure_synced("demo")
 
         (kb_dir / "demo" / "semantics.yml").write_text(
-            "semantic_model:\n  - metrics:\n      - name: x\n        expression:\n"
-            "          dialects: []\n", encoding="utf-8")
+            'version: "0.2.0.dev0"\nname: demo\nmetrics:\n'
+            "  - name: x\n    expression:\n      dialects: []\n",
+            encoding="utf-8")
         await kb.ensure_synced("demo")
 
         assert await kb.search_terms("平均贷款金额", "demo") == []
@@ -848,7 +854,8 @@ class TestEvolution:
         hits = await kb.search_terms("贷款笔数", "demo")
         assert [h.term for h in hits] == ["贷款笔数"]
         text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
-        assert "semantic_model" in text
+        assert "version: 0.2.0.dev0" in text
+        assert "semantic_model" not in text
         assert "COUNT(loan.loan_id)" in text
 
     async def test_append_term_qualifies_bare_mapping(self, kb, kb_dir):
@@ -868,11 +875,11 @@ class TestEvolution:
         with pytest.raises(ValueError, match="mapping is required"):
             await kb.append_term({"term": "坏term", "mapping": ""}, "demo")
 
-    async def test_append_term_rejects_legacy_flat_file(self, kb, kb_dir):
+    async def test_append_term_rejects_unversioned_file(self, kb, kb_dir):
         (kb_dir / "demo").mkdir(parents=True)
         (kb_dir / "demo" / "semantics.yml").write_text(
             "terms:\n  - term: x\n    mapping: COUNT(*)\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="overwrite"):
+        with pytest.raises(ValueError, match="不可写"):
             await kb.append_term(
                 {"term": "y", "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]},
                 "demo")
@@ -986,7 +993,7 @@ class TestInitThreeWay:
         assert kb.init_terms(terms, "demo") is True
         text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
         assert "学生数" in text
-        assert "semantic_model" in text
+        assert text.startswith("version: 0.2.0.dev0")
         assert "COUNT(students.id)" in text
 
     def test_init_examples_writes_templates(self, kb, kb_dir):
@@ -1009,7 +1016,7 @@ class TestInitThreeWay:
     def test_init_exists_lists_existing_files(self, kb, kb_dir):
         assert kb.init_exists("demo") == []
         (kb_dir / "demo").mkdir(parents=True)
-        (kb_dir / "demo" / "semantics.yml").write_text("semantic_model: []\n", encoding="utf-8")
+        (kb_dir / "demo" / "semantics.yml").write_text("version: 0.2.0.dev0\n", encoding="utf-8")
         assert kb.init_exists("demo") == ["semantics.yml"]
 
 

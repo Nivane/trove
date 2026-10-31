@@ -1,7 +1,7 @@
 """业务主题域(topic domains)构造测试:解析 / lint / 合并。
 
 主题域是语义模型之上的**分组与收敛边界**(Trove 扩展段,非 OSSIE):
-``semantic_model[0].topics[]`` 声明 {name, datasets, metrics?, synonyms?}。
+文档根上的 ``topics[]`` 声明 {name, datasets, metrics?, synonyms?}。
 这三层测试对应它落地的三个前提:
 
 1. 解析:可选段,缺省 = 存量模型零变化;坏形状丢弃而不是猜;
@@ -10,8 +10,6 @@
 """
 from __future__ import annotations
 
-import logging
-
 from trove.services.kb.lint import lint_semantics, lint_semantics_document
 from trove.services.kb.merge import merge3
 from trove.services.semantic_layer.models import SemanticModel
@@ -19,70 +17,69 @@ from trove.services.semantic_layer.ossie import parse_ossie
 from trove.services.semantic_layer.provider import _merge_models
 
 _DOC = """
-version: 0.2.0.dev0
-semantic_model:
-  - name: fin
-    datasets:
-      - name: loan
-        source: loan
-        primary_key: [loan_id]
-        fields:
-          - name: loan_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: loan_id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-      - name: account
-        source: account
-        primary_key: [account_id]
-        fields:
-          - name: account_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: account_id
-      - name: client
-        source: client
-        primary_key: [client_id]
-        fields:
-          - name: client_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: client_id
-    metrics:
-      - name: total_loan_amount
+version: "0.2.0.dev0"
+name: fin
+datasets:
+  - name: loan
+    source: loan
+    primary_key: [loan_id]
+    fields:
+      - name: loan_id
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(loan.amount)
-      - name: client_count
+              expression: loan_id
+      - name: amount
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(client.client_id)
-    topics:
-      - name: loans
-        description: 贷款主题
-        synonyms: [loan, 贷款]
-        datasets: [loan, account]
-        metrics: [total_loan_amount]
-        examples: [每个地区的贷款金额是多少]
-      - name: clients
-        datasets: [client]
+              expression: amount
+  - name: account
+    source: account
+    primary_key: [account_id]
+    fields:
+      - name: account_id
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: account_id
+  - name: client
+    source: client
+    primary_key: [client_id]
+    fields:
+      - name: client_id
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: client_id
+metrics:
+  - name: total_loan_amount
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: SUM(loan.amount)
+  - name: client_count
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: COUNT(client.client_id)
+topics:
+  - name: loans
+    description: 贷款主题
+    synonyms: [loan, 贷款]
+    datasets: [loan, account]
+    metrics: [total_loan_amount]
+    examples: [每个地区的贷款金额是多少]
+  - name: clients
+    datasets: [client]
 """
 
 
 def _model_dict(doc: str = _DOC) -> dict:
-    """取 semantic_model[0] 的原始 dict(lint 判的是字形,不是解析产物)。"""
+    """取文档根的原始 dict(lint 判的是字形,不是解析产物)。"""
     import yaml
 
-    return yaml.safe_load(doc)["semantic_model"][0]
+    return yaml.safe_load(doc)
 
 
 # ── 解析 ──────────────────────────────────────────────────
@@ -101,39 +98,34 @@ class TestParseTopics:
 
     def test_absent_topics_is_empty(self):
         """存量模型(无 topics 键)一字不变:空列表,不是 None。"""
-        doc = _DOC.replace("    topics:\n", "    x_topics:\n")
+        doc = _DOC.replace("\ntopics:\n", "\nx_topics:\n")
         model = parse_ossie(doc, preferred_dialect="sqlite")
         assert model.topics == []
         assert model.datasets  # 其余部分照常解析
 
     def test_bare_scalar_datasets_becomes_single(self):
         """裸标量(``datasets: loan``)按单元素读,与 _clean_values 同法。"""
-        doc = _DOC.replace("        datasets: [loan, account]",
-                           "        datasets: loan")
+        doc = _DOC.replace("    datasets: [loan, account]",
+                           "    datasets: loan")
         model = parse_ossie(doc, preferred_dialect="sqlite")
         assert model.topics[0].datasets == ["loan"]
 
     def test_bad_shapes_dropped_not_guessed(self):
         """空名条目丢弃、映射型 datasets 忽略 —— 不猜。"""
-        doc = _DOC.replace("      - name: clients\n        datasets: [client]",
-                           "      - name: ''\n        datasets: [client]\n"
-                           "      - name: broken\n        datasets: {a: b}")
+        doc = _DOC.replace("  - name: clients\n    datasets: [client]",
+                           "  - name: ''\n    datasets: [client]\n"
+                           "  - name: broken\n    datasets: {a: b}")
         model = parse_ossie(doc, preferred_dialect="sqlite")
         assert [t.name for t in model.topics] == ["loans", "broken"]
         assert model.topics[1].datasets == []
 
-    def test_top_level_topics_ignored_with_warning(self, caplog):
-        """文档顶层的 topics 被忽略 —— 但必须出声(收敛边界不能静默消失)。"""
-        doc = (
-            "version: 1\n"
-            "topics:\n  - name: loans\n    datasets: [loan]\n"
-            + _DOC[_DOC.index("semantic_model:"):]
-              .replace("    topics:\n", "    x_topics:\n")
-        )
-        with caplog.at_level(logging.WARNING):
-            model = parse_ossie(doc, preferred_dialect="sqlite")
-        assert model.topics == []  # 模型内那份被改名,不生效
-        assert any("top level" in r.getMessage() for r in caplog.records)
+    def test_root_topics_parse_without_wrapper(self):
+        """0.2 扁平根:topics 与 datasets/metrics 同层,不需要任何包装。"""
+        import yaml
+
+        doc = yaml.safe_load(_DOC)
+        assert "semantic_model" not in doc
+        assert [t["name"] for t in doc["topics"]] == ["loans", "clients"]
 
 
 # ── lint ─────────────────────────────────────────────────
@@ -199,14 +191,13 @@ class TestTopicLint:
         model["topics"] = {"name": "loans"}
         assert any("topics 必须是数组" in i for i in lint_semantics(model))
 
-    def test_top_level_topics_document_issue(self):
-        """文档顶层写 topics:写盘门禁拦下(与 masking 同款错层拦截)。"""
+    def test_topics_are_a_valid_root_section(self):
+        """OSSIE 0.2 扁平根下 topics 与 datasets/metrics 同层 —— 不再错层。"""
         import yaml
 
         doc = yaml.safe_load(_DOC)
-        doc["topics"] = doc["semantic_model"][0].pop("topics")
         issues = lint_semantics_document(doc)
-        assert any("文档顶层的 topics 会被忽略" in i for i in issues)
+        assert not any("topics" in i and "顶层" in i for i in issues)
 
 
 # ── 合并 ─────────────────────────────────────────────────
@@ -228,8 +219,8 @@ class TestTopicMerge:
         base = SemanticModel(name="base", topics=[
             parse_ossie(_DOC).topics[0],
         ])
-        other = _DOC.replace("        datasets: [loan, account]",
-                             "        datasets: [loan]")
+        other = _DOC.replace("    datasets: [loan, account]",
+                             "    datasets: [loan]")
         override = SemanticModel(name="override", topics=[
             parse_ossie(other).topics[0],
         ])
@@ -245,11 +236,12 @@ class TestTopicMerge:
         import yaml
 
         doc = yaml.safe_load(_DOC)
-        base = {"semantic_model": [{"name": "fin", "datasets": [], "metrics": []}]}
+        base = {"version": "0.2.0.dev0", "name": "fin", "datasets": [], "metrics": []}
         ours = yaml.safe_load(_DOC)
-        theirs = {"semantic_model": [{"name": "fin", "datasets": [
-            {"name": "loan", "fields": []}], "metrics": []}]}
+        theirs = {
+            "version": "0.2.0.dev0", "name": "fin",
+            "datasets": [{"name": "loan", "fields": []}], "metrics": []}
         result = merge3(base, ours, theirs, "semantics.yml")
-        topics = result.doc["semantic_model"][0].get("topics") or []
+        topics = result.doc.get("topics") or []
         assert [t["name"] for t in topics] == ["loans", "clients"]
-        assert doc["semantic_model"][0]["topics"]  # 源文档未被改动
+        assert doc["topics"]  # 源文档未被改动

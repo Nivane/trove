@@ -64,7 +64,7 @@ async def test_entity_draft_round_trip(client, api_app, api_kb):
 
     # pending 不碰单一真源
     before = _model_doc(api_app)
-    students = next(d for d in before["semantic_model"][0]["datasets"]
+    students = next(d for d in before["datasets"]
                     if d["name"] == "students")
     assert "entity" not in students
 
@@ -73,7 +73,7 @@ async def test_entity_draft_round_trip(client, api_app, api_kb):
     assert confirm.status_code == 200, confirm.text
 
     after = _model_doc(api_app)
-    students = next(d for d in after["semantic_model"][0]["datasets"]
+    students = next(d for d in after["datasets"]
                     if d["name"] == "students")
     assert students["entity"] == {"display_name": "学生",
                                   "natural_keys": ["grade"],
@@ -105,7 +105,7 @@ async def test_relationship_draft_round_trip(client, api_app, api_kb):
         f"/v1/admin/semantic/test_db/drafts/{draft['id']}/confirm")
     assert confirm.status_code == 200, confirm.text
 
-    rels = _model_doc(api_app)["semantic_model"][0]["relationships"]
+    rels = _model_doc(api_app)["relationships"]
     rel = next(r for r in rels if r["name"] == "county_grade")
     assert rel["from"] == "students" and rel["to"] == "students"
     assert rel["from_columns"] == ["grade"]

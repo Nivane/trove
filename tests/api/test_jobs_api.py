@@ -460,7 +460,7 @@ class TestScanSpecReference:
     def _write_model(app, datasource="demo"):
         import yaml
 
-        doc = {"semantic_model": [{
+        doc = {"version": "0.2.0.dev0",
             "name": datasource,
             "datasets": [{
                 "name": "loan", "source": "loan",
@@ -484,8 +484,7 @@ class TestScanSpecReference:
                 "expression": {"dialects": [
                     {"dialect": "sqlite", "expression": "SUM(loan.amount)"}]},
                 "agg_time_dimension": "loan.date",
-            }],
-        }]}
+            }],}
         path = app.state.kb.semantics_path(datasource)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")

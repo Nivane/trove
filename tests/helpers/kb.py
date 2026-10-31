@@ -10,7 +10,7 @@ from trove.services.kb.ossie_format import terms_to_ossie_document
 def ossie_semantics_yaml(
     metrics: list[dict], model_name: str = "kb",
 ) -> str:
-    """flat term dict 列表 → OSSIE semantic_model YAML 文本。
+    """flat term dict 列表 → OSSIE 0.2 扁平根 semantics.yml 文本。
 
     Args:
         metrics: 与 /kb learn / TermCreate 同构的 flat 条目
@@ -32,13 +32,11 @@ def topic_model_yaml(datasets: list[str], topics: dict[str, list[str]]) -> str:
     """
     doc = {
         "version": "0.2.0.dev0",
-        "semantic_model": [{
-            "name": "kb",
-            "datasets": [{"name": d} for d in datasets],
-            "topics": [
-                {"name": name, "datasets": list(ds)} for name, ds in topics.items()
-            ],
-        }],
+        "name": "kb",
+        "datasets": [{"name": d} for d in datasets],
+        "topics": [
+            {"name": name, "datasets": list(ds)} for name, ds in topics.items()
+        ],
     }
     return yaml.safe_dump(
         doc, default_flow_style=False, allow_unicode=True, sort_keys=False,

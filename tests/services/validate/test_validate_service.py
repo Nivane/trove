@@ -14,51 +14,50 @@ from trove.services.validate.service import SKILL_NODES, skill_node_call_sites
 
 # 最小可编译语义模型(离线用 sqlite 档编译,表达式走 ANSI_SQL 兜底)。
 _SEMANTICS = {
-    "semantic_model": [{
-        "name": "mini",
-        "datasets": [{
-            "name": "loan",
-            "source": "loan",
-            "primary_key": ["loan_id"],
-            "fields": [
-                {"name": "loan_id", "datatype": "Integer",
-                 "description": "Loan id.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
-                {"name": "amount", "datatype": "Decimal",
-                 "description": "Loan amount.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "amount"}]}},
-                {"name": "date", "datatype": "Date",
-                 "description": "Booking date.",
-                 "expression": {"dialects": [
-                     {"dialect": "ANSI_SQL", "expression": "date"}]}},
-            ]},
-        # 第二个数据集**没有时间字段** —— window 求值失败的反例靠它构造。
-        {"name": "branch",
-         "source": "branch",
-         "primary_key": ["branch_id"],
-         "fields": [
-             {"name": "branch_id", "datatype": "Integer",
-              "description": "Branch id.",
-              "expression": {"dialects": [
-                  {"dialect": "ANSI_SQL", "expression": "branch_id"}]}},
-             {"name": "name", "datatype": "String",
-              "description": "Branch name.",
-              "expression": {"dialects": [
-                  {"dialect": "ANSI_SQL", "expression": "name"}]}},
-         ]},
-        ],
-        "metrics": [{
-            "name": "total_amount",
-            "agg_time_dimension": "date",
-            "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]},
-        }, {
-            "name": "branch_count",
-            "expression": {"dialects": [
-                {"dialect": "ANSI_SQL", "expression": "COUNT(branch.branch_id)"}]},
-        }],
+    "version": "0.2.0.dev0",
+    "name": "mini",
+    "datasets": [{
+        "name": "loan",
+        "source": "loan",
+        "primary_key": ["loan_id"],
+        "fields": [
+            {"name": "loan_id", "datatype": "Integer",
+             "description": "Loan id.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "loan_id"}]}},
+            {"name": "amount", "datatype": "Decimal",
+             "description": "Loan amount.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "amount"}]}},
+            {"name": "date", "datatype": "Date",
+             "description": "Booking date.",
+             "expression": {"dialects": [
+                 {"dialect": "ANSI_SQL", "expression": "date"}]}},
+        ]},
+    # 第二个数据集**没有时间字段** —— window 求值失败的反例靠它构造。
+    {"name": "branch",
+     "source": "branch",
+     "primary_key": ["branch_id"],
+     "fields": [
+         {"name": "branch_id", "datatype": "Integer",
+          "description": "Branch id.",
+          "expression": {"dialects": [
+              {"dialect": "ANSI_SQL", "expression": "branch_id"}]}},
+         {"name": "name", "datatype": "String",
+          "description": "Branch name.",
+          "expression": {"dialects": [
+              {"dialect": "ANSI_SQL", "expression": "name"}]}},
+     ]},
+    ],
+    "metrics": [{
+        "name": "total_amount",
+        "agg_time_dimension": "date",
+        "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]},
+    }, {
+        "name": "branch_count",
+        "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "COUNT(branch.branch_id)"}]},
     }],
 }
 
@@ -209,14 +208,15 @@ async def test_kb_duplicate_examples_warn_only(tmp_path):
     assert report.exit_code(strict=True) == 1
 
 
-async def test_kb_misplaced_masking_is_error(tmp_path):
-    """顶层错放的 masking 会被解析器静默忽略 → 文档级 lint 报硬错误。"""
+async def test_kb_root_level_masking_is_legal(tmp_path):
+    """OSSIE 0.2 扁平根:``masking`` 就声明在文档根 —— 不再算错放。"""
     data = dict(_SEMANTICS)
-    data["masking"] = {"salt_ref": "MAIL_SALT"}
+    data["masking"] = {"hash_salt_ref": "env:MAIL_SALT"}
     _make_kb(tmp_path, semantics=data)
     report = await run_validate("mini", project_root=tmp_path)
-    assert any("masking" in i.message for i in _checks(report, "kb")
-               if i.severity == "error")
+    assert not any("masking" in i.message for i in _checks(report, "kb")
+                   if i.severity == "error")
+    assert report.exit_code() == 0
 
 
 # ── decision rules ───────────────────────────────────────
@@ -696,7 +696,7 @@ def _declared_semantics() -> dict:
     import copy
 
     data = copy.deepcopy(_SEMANTICS)
-    model = data["semantic_model"][0]
+    model = data
     by_name = {d["name"]: d for d in model["datasets"]}
     by_name["loan"]["entity"] = {
         "display_name": "贷款", "natural_keys": ["loan_id"]}

@@ -23,16 +23,16 @@ from trove.services.kb.service import KbService
 from trove.services.retrieval.sqlite_store import SqliteHybridStore
 
 SEMANTICS = """
-semantic_model:
-  - name: financial
-    datasets:
-      - name: loan
-    metrics:
-      - name: 平均贷款金额
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: AVG(loan.amount)
+version: "0.2.0.dev0"
+name: financial
+datasets:
+  - name: loan
+metrics:
+  - name: 平均贷款金额
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: AVG(loan.amount)
 """
 
 EXAMPLES = """
