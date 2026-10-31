@@ -121,6 +121,33 @@ def test_parse_failure_keeps_last_good(semantic_dir, caplog):
     assert "semantic" in caplog.text.lower()
 
 
+def test_ossie_gate_refuses_before_the_parser_sees_the_file(semantic_dir, caplog):
+    """版本门在解析器之前:不能解释的根形状绝不交给解析器。
+
+    用一句"什么都肯读"的假解析器钉住门的独立性 —— 门在,它一次都不会
+    被调用;门被删,它会把旧包装读成一份模型(两条断言同时红)。默认解析器
+    自己也拒绝 legacy,只看 last-known-good 的测试区分不出门是否还在。
+    """
+    _write(semantic_dir, SAMPLE)
+    calls = []
+
+    def blind_parser(text: str):
+        calls.append(text)
+        return parse_ossie(SAMPLE, preferred_dialect="sqlite")
+
+    p = SemanticLayerProvider(semantic_dir, "financial", parser=blind_parser)
+    assert len(p.metrics()) == 2
+    assert len(calls) == 1
+    calls.clear()
+
+    _write(semantic_dir, "semantic_model:\n  - name: legacy_root\n")
+    with caplog.at_level("ERROR"):
+        metrics = p.metrics()
+    assert calls == []  # 门在解析器之前拦下
+    assert [m.name for m in metrics] == ["total_loan_amount", "avg_loan_per_account"]
+    assert "keeping last known good" in caplog.text
+
+
 def test_invalid_expression_dropped(semantic_dir, caplog):
     _write(semantic_dir, SAMPLE.replace("SUM(loan.amount)", "SUM((", 1))
     p = SemanticLayerProvider(semantic_dir, "financial")
