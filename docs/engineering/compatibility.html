@@ -54,7 +54,7 @@
       生成端写一份、格式化端写一份、变更暂存端再写一份。只要三处里有一处被改，
       另外两处就会继续产出「看起来一致」的旧格式——这正是注册表要防的双源漂移。
       所以本批唯一的代码改动是把 <code>OSSIE_VERSION</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L50">ossie.py:50 <span class="ref-line">OSSIE_VERSION</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L59">ossie.py:59 <span class="ref-line">OSSIE_VERSION</span></a>
       收敛为单一权威，其余写入点全部改成引用它，输出逐字节不变。
       注册表如果一边宣称「单一权威」一边留着三个写入点，就是自欺。
     </p>
@@ -88,7 +88,7 @@
 
     <p>
       第三条在存储层的落地最典型：KB 镜像版本由 <code>_MIRROR_VERSION</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1197">service.py:1197 <span class="ref-line">_MIRROR_VERSION</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1220">service.py:1220 <span class="ref-line">_MIRROR_VERSION</span></a>
       守住——读到更新的版本就抛 <code>StorageSchemaTooNew</code>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/migrations.py#L54">migrations.py:54 <span class="ref-line">StorageSchemaTooNew</span></a>
       （旧代码打开新库是最安静的一种分叉），而解决办法是删镜像重建，不是补迁移。
@@ -246,15 +246,15 @@ flowchart LR
     <p>
       未版本化的 store 不是「漏了」——设置面列变更走 <code>ensure_column</code>、向量索引派生重建、
       观测日志没有兼容语义；但每一行都要求<strong>非空理由</strong>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L629">test_version_compatibility.py:629 <span class="ref-line">UNVERSIONED_STORES</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L634">test_version_compatibility.py:634 <span class="ref-line">UNVERSIONED_STORES</span></a>，
       不允许用沉默表示「不需要」。迁移侧同理
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L556">test_version_compatibility.py:556 <span class="ref-line">MIGRATION_STORES</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L561">test_version_compatibility.py:561 <span class="ref-line">MIGRATION_STORES</span></a>：
       冻结的是实测最大版本，测试如实测值对不上就红。
     </p>
 
     <p>
       一条纪律值得单独说：<strong>缺口也要引 golden</strong>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L673">test_version_compatibility.py:673 <span class="ref-line">GAPS</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L678">test_version_compatibility.py:678 <span class="ref-line">GAPS</span></a>。
       缺口行不是注释，而是一条被测试钉住的现状——「新版本被原样保留」这件事有 golden 证明。
       将来真给这个缺口加门时，那条 golden 必红：改行为的人被迫在同一提交里改注册表与文档。
       这是<strong>有意的摩擦</strong>——兼容语义变化本来就该是一次显式决定，而不是一次顺手的重构。
@@ -267,7 +267,7 @@ flowchart LR
       和「注册表改了、代码没改」都会在 CI 里当场变红——不需要等到某次升级事故才发现。
     </p>
 
-    <h2 id="gaps">现状缺口：两条，都写在明面上</h2>
+    <h2 id="gaps">现状缺口：一条，写在明面上</h2>
 
     <div class="table-wrap">
       <table>
@@ -275,14 +275,6 @@ flowchart LR
           <tr><th>缺口</th><th>现状</th><th>风险</th><th>本批为什么不补</th></tr>
         </thead>
         <tbody>
-          <tr>
-            <td><code>ossie-version-gate</code></td>
-            <td><code>parse_ossie</code>
-              <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L175">ossie.py:175 <span class="ref-line">parse_ossie</span></a>
-              不校验版本，字符串原样透传（golden 钉住）</td>
-            <td>规范下一版（0.2）是破坏性根形状；没有版本门时，旧代码会把不认识的文档当认识的处理</td>
-            <td>加门是行为变化，属于 OSSIE 升级对齐批次；本批只登记并钉现状</td>
-          </tr>
           <tr>
             <td><code>evalset-newer-refusal</code></td>
             <td><code>parse_evalset</code>
@@ -301,6 +293,31 @@ flowchart LR
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1675">engine.py:1675 <span class="ref-line">version</span></a>
       的 <code>version</code> 字段只写不读，老读端忽略新键、新读端对缺席整节不渲染。
       把它误登记成「版本门缺失」会导致有人去加一个没有消费者的门——注册表的价值一半在于把「不是问题」也写清楚。
+    </p>
+
+    <h2 id="ossie-gate">已补齐：OSSIE 根形状与版本门</h2>
+
+    <p>
+      原先的 <code>ossie-version-gate</code> 缺口已经关闭。语义文档现在按
+      <strong>OSSIE 0.2 扁平根</strong>读写：模型字段（<code>name</code> /
+      <code>datasets</code> / <code>metrics</code> / <code>relationships</code>）
+      直接在文档根，<code>masking</code> / <code>topics</code> /
+      <code>hierarchies</code> / <code>time_spine</code> 与它们同层。
+      非空文档必须带可解析的字符串 <code>version</code>；比本程序支持的版本
+      <strong>更新</strong>就拒绝（升级 Trove 或回退文件），更老的扁平版
+      <strong>收养</strong>并保留文件里的版本字符串。
+    </p>
+
+    <p>
+      旧 v0.1 的 <code>semantic_model</code> 列表包装被<strong>硬拒绝</strong>，
+      错误文案给出可执行的迁移命令；存量文件经纯转换器
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_migrate.py">ossie_migrate.py <span class="ref-line">convert_text</span></a>
+      升级（保留注释与键序，转换后做 YAML 数据等价与解析回环两道校验）。
+      写路径统一经
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py">ossie.py <span class="ref-line">stamp_ossie_version</span></a>
+      盖章：<code>version</code> 放第一键、老扁平版升到当前、更新版本拒绝写。
+      镜像与语义层在读不懂文件时保留 last-known-good，并把原因写进拒绝报告——
+      「文件是新的、代码是旧的」不会退化成一次静默的空模型。
     </p>
 
     <h2 id="usage">怎么用：新增一个版本点</h2>
@@ -387,7 +404,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 47609ca</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -133,13 +133,16 @@ flowchart LR
     <p>
       每个数据源有一份 <code>semantics.yml</code>，它不是「提示词素材」，而是这个数据源的
       <strong>契约</strong>：哪些指标存在、每个指标怎么算、哪些字段是维度、表之间怎么关联。
-      文件格式遵循 Apache OSSIE 的 core spec——顶层是 <code>semantic_model</code>，
-      下面挂 <code>datasets</code> 与 <code>metrics</code>，指标表达式按方言分别给出：
+      文件格式遵循 Apache OSSIE 的 core spec <strong>0.2 扁平根</strong>：文档顶层就是模型本身
+      （<code>version</code> / <code>name</code> / <code>datasets</code> / <code>metrics</code> /
+      <code>relationships</code>），指标表达式按方言分别给出。<code>version</code> 必填并过版本门——
+      比本程序新的版本拒绝，更老的扁平版收养；旧 v0.1 的 <code>semantic_model</code> 列表包装
+      硬拒绝并给出可执行的迁移命令。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_format.py#L40">ossie_format.py:40 <span class="ref-line">dialects</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_format.py#L76">ossie_format.py:76 <span class="ref-line">semantic_model</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_format.py#L55">ossie_format.py:55 <span class="ref-line">terms_to_ossie_document</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L142">ossie.py:142 <span class="ref-line">document_refusal</span></a>
     </p>
 
     <p>
@@ -149,8 +152,8 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L88">ossie.py:88 <span class="ref-line">_dataset_refs</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L175">ossie.py:175 <span class="ref-line">parse_ossie</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L230">ossie.py:230 <span class="ref-line">_dataset_refs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L317">ossie.py:317 <span class="ref-line">parse_ossie</span></a>
     </p>
 
     <p>
@@ -324,8 +327,8 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L1036">refuse.py:1036 <span class="ref-line">make_refuse</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/semantic_draft.py#L229">semantic_draft.py:229 <span class="ref-line">draft_refusal_extension</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1029">manage.py:1029 <span class="ref-line">SemanticManager</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/semantic_draft.py#L230">semantic_draft.py:230 <span class="ref-line">draft_refusal_extension</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1047">manage.py:1047 <span class="ref-line">SemanticManager</span></a>
     </p>
 
     <p>
@@ -490,7 +493,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L3">service.py:3 <span class="ref-line">human-editable</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L438">init_pipeline.py:438 <span class="ref-line">INIT_FILES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L436">init_pipeline.py:436 <span class="ref-line">INIT_FILES</span></a>
     </p>
 
     <p>
@@ -511,7 +514,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1129">manage.py:1129 <span class="ref-line">create_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L1147">manage.py:1147 <span class="ref-line">create_draft</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L648">decisions.py:648 <span class="ref-line">put_decisions</span></a>
     </p>
 
@@ -525,9 +528,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L617">service.py:617 <span class="ref-line">pending 草稿不参与检索</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1735">service.py:1735 <span class="ref-line">confirmed</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1980">service.py:1980 <span class="ref-line">pending</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L635">service.py:635 <span class="ref-line">pending 草稿不参与检索</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1758">service.py:1758 <span class="ref-line">confirmed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L2003">service.py:2003 <span class="ref-line">pending</span></a>
     </p>
 
     <div class="callout warn">
@@ -634,7 +637,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 47609ca</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

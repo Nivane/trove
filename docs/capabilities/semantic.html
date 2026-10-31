@@ -39,11 +39,15 @@
     <h2 id="role">语义层的职责边界</h2>
 
     <p>
-      语义模型存在 <code>semantics.yml</code> 里，采用 <strong>Apache OSSIE 核心规范的
-      <code>semantic_model</code> 结构</strong>（datasets + metrics，表达式按方言声明、表名限定）。
-      这是唯一被读取的格式：更早的扁平 <code>terms:</code> 写法<strong>已经不再读取</strong>——
-      解析出来是零条，只留一条迁移警告。手里有旧格式的库，重跑一次
-      <code>/kb init --overwrite</code> 再生成即可。
+      语义模型存在 <code>semantics.yml</code> 里，采用 <strong>Apache OSSIE 0.2 扁平根</strong>
+      （<code>version</code> / <code>name</code> / <code>datasets</code> / <code>metrics</code> /
+      <code>relationships</code> 直接在文档根，表达式按方言声明、表名限定）。
+      这是唯一被读取的格式：非空文档必须带可解析的 <code>version</code>，比本程序新的版本拒绝；
+      更早的扁平 <code>terms:</code> 写法与 v0.1 的 <code>semantic_model</code> 列表包装
+      <strong>已经不再读取</strong>——后者给出可执行的迁移命令（<code>/kb migrate</code>
+      可查看每份文件的原因）。手里有旧格式的库，用
+      <code>scripts/migrate_semantics_v02.py</code> 迁移，或重跑一次
+      <code>/kb init --overwrite</code> 再生成。
     </p>
 
     <p>
@@ -143,7 +147,7 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L40">landing.py:40 <span class="ref-line">build_document</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L45">landing.py:45 <span class="ref-line">build_document</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/__init__.py#L33">importers/__init__.py:33 <span class="ref-line">run_semantic_import</span></a>
     </p>
 
@@ -567,7 +571,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 47609ca</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

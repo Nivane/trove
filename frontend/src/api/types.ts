@@ -695,7 +695,7 @@ export interface SemanticModelInfo {
   metrics: SemanticMetricInfo[]
   datasets: SemanticDatasetInfo[]
   relationships: SemanticRelationshipInfo[]
-  version?: number
+  version?: string
   examples?: string[]
   time_spine?: SemanticTimeSpine | null
   masking?: { default_policy?: string; bypass_scopes?: string[]; hash_salt_ref?: string }
