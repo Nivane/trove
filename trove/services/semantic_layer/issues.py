@@ -296,6 +296,22 @@ def blocking_issues(issues: list[str]) -> list[str]:
     return blocking
 
 
+def split_blocking_issues(
+    issues: list[str],
+) -> tuple[list[str], list[str]]:
+    """把同一份 lint 结果分成「阻断」与「放行的 advisory」两侧。
+
+    判据**只来自** :func:`blocking_issues` —— 写盘/提交门禁仍只调用前者，
+    这里只是给展示/干跑面一个同源的分区视图。未命中规则表的串落阻断侧
+    （fail-closed）；两侧都保留原顺序与重复项（不丢问题）。
+    """
+    raw = [str(item) for item in issues or []]
+    blocking = blocking_issues(raw)
+    blocked = set(blocking)
+    advisory = [item for item in raw if item not in blocked]
+    return blocking, advisory
+
+
 def structured_issues(issues: list[str]) -> list[dict[str, Any]]:
     """扁平 lint/校验串 → ``issue_items``(契约:severity/code/target/message/hint)。
 

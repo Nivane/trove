@@ -182,6 +182,8 @@ describe('OntologyView — 渲染与 KPI', () => {
   it('KPI 纯派生（对象/链接/层级缺席→0/声明覆盖率）；图按投影逐条画出来', async () => {
     const view = await mountView()
     expect(kpiValues(view)).toEqual(['3', '2', '0', '67%'])
+    // 链接块只在有未命名链接时给缺口副行（2 条里 1 条有业务名）。
+    expect(view.findAll('.kpi-tile')[1].find('.kpi-sub').text()).toBe('已命名 1 / 2')
 
     // 节点：声明顺序保留，位置由结构决定（x 随层号递增）。
     expect(nodeIds(view)).toEqual(['loan', 'account', 'district'])
@@ -213,6 +215,20 @@ describe('OntologyView — 渲染与 KPI', () => {
     // 未声明但存在 ≠ 空态：引导卡不出现，图与侧栏在位。
     expect(view.find('.state-panel').exists()).toBe(false)
     expect(view.find('.onto-panel').exists()).toBe(true)
+  })
+
+  it('链接副行是 gap-only：全部命名不显示，零链接也不显示（不制造噪声）', async () => {
+    graphBody = clone(GRAPH)
+    ;(graphBody as any).links = [clone(GRAPH).links[0]]
+    const allNamed = await mountView()
+    expect(kpiValues(allNamed)).toEqual(['3', '1', '0', '67%'])
+    expect(allNamed.findAll('.kpi-tile')[1].find('.kpi-sub').exists()).toBe(false)
+
+    graphBody = clone(GRAPH)
+    ;(graphBody as any).links = []
+    const noLinks = await mountView()
+    expect(kpiValues(noLinks)).toEqual(['3', '0', '0', '67%'])
+    expect(noLinks.findAll('.kpi-tile')[1].find('.kpi-sub').exists()).toBe(false)
   })
 
   it('身份层：声明对象拿身份色，未声明保持灰「表」（声明即物化）', async () => {

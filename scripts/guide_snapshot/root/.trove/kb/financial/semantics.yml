@@ -56,6 +56,15 @@ datasets:
       - creation date
       - account opening date
     description: the creation date of the account
+  entity:
+    display_name: Bank Account
+    natural_keys:
+    - account_id
+    aliases:
+    - bank account
+    - deposit account
+    - 账户
+    - 账号
 - name: card
   source: financial.card
   primary_key:
@@ -111,6 +120,15 @@ datasets:
       - issue date
       - card issue date
     description: the date when the credit card issued
+  entity:
+    display_name: Bank Card
+    natural_keys:
+    - card_id
+    aliases:
+    - bank card
+    - payment card
+    - 银行卡
+    - 卡片
 - name: client
   source: financial.client
   primary_key:
@@ -164,6 +182,15 @@ datasets:
       synonyms:
       - residence district
     description: location of branch
+  entity:
+    display_name: Client
+    natural_keys:
+    - client_id
+    aliases:
+    - customer
+    - account holder
+    - 客户
+    - 顾客
 - name: disp
   source: financial.disp
   primary_key:
@@ -217,6 +244,15 @@ datasets:
       - relationship type
       - access type
     description: type of disposition
+  entity:
+    display_name: Account Authorization
+    natural_keys:
+    - disp_id
+    aliases:
+    - account disposition
+    - disposition
+    - 账户支配关系
+    - 账户授权
 - name: district
   source: financial.district
   primary_key:
@@ -595,6 +631,15 @@ datasets:
       synonyms:
       - unemployment deviation
     description: no. of committed crimes 1996
+  entity:
+    display_name: District
+    natural_keys:
+    - district_id
+    aliases:
+    - district area
+    - region
+    - 地区
+    - 行政区
 - name: loan
   source: financial.loan
   primary_key:
@@ -683,6 +728,15 @@ datasets:
       - repayment state
       - loan state
     description: repayment status
+  entity:
+    display_name: Loan
+    natural_keys:
+    - loan_id
+    aliases:
+    - borrowing
+    - credit facility
+    - 贷款
+    - 借款
 - name: order
   source: financial.order
   primary_key:
@@ -776,6 +830,15 @@ datasets:
       - payment purpose
       - transaction category
     description: purpose of the payment
+  entity:
+    display_name: Payment Order
+    natural_keys:
+    - order_id
+    aliases:
+    - standing order
+    - bank order
+    - 支付订单
+    - 付款指令
 - name: trans
   source: financial.trans
   primary_key:
@@ -924,6 +987,15 @@ datasets:
       synonyms:
       - counterparty account
     description: account number of the counterparty
+  entity:
+    display_name: Transaction
+    natural_keys:
+    - trans_id
+    aliases:
+    - account transaction
+    - payment transaction
+    - 交易流水
+    - 转账记录
 relationships:
 - name: account_to_district
   from: account
@@ -933,6 +1005,7 @@ relationships:
   to_columns:
   - district_id
   cardinality: 1:N
+  display_name: located in
 - name: card_to_disp
   from: card
   to: disp
@@ -941,6 +1014,7 @@ relationships:
   to_columns:
   - disp_id
   cardinality: 1:N
+  display_name: bound to
 - name: client_to_district
   from: client
   to: district
@@ -949,6 +1023,7 @@ relationships:
   to_columns:
   - district_id
   cardinality: 1:N
+  display_name: lives in
 - name: disp_to_client
   from: disp
   to: client
@@ -957,6 +1032,7 @@ relationships:
   to_columns:
   - client_id
   cardinality: 1:N
+  display_name: belongs to
 - name: disp_to_account
   from: disp
   to: account
@@ -965,6 +1041,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: operates
 - name: loan_to_account
   from: loan
   to: account
@@ -973,6 +1050,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: disbursed to
 - name: order_to_account
   from: order
   to: account
@@ -981,6 +1059,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: initiated from
 - name: trans_to_account
   from: trans
   to: account
@@ -989,6 +1068,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: occurs on
 metrics:
 - name: number of account records
   expression:
@@ -2054,3 +2134,10 @@ topics:
   - How many clients are there by gender?
   - What is the average salary in each district?
   - What is the unemployment rate in 1995?
+hierarchies:
+- name: region_to_district
+  dataset: district
+  display_name: Region to District
+  levels:
+  - A3
+  - A2

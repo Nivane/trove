@@ -98,28 +98,28 @@ datasets:
   primary_key: [loan_id]
   fields: [...]
   entity:                       <span class="cmt"># ① 对象声明：这个数据集是什么业务对象</span>
-    display_name: 贷款
+    display_name: Loan
     natural_keys: [loan_id]
-    aliases: [借款, 贷款单]
-- name: customer
-  primary_key: [customer_id]
+    aliases: [borrowing, 贷款, 借款]
+- name: account
+  primary_key: [account_id]
   fields: [...]
   entity:
-    display_name: 客户
-    aliases: [用户]
+    display_name: Bank Account
+    aliases: [bank account, deposit account, 账户, 账号]
 relationships:
-- name: loan_to_customer        <span class="cmt"># ② 关系声明：这条边在业务里叫什么</span>
+- name: loan_to_account        <span class="cmt"># ② 关系声明：这条边在业务里叫什么</span>
   from: loan
-  to: customer
-  from_columns: [customer_id]
-  to_columns: [customer_id]
-  cardinality: N:1
-  display_name: 属于
+  to: account
+  from_columns: [account_id]
+  to_columns: [account_id]
+  cardinality: 1:N
+  display_name: disbursed to
 hierarchies:                    <span class="cmt"># ③ 层级声明：维度链，粗 → 细</span>
-- name: region_chain
-  display_name: 地区层级
+- name: region_to_district
+  display_name: Region to District
   dataset: district
-  levels: [region, province, city]</code></pre>
+  levels: [A3, A2]</code></pre>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L165">models.py:165 <span class="ref-line">SemanticEntity</span></a>
@@ -248,7 +248,7 @@ flowchart LR
           </tr>
           <tr>
             <td><strong>生成提示</strong></td>
-            <td>已声明的数据集多一行确定性事实：<code>Object: 贷款 (aliases: 借款; natural keys: loan_id)</code>——计划书写对象语言时有可依的规范词，不必猜表名或发明键名</td>
+            <td>已声明的数据集多一行确定性事实：<code>Object: Loan (aliases: borrowing, 贷款, 借款; natural keys: loan_id)</code>——计划书写对象语言时有可依的规范词，不必猜表名或发明键名</td>
             <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/schema_linking.py#L248">schema_linking.py:248 <span class="ref-line">_object_summary_line</span></a></td>
           </tr>
           <tr>
@@ -339,7 +339,8 @@ flowchart LR
       页面顶部四块 KPI：对象数 / 链接数 / 层级数 / <strong>声明覆盖率</strong>（声明了实体的对象占比）。
       图本身是确定性的：位置由关系流向决定，同一份语义模型在任何一次渲染里都是同一张图；
       只放大缩小（1×–3×）、不平移，节点键盘可达，指向未声明数据集的悬空链接明确提示而不是静默丢掉。
-      对象数超过 60 时给一条规模提示。
+      对象数超过 60 时给一条规模提示。链接块只在存在<strong>未命名链接</strong>时补一行
+      「已命名 n / N」缺口副行；全部命名（如图中的源）不显示副行——不制造噪声。
     </p>
 
     <figure class="shot">
@@ -352,7 +353,7 @@ flowchart LR
       </div>
       <figcaption>图 2 · 本体页（<code>mysql_fin</code>）：三块声明在同一屏——对象、链接、层级，加一行 KPI 把「声明了多少」说成数。</figcaption>
       <ol class="shot-legend">
-        <li><span class="n">1</span><strong>四块 KPI</strong>——对象 / 链接 / 层级 / <strong>声明覆盖率</strong>（声明了实体的对象占比，图里这个源是 100%）。覆盖率不是打分，是缺口提示：没声明的数据集照样出现在图上（灰色「表」节点），缺口一眼可见而不是被藏起来。</li>
+        <li><span class="n">1</span><strong>四块 KPI</strong>——对象 / 链接 / 层级 / <strong>声明覆盖率</strong>（声明了实体的对象占比，图里这个源是 100%）。覆盖率不是打分，是缺口提示：没声明的数据集照样出现在图上（灰色「表」节点），缺口一眼可见而不是被藏起来。链接块同理：有未命名链接时补「已命名 n / N」副行，全部命名则不显示。</li>
         <li><span class="n">2</span><strong>对象图</strong>——节点用实体显示名，边用关系声明的业务名 + 基数（贷款「<strong>发放至</strong>」银行账户 1:N）。位置由关系流向决定（左 → 右），同一份语义模型每次渲染都是同一张图；灰色虚线节点是尚未声明实体的数据集。</li>
         <li><span class="n">3</span><strong>详情栏</strong>——选中对象后是它的声明原文：自然键 <code>account_id</code>、别名「账户 / 账号」（这两个别名就是表锚定里会被认的词）、业务度量与出入链接。页面唯一的动作是「编辑（回语义台）」深链——本体页不建模、不编辑。</li>
         <li><span class="n">4</span><strong>层级卡</strong>——第三块声明：地区层级 <code>A3 · A2</code>（粗 → 细，级别按声明序）。分析引擎的下钻读的就是这条链：候选维度按层级序重排、钻下一级取同链的细一级；没声明链的维度不会被硬凑成上下级。</li>
@@ -360,7 +361,7 @@ flowchart LR
     </figure>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/views/admin/OntologyView.vue#L54">OntologyView.vue:54 <span class="ref-line">coverageText</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/views/admin/OntologyView.vue#L55">OntologyView.vue:55 <span class="ref-line">coverageText</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/src/components/ontology/OntologyGraph.vue#L58">OntologyGraph.vue:58 <span class="ref-line">ZOOM_MAX</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L196">semantic.py:196 <span class="ref-line">semantic_object_graph</span></a>
     </p>
@@ -369,6 +370,12 @@ flowchart LR
 
     <p>
       三条路，出口全在同一个门槛上：<strong>改动一律先落 pending 草稿，确认才写入</strong>。
+    </p>
+
+    <p>
+      内置的 <code>demo</code> / <code>financial</code> 两份 KB 已随仓库带完整的三块声明
+      （8 个对象 / 8 条命名链接 / 1 条层级），接入即建模、无需手写；<code>mysql_fin</code>
+      是中文业务名的同一套结构。
     </p>
 
     <div class="table-wrap">
@@ -424,6 +431,13 @@ flowchart LR
         </tbody>
       </table>
     </div>
+
+    <p>
+      这个分级与 <code>trove validate</code>、<code>scripts/lint_kb.py</code> 的干跑面
+      同一判据（<code>split_blocking_issues</code> 只复用 <code>blocking_issues</code>）：
+      advisory 落 <strong>warning</strong>、不改变默认退出码；<code>--strict</code>
+      仍把 warning 当失败。写盘 / git 提交门禁则只认阻断侧，行为不变。
+    </p>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/issues.py#L252">issues.py:252 <span class="ref-line">_ADVISORY_CODES</span></a>
@@ -507,7 +521,7 @@ flowchart LR
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L91">verify.py:91 <span class="ref-line">verify_declarations</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L239">verify.py:239 <span class="ref-line">_probe_dedup</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L282">verify.py:282 <span class="ref-line">_coverage</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L408">service.py:408 <span class="ref-line">_live_semantic_checks</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L411">service.py:411 <span class="ref-line">_live_semantic_checks</span></a>
     </p>
 
     <h2 id="limits">诚实边界</h2>
@@ -563,7 +577,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: f2b79dd</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

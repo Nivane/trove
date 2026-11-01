@@ -208,6 +208,32 @@ async def test_kb_duplicate_examples_warn_only(tmp_path):
     assert report.exit_code(strict=True) == 1
 
 
+async def test_kb_semantics_advisory_is_warning_not_error(tmp_path):
+    """语义缺口(层级收敛)在干跑里落 warning:默认放过,--strict 才拦。
+
+    与写盘/提交门禁同一判据(``blocking_issues``)—— 库存 KB 不该被自己的
+    已知缺口判成硬错误。
+    """
+    import copy
+
+    data = copy.deepcopy(_SEMANTICS)
+    data["hierarchies"] = [{
+        "name": "loan_parts", "dataset": "loan",
+        "levels": ["loan_id", "amount"],
+    }]
+    data["metrics"][0]["filter"] = "amount = 100"
+    _make_kb(tmp_path, semantics=data)
+
+    report = await run_validate("mini", project_root=tmp_path)
+
+    assert report.errors == [], [i.message for i in report.errors]
+    advisory = [i for i in report.warnings
+                if i.check == "kb.semantics" and "过滤/派生条件对层级" in i.message]
+    assert advisory
+    assert report.exit_code() == 0
+    assert report.exit_code(strict=True) == 1
+
+
 async def test_kb_root_level_masking_is_legal(tmp_path):
     """OSSIE 0.2 扁平根:``masking`` 就声明在文档根 —— 不再算错放。"""
     data = dict(_SEMANTICS)

@@ -38,6 +38,7 @@ from trove.services.kb.live_lint import (  # noqa: F401
     check_undocumented_columns,
 )
 from trove.services.kb.service import KbService, _parse_file, resolve_kb_root
+from trove.services.semantic_layer.issues import split_blocking_issues
 
 
 def parse_args():
@@ -93,7 +94,10 @@ def main() -> int:
             import yaml as _yaml
             _sem_data = _yaml.safe_load(
                 semantics_yml.read_text(encoding="utf-8")) or {}
-            errors += lint_semantics_document(_sem_data)
+            _blocking, _advisory = split_blocking_issues(
+                lint_semantics_document(_sem_data))
+            errors += _blocking
+            warnings += _advisory
         except Exception as e:
             errors.append(f"semantics.yml 读取失败: {e}")
 
