@@ -24,6 +24,10 @@ from trove.services.kb.lint import (
     lint_tables,
     parse_enum_values,
 )
+from trove.services.semantic_layer.issues import (
+    blocking_issues,
+    structured_issues,
+)
 from trove.services.semantic_layer.models import MAX_FIELD_VALUES
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -624,13 +628,26 @@ class TestLintMask:
 
         assert lint_semantics_document(doc) == []
 
-    @pytest.mark.parametrize("datasource", ["demo", "financial", "mysql_fin"])
-    def test_stock_semantics_document_is_clean(self, datasource):
-        """A11:存量 semantics.yml 整份 lint 结果不变(新规则不得误报)。"""
-        path = (_REPO_ROOT / ".trove" / "kb" / datasource / "semantics.yml")
+    @pytest.mark.parametrize(
+        ("datasource", "advisories"),
+        [("demo", 14), ("financial", 8), ("mysql_fin", 0)],
+    )
+    def test_stock_semantics_document_has_no_blocking_issues(
+            self, datasource, advisories):
+        """库存 KB:零阻断,advisory 数量与归因冻结(已知缺口如实暴露)。
 
-        assert lint_semantics_document(
-            yaml.safe_load(path.read_text(encoding="utf-8")), dialect="sqlite") == []
+        demo/financial 的层级 ``region_to_district`` 与若干口径把 A2/A3 钉在
+        某一支 —— 这些是**语义缺口提示**,不是结构错误。数量冻结让内容漂移
+        可见;不要靠删层级或 suppress 把它们变绿。
+        """
+        path = (_REPO_ROOT / ".trove" / "kb" / datasource / "semantics.yml")
+        issues = lint_semantics_document(
+            yaml.safe_load(path.read_text(encoding="utf-8")), dialect="sqlite")
+
+        assert blocking_issues(issues) == []
+        assert len(issues) == advisories
+        assert {item["code"] for item in structured_issues(issues)} <= {
+            "hierarchy_coverage_gap"}
 
 
 

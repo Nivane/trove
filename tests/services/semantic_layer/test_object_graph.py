@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -347,6 +348,69 @@ def test_partial_declarations_degrade_to_empty_lists():
     graph = build_object_graph(m)
     assert graph["hierarchies"] == []
     assert graph["links"] == []
+
+
+class TestStockKbContent:
+    """内置 demo / financial 的三块内容侧声明(对象 / 链接 / 层级)。
+
+    本体是 ``semantics.yml`` 的只读投影 —— 内容侧空着,页面与生成提示就只剩
+    表名。这组断言钉住「开箱即用的本体不是空壳」,同时冻结业务词汇本身
+    (改词 = 改提示面与表锚定,必须是有意的变更)。
+    """
+
+    _ROOT = Path(__file__).resolve().parents[3]
+
+    _DISPLAY_NAMES = {
+        "account": "Bank Account",
+        "card": "Bank Card",
+        "client": "Client",
+        "disp": "Account Authorization",
+        "district": "District",
+        "loan": "Loan",
+        "order": "Payment Order",
+        "trans": "Transaction",
+    }
+
+    _LINK_NAMES = {
+        "account_to_district": "located in",
+        "card_to_disp": "bound to",
+        "client_to_district": "lives in",
+        "disp_to_client": "belongs to",
+        "disp_to_account": "operates",
+        "loan_to_account": "disbursed to",
+        "order_to_account": "initiated from",
+        "trans_to_account": "occurs on",
+    }
+
+    @pytest.mark.parametrize("datasource", ["demo", "financial"])
+    def test_stock_graph_declares_objects_links_and_hierarchy(self, datasource):
+        path = self._ROOT / ".trove" / "kb" / datasource / "semantics.yml"
+        graph = build_object_graph(
+            parse_ossie(path.read_text(encoding="utf-8"), preferred_dialect="sqlite"))
+
+        by_dataset = {o["dataset"]: o for o in graph["objects"]}
+        assert set(by_dataset) == set(self._DISPLAY_NAMES)
+        assert all(o["declared"] for o in graph["objects"])
+        for dataset, display_name in self._DISPLAY_NAMES.items():
+            obj = by_dataset[dataset]
+            assert obj["display_name"] == display_name
+            assert obj["natural_keys"] == [f"{dataset}_id"]
+            assert obj["aliases"], f"{dataset} 缺别名(中文提问无法锚定)"
+
+        by_link = {l["name"]: l for l in graph["links"]}
+        assert set(by_link) == set(self._LINK_NAMES)
+        for name, display_name in self._LINK_NAMES.items():
+            # 声明名 ≠ 列连接串回退 —— 本体页显示的是业务名。
+            assert by_link[name]["display_name"] == display_name
+
+        assert graph["hierarchies"] == [
+            {
+                "name": "region_to_district",
+                "display_name": "Region to District",
+                "dataset": "district",
+                "levels": ["A3", "A2"],
+            }
+        ]
 
 
 class TestDeterminism:

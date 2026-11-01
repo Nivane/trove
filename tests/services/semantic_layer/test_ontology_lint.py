@@ -30,6 +30,7 @@ from trove.services.semantic_layer.issues import (
     SEVERITY_ERROR,
     SEVERITY_WARNING,
     blocking_issues,
+    split_blocking_issues,
     structured_issues,
     validate_draft,
 )
@@ -479,6 +480,46 @@ class TestBlockingIssuesGrading:
             "指标「m」重复定义",
         ]
         assert blocking_issues(issues) == [issues[0], issues[2]]
+
+
+class TestSplitBlockingIssues:
+    """干跑/展示面的分区视图 —— 判据与写门禁同源,不另立一套。"""
+
+    _ADVISORY = (
+        "层级「geo」解析后只有 1 个级别 —— 单级链条没有可钻的下一级(x)"
+    )
+
+    def test_pure_advisory_goes_to_the_advisory_side(self):
+        blocking, advisory = split_blocking_issues([self._ADVISORY])
+        assert blocking == []
+        assert advisory == [self._ADVISORY]
+
+    def test_mixed_issues_partition_in_original_order(self):
+        issues = [
+            "层级「geo」重复定义",
+            self._ADVISORY,
+            "指标「m」重复定义",
+        ]
+        blocking, advisory = split_blocking_issues(issues)
+        assert blocking == [issues[0], issues[2]]
+        assert advisory == [issues[1]]
+
+    def test_unclassified_string_lands_on_the_blocking_side(self):
+        """fail-closed:未知串不因分区而变成 advisory。"""
+        blocking, advisory = split_blocking_issues(["半句没见过的问题描述"])
+        assert blocking == ["半句没见过的问题描述"]
+        assert advisory == []
+
+    def test_duplicates_are_preserved_on_both_sides(self):
+        issues = [self._ADVISORY, self._ADVISORY, "层级「geo」重复定义"]
+        blocking, advisory = split_blocking_issues(issues)
+        assert blocking == ["层级「geo」重复定义"]
+        assert advisory == [self._ADVISORY, self._ADVISORY]
+
+    def test_blocking_side_is_exactly_blocking_issues(self):
+        issues = [self._ADVISORY, "指标「m」重复定义"]
+        blocking, _ = split_blocking_issues(issues)
+        assert blocking == blocking_issues(issues)
 
 
 # ── 写盘/提交门禁的真实路径 ────────────────────────────────

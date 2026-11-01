@@ -57,6 +57,7 @@ from trove.services.kb.service import KbService, _parse_file
 from trove.services.kb.sql_guard import sqlglot_ok
 from trove.services.presets.models import Preset, parse_preset
 from trove.services.presets.service import _builtin_root
+from trove.services.semantic_layer.issues import split_blocking_issues
 from trove.services.semantic_layer.ossie import parse_ossie
 from trove.services.semantic_layer.verify import (
     VERIFIED,
@@ -318,8 +319,10 @@ def _check_kb(datasource: str, ds_dir: Path) -> tuple[list[Issue], dict[str, int
     if semantics_yml.exists():
         try:
             data = yaml.safe_load(semantics_yml.read_text(encoding="utf-8")) or {}
-            families.append(("error", "kb.semantics",
-                             lint_semantics_document(data)))
+            blocking, advisory = split_blocking_issues(
+                lint_semantics_document(data))
+            families.append(("error", "kb.semantics", blocking))
+            families.append(("warning", "kb.semantics", advisory))
         except Exception as e:  # noqa: BLE001 — 读取失败按一条 error 报,不炸整轮
             families.append(("error", "kb.semantics",
                              [f"semantics.yml 读取失败: {e}"]))

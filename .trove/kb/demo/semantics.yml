@@ -72,6 +72,15 @@ datasets:
       - creation date
       - date opened
     description: Date the account was created.
+  entity:
+    display_name: Bank Account
+    natural_keys:
+    - account_id
+    aliases:
+    - bank account
+    - deposit account
+    - 账户
+    - 账号
 - name: card
   source: card
   primary_key:
@@ -140,6 +149,15 @@ datasets:
       - issue date
       - date issued
     description: Date the card was issued.
+  entity:
+    display_name: Bank Card
+    natural_keys:
+    - card_id
+    aliases:
+    - bank card
+    - payment card
+    - 银行卡
+    - 卡片
 - name: client
   source: client
   primary_key:
@@ -205,6 +223,15 @@ datasets:
       - home district
       - residence district
     description: District where the client lives.
+  entity:
+    display_name: Client
+    natural_keys:
+    - client_id
+    aliases:
+    - customer
+    - account holder
+    - 客户
+    - 顾客
 - name: disp
   source: disp
   primary_key:
@@ -269,6 +296,15 @@ datasets:
     enum_display:
       OWNER: account owner
       DISPONENT: disponent (authorized user)
+  entity:
+    display_name: Account Authorization
+    natural_keys:
+    - disp_id
+    aliases:
+    - account disposition
+    - disposition
+    - 账户支配关系
+    - 账户授权
 - name: district
   source: district
   primary_key:
@@ -462,6 +498,15 @@ datasets:
       - crimes 96
       - crime count 1996
     description: Number of committed crimes in 1996.
+  entity:
+    display_name: District
+    natural_keys:
+    - district_id
+    aliases:
+    - district area
+    - region
+    - 地区
+    - 行政区
 - name: loan
   source: loan
   primary_key:
@@ -576,6 +621,15 @@ datasets:
       B: loan finished, loan not paid
       D: loan running, loan not paid
       C: C
+  entity:
+    display_name: Loan
+    natural_keys:
+    - loan_id
+    aliases:
+    - borrowing
+    - credit facility
+    - 贷款
+    - 借款
 - name: order
   source: order
   primary_key:
@@ -668,6 +722,15 @@ datasets:
       UVER: loan payment
       POJISTNE: POJISTNE
       LEASING: LEASING
+  entity:
+    display_name: Payment Order
+    natural_keys:
+    - order_id
+    aliases:
+    - standing order
+    - bank order
+    - 支付订单
+    - 付款指令
 - name: trans
   source: trans
   primary_key:
@@ -885,6 +948,15 @@ datasets:
       '12510681': '12510681'
       '93210345': '93210345'
       '18686104': '18686104'
+  entity:
+    display_name: Transaction
+    natural_keys:
+    - trans_id
+    aliases:
+    - account transaction
+    - payment transaction
+    - 交易流水
+    - 转账记录
 relationships:
 - name: account_to_district
   from: account
@@ -894,6 +966,7 @@ relationships:
   to_columns:
   - district_id
   cardinality: 1:N
+  display_name: located in
 - name: card_to_disp
   from: card
   to: disp
@@ -902,6 +975,7 @@ relationships:
   to_columns:
   - disp_id
   cardinality: 1:N
+  display_name: bound to
 - name: client_to_district
   from: client
   to: district
@@ -910,6 +984,7 @@ relationships:
   to_columns:
   - district_id
   cardinality: 1:N
+  display_name: lives in
 - name: disp_to_client
   from: disp
   to: client
@@ -918,6 +993,7 @@ relationships:
   to_columns:
   - client_id
   cardinality: 1:N
+  display_name: belongs to
 - name: disp_to_account
   from: disp
   to: account
@@ -926,6 +1002,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: operates
 - name: loan_to_account
   from: loan
   to: account
@@ -934,6 +1011,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: disbursed to
 - name: order_to_account
   from: order
   to: account
@@ -942,6 +1020,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: initiated from
 - name: trans_to_account
   from: trans
   to: account
@@ -950,6 +1029,7 @@ relationships:
   to_columns:
   - account_id
   cardinality: 1:N
+  display_name: occurs on
 metrics:
 - name: number of account records
   expression:
@@ -2210,3 +2290,10 @@ topics:
   - How many clients are there by gender?
   - What is the average salary in each district?
   - What is the unemployment rate in 1995?
+hierarchies:
+- name: region_to_district
+  dataset: district
+  display_name: Region to District
+  levels:
+  - A3
+  - A2

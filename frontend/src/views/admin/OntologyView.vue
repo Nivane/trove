@@ -28,6 +28,7 @@ import ObjectPanel from '../../components/ontology/ObjectPanel.vue'
 import {
   graphScaleHintNeeded,
   isObjectGraph,
+  linkHasName,
   type OntologySelection,
 } from '../../utils/ontologyLayout'
 
@@ -55,6 +56,14 @@ const coverageText = computed(() => {
   const total = objects.value.length
   if (!total) return '—'
   return `${Math.round((declaredCount.value / total) * 100)}%`
+})
+
+const namedLinks = computed(() => links.value.filter((l) => linkHasName(l)).length)
+/** 只在有未命名链接时显示缺口副行；全部命名不制造噪声。 */
+const linkSub = computed(() => {
+  const total = links.value.length
+  if (!total || namedLinks.value >= total) return ''
+  return `${t('ontologyLinksNamed', ui.lang)} ${namedLinks.value} / ${total}`
 })
 
 const scaleHint = computed(() => graphScaleHintNeeded(objects.value.length))
@@ -208,7 +217,7 @@ watch(
       <!-- KPI 行：全部纯派生自投影，不做第二次计数 -->
       <div class="onto-kpi-row">
         <KpiTile :label="t('ontologyKpiObjects', ui.lang)" :value="objects.length" />
-        <KpiTile :label="t('ontologyKpiLinks', ui.lang)" :value="links.length" />
+        <KpiTile :label="t('ontologyKpiLinks', ui.lang)" :value="links.length" :sub="linkSub" />
         <KpiTile :label="t('ontologyKpiHierarchies', ui.lang)" :value="hierarchies.length" />
         <KpiTile :label="t('ontologyKpiCoverage', ui.lang)" :value="coverageText" />
       </div>
