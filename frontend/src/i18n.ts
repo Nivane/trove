@@ -59,6 +59,15 @@ export const messages = {
     entityNaturalKeysLabel: '自然键（可多列，逗号分隔）',
     entityAliasesLabel: '别名（逗号分隔）',
     entityDraftHint: '保存生成草稿，管理员确认后生效',
+    // ── 钻取层级(审计 #3 剩余):语义台数据集抽屉里的层级创作面 ──
+    hierarchySectionTitle: '钻取层级',
+    semAddHierarchy: '新增层级',
+    hierarchyLevelsLabel: '级别（粗 → 细，逗号分隔）',
+    hierarchyEmpty: '这个数据集还没有声明层级',
+    hierarchyNameTaken: '层级「{n}」已存在——请直接编辑它，或换个名字',
+    hierarchyDraftHint: '保存生成草稿，管理员确认后生效',
+    hierarchyNameLockedHint: '层级名是草稿的寻址键，编辑时不可改；改名请删除后重建',
+    hierarchyDisplayKeepHint: '留空保留当前显示名（不会清空）',
     refusalRelatedLinks: '已声明的链接',
     refusalRelatedLinksEmpty: '这个方向还没有声明的链接——补一条即可让这类问题可答',
     semName: '名称',
@@ -2536,6 +2545,16 @@ export const messages = {
     entityNaturalKeysLabel: 'Natural keys (comma-separated)',
     entityAliasesLabel: 'Aliases (comma-separated)',
     entityDraftHint: 'Saving creates a draft; effective after confirmation',
+    // ── Drill hierarchies (audit #3 residual): authoring in the dataset drawer ──
+    hierarchySectionTitle: 'Drill hierarchies',
+    semAddHierarchy: 'New hierarchy',
+    hierarchyLevelsLabel: 'Levels (coarse → fine, comma-separated)',
+    hierarchyEmpty: 'No hierarchy declared for this dataset',
+    hierarchyNameTaken: 'A hierarchy named "{n}" already exists — edit it directly or choose another name',
+    hierarchyDraftHint: 'Saving creates a draft; effective after confirmation',
+    hierarchyNameLockedHint:
+      'The name is the draft address; it cannot be changed while editing — to rename, delete and re-add',
+    hierarchyDisplayKeepHint: 'Leave blank to keep the current display name (it is not cleared)',
     refusalRelatedLinks: 'Declared links',
     refusalRelatedLinksEmpty:
       'No link declared in this direction yet — add one to make such questions answerable',

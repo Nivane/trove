@@ -682,6 +682,14 @@ export interface SemanticRelationshipInfo {
   display_name?: string
 }
 
+/** 钻取层级(语义模型详情里的声明;本体投影另有 ObjectHierarchyInfo)。 */
+export interface SemanticHierarchyInfo {
+  name: string
+  display_name?: string | null
+  dataset?: string | null
+  levels?: string[]
+}
+
 export interface SemanticTimeSpine {
   field?: string
   granularity?: string
@@ -695,6 +703,8 @@ export interface SemanticModelInfo {
   metrics: SemanticMetricInfo[]
   datasets: SemanticDatasetInfo[]
   relationships: SemanticRelationshipInfo[]
+  /** 钻取层级:老后端 / 无层级的源不返回该键(缺省 = 空)。 */
+  hierarchies?: SemanticHierarchyInfo[]
   version?: string
   examples?: string[]
   time_spine?: SemanticTimeSpine | null

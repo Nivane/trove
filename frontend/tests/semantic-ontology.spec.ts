@@ -1,5 +1,6 @@
 /**
- * SemanticView · 本体形态(O1)—— 数据集抽屉的「本体实体」节 + bp_* 关系预填。
+ * SemanticView · 本体形态(O1)—— 数据集抽屉的「本体实体」/「钻取层级」节
+ * + bp_* 关系预填。
  *
  * 与 semantic.spec.ts 同款:对着页面真正消费的服务端契约打桩(GET
  * /v1/admin/semantic/{ds} · /history · /admin/audit,POST /validate ·
@@ -11,6 +12,9 @@
  *    后 create;空字段不写进 payload(缺席 = 没声明,不是空串);
  *  · 待审草稿以「本体实体」名词进 pending 列表,并在抽屉里给出草稿态徽标
  *    与冲突横幅(复用既有 sem-bad-draft);
+ *  · 层级节:已声明行可编辑(名称只读)/ 可删(走确认对话框),新建先校验
+ *    后落 pending 草稿;pending-only 行可见但只读,已声明的编辑以最新草稿
+ *    为基线 —— 同一条 draft → validate → pending → confirm 通道;
  *  · 拒绝卡的 bp_* 深链预填关系对话框(两端 + 列对;列对可空),消费即清
  *    URL,坏键不炸页面。
  */
@@ -64,6 +68,27 @@ const DATASETS = [
     // 未声明:键整个缺席(不是空实体)
     fields: [],
   },
+  {
+    // 层级归属的数据集:级别字段要在它自己的 fields 里(声明形状)
+    name: 'district',
+    source: 'district',
+    primary_key: ['district_id'],
+    description: 'One row per district',
+    fields: [
+      { name: 'district_id', datatype: 'integer', role: 'identifier' },
+      { name: 'A3', datatype: 'text', role: 'dimension' },
+      { name: 'A2', datatype: 'text', role: 'dimension' },
+    ],
+  },
+]
+
+const HIERARCHIES = [
+  {
+    name: 'region_to_district',
+    display_name: 'Region to District',
+    dataset: 'district',
+    levels: ['A3', 'A2'],
+  },
 ]
 
 const OK_VALIDATE = {
@@ -84,7 +109,13 @@ function resetFixtures() {
   PENDING = []
   DETAIL = {
     enabled: true,
-    model: { name: 'demo_model', metrics: [], datasets: DATASETS, relationships: [] },
+    model: {
+      name: 'demo_model',
+      metrics: [],
+      datasets: DATASETS,
+      relationships: [],
+      hierarchies: HIERARCHIES,
+    },
     issues: [],
     issue_items: [],
     drafts: { pending: PENDING, applied: [], rejected: [] },
@@ -164,6 +195,41 @@ function entityInputs(): HTMLInputElement[] {
   const form = drawer().querySelector('.sem-entity-form')
   if (!form) throw new Error('entity section missing')
   return Array.from(form.querySelectorAll<HTMLInputElement>('input'))
+}
+
+/** 钻取层级节(数据集抽屉里,独立于实体节)。 */
+function hierarchySection(): HTMLElement {
+  const section = drawer().querySelector<HTMLElement>('.sem-hier-block')
+  if (!section) throw new Error('hierarchy section missing')
+  return section
+}
+
+/** 层级表单的三只输入框(名称 / 显示名 / 级别,按模板顺序)。 */
+function hierarchyInputs(): HTMLInputElement[] {
+  const form = drawer().querySelector<HTMLElement>('.sem-hier-form')
+  if (!form) throw new Error('hierarchy form missing')
+  return Array.from(form.querySelectorAll<HTMLInputElement>('input'))
+}
+
+function hierarchyRow(text: string): HTMLElement {
+  const row = Array.from(drawer().querySelectorAll<HTMLElement>('.sem-hier-row')).find((el) =>
+    (el.textContent ?? '').includes(text),
+  )
+  if (!row) throw new Error(`hierarchy row not found: ${text}`)
+  return row
+}
+
+/** 层级动作区里的按钮:抽屉里实体节也有一个 Create draft,必须收窄。 */
+function hierarchyAction(text: string): HTMLButtonElement {
+  const actions = hierarchySection().querySelector<HTMLElement>('.sem-hier-actions')
+  if (!actions) throw new Error('hierarchy actions missing')
+  return findButton(actions, text)
+}
+
+function confirmPanel(): HTMLElement {
+  const panel = document.body.querySelector<HTMLElement>('.confirm-panel')
+  if (!panel) throw new Error('confirm dialog not open')
+  return panel
 }
 
 /** 关系对话框(打开过才会在 DOM 里)。 */
@@ -425,5 +491,262 @@ describe('SemanticView · bp_* 关系预填(O1)', () => {
     const inputs = relationInputs()
     expect(inputs[0].value).toBe('')
     expect(findButton(relationDialog(), 'Create draft').disabled).toBe(true)
+  })
+})
+
+describe('SemanticView · 钻取层级声明(审计 #3 剩余)', () => {
+  async function openDistrict() {
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=datasets')
+    await rowByText(view, 'district').trigger('click')
+    await settle()
+    return view
+  }
+
+  it('declared hierarchy renders; Edit pre-fills with the name locked', async () => {
+    await openDistrict()
+
+    const row = hierarchyRow('Region to District')
+    expect(row.textContent).toContain('A3')
+    expect(row.textContent).toContain('A2')
+
+    findButton(row, 'Edit').click()
+    await settle()
+
+    const inputs = hierarchyInputs()
+    expect(inputs.map((i) => i.value)).toEqual([
+      'region_to_district',
+      'Region to District',
+      'A3, A2',
+    ])
+    // 层级名是草稿寻址键:编辑时只读(改名 = 删旧建新)
+    expect(inputs[0].disabled).toBe(true)
+  })
+
+  it('create validates first, then lands a hierarchy draft', async () => {
+    await openDistrict()
+
+    hierarchyAction('New hierarchy').click()
+    await settle()
+    const inputs = hierarchyInputs()
+    await type(inputs[0], 'district_geo')
+    await type(inputs[1], 'District Geo')
+    await type(inputs[2], 'A3, A2')
+
+    hierarchyAction('Create draft').click()
+    await settle()
+
+    const payload = {
+      dataset: 'district',
+      display_name: 'District Geo',
+      levels: ['A3', 'A2'],
+    }
+    // 先干跑校验、后落草稿,同一个 payload(确认门不变:落的是 pending)
+    expect(calls('/v1/admin/semantic/demo/validate')[0]).toMatchObject({
+      kind: 'hierarchy',
+      action: 'upsert',
+      name: 'district_geo',
+      payload,
+    })
+    expect(calls('/v1/admin/semantic/demo/drafts')[0]).toMatchObject({
+      kind: 'hierarchy',
+      action: 'upsert',
+      name: 'district_geo',
+      payload,
+    })
+  })
+
+  it('blank display name is omitted from the payload (absent, not empty string)', async () => {
+    await openDistrict()
+
+    hierarchyAction('New hierarchy').click()
+    await settle()
+    const inputs = hierarchyInputs()
+    await type(inputs[0], 'district_geo')
+    await type(inputs[2], 'A3, A2')
+    hierarchyAction('Create draft').click()
+    await settle()
+
+    const { payload } = calls('/v1/admin/semantic/demo/drafts')[0]
+    expect(payload).toEqual({ dataset: 'district', levels: ['A3', 'A2'] })
+    expect(payload).not.toHaveProperty('display_name')
+  })
+
+  it('levels are required before Create draft is enabled', async () => {
+    await openDistrict()
+
+    hierarchyAction('New hierarchy').click()
+    await settle()
+    expect(hierarchyAction('Create draft').disabled).toBe(true)
+
+    await type(hierarchyInputs()[0], 'district_geo')
+    expect(hierarchyAction('Create draft').disabled).toBe(true)
+
+    await type(hierarchyInputs()[2], 'A3, A2')
+    expect(hierarchyAction('Create draft').disabled).toBe(false)
+  })
+
+  it('a declared name cannot be created again (guard, no POST)', async () => {
+    await openDistrict()
+
+    hierarchyAction('New hierarchy').click()
+    await settle()
+    const inputs = hierarchyInputs()
+    await type(inputs[0], 'region_to_district')
+    await type(inputs[2], 'A3, A2')
+
+    expect(hierarchyAction('Create draft').disabled).toBe(true)
+    expect(hierarchySection().textContent).toContain('already exists')
+    hierarchyAction('Create draft').click()
+    await settle()
+    expect(calls('/v1/admin/semantic/demo/drafts')).toHaveLength(0)
+  })
+
+  it('pending-only drafts are visible and read-only; pending list names the kind', async () => {
+    PENDING = [
+      {
+        id: 'h1',
+        kind: 'hierarchy',
+        action: 'upsert',
+        name: 'district_geo',
+        created_at: '2026-10-02T10:00:00Z',
+        payload: { dataset: 'district', levels: ['A3', 'A2'] },
+      },
+    ]
+    await openDistrict()
+
+    const row = hierarchyRow('district_geo')
+    expect(row.textContent).toContain('Pending')
+    // 草稿态行只读:修正 / 撤销走待审列表(再存只会叠第二条草稿)
+    expect(row.querySelector('button')).toBeNull()
+
+    const view2 = await mountView('/admin/semantic?ds=demo&tab=pending')
+    const pendingRow = rowByText(view2, 'district_geo')
+    expect(pendingRow.text()).toContain('Drill hierarchies')
+  })
+
+  it('a pending upsert is the edit baseline (not the stale model value)', async () => {
+    PENDING = [
+      {
+        id: 'h2',
+        kind: 'hierarchy',
+        action: 'upsert',
+        name: 'region_to_district',
+        created_at: '2026-10-02T10:00:00Z',
+        payload: { dataset: 'district', levels: ['A2'] },
+      },
+    ]
+    await openDistrict()
+
+    const row = hierarchyRow('Region to District')
+    expect(row.textContent).toContain('Pending')
+    findButton(row, 'Edit').click()
+    await settle()
+
+    const inputs = hierarchyInputs()
+    // 层级以最新草稿为基线;缺席的 display_name 回退模型值
+    expect(inputs[1].value).toBe('Region to District')
+    expect(inputs[2].value).toBe('A2')
+  })
+
+  it('delete goes through the confirm dialog and lands a delete draft', async () => {
+    await openDistrict()
+
+    findButton(hierarchyRow('Region to District'), 'Delete').click()
+    await settle()
+    expect(confirmPanel().textContent).toContain('region_to_district')
+
+    confirmPanel().querySelector<HTMLButtonElement>('.confirm-btn.is-solid')!.click()
+    await settle()
+
+    expect(calls('/v1/admin/semantic/demo/drafts')[0]).toMatchObject({
+      kind: 'hierarchy',
+      action: 'delete',
+      name: 'region_to_district',
+      payload: {},
+      note: '',
+    })
+  })
+
+  it('editing saves name + dataset + levels with the name field still locked', async () => {
+    await openDistrict()
+
+    findButton(hierarchyRow('Region to District'), 'Edit').click()
+    await settle()
+    await type(hierarchyInputs()[2], 'A3, A2, A1')
+    expect(hierarchyInputs()[0].disabled).toBe(true)
+
+    hierarchyAction('Create draft').click()
+    await settle()
+
+    expect(calls('/v1/admin/semantic/demo/drafts')[0]).toMatchObject({
+      kind: 'hierarchy',
+      action: 'upsert',
+      name: 'region_to_district',
+      payload: {
+        dataset: 'district',
+        display_name: 'Region to District',
+        levels: ['A3', 'A2', 'A1'],
+      },
+    })
+  })
+
+  it('switching assets closes the form and discards the half-typed input', async () => {
+    const view = await openDistrict()
+
+    hierarchyAction('New hierarchy').click()
+    await settle()
+    await type(hierarchyInputs()[0], 'half_typed')
+
+    await rowByText(view, 'account').trigger('click')
+    await settle()
+    await rowByText(view, 'district').trigger('click')
+    await settle()
+
+    expect(drawer().querySelector('.sem-hier-form')).toBeNull()
+  })
+
+  it('the draft drawer validates a hierarchy draft as hierarchy (DraftKind widening)', async () => {
+    PENDING = [
+      {
+        id: 'h3',
+        kind: 'hierarchy',
+        action: 'upsert',
+        name: 'district_geo',
+        created_at: '2026-10-02T10:00:00Z',
+        payload: { dataset: 'district', levels: ['A3', 'A2'] },
+      },
+    ]
+    mockApi()
+    await mountView('/admin/semantic?ds=demo&tab=pending&draft=h3')
+    await settle()
+
+    expect(calls('/v1/admin/semantic/demo/validate')[0]).toMatchObject({
+      kind: 'hierarchy',
+      action: 'upsert',
+      name: 'district_geo',
+      payload: { dataset: 'district', levels: ['A3', 'A2'] },
+    })
+  })
+
+  it('asset delete still uses the asset kind (ConfirmCtx widening does not leak)', async () => {
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=datasets')
+    await rowByText(view, 'account').trigger('click')
+    await settle()
+
+    // account 没有层级行 → 抽屉里只有 footer 的 Delete
+    findButton(drawer(), 'Delete').click()
+    await settle()
+    expect(confirmPanel().textContent).toContain('account')
+    confirmPanel().querySelector<HTMLButtonElement>('.confirm-btn.is-solid')!.click()
+    await settle()
+
+    expect(calls('/v1/admin/semantic/demo/drafts')[0]).toMatchObject({
+      kind: 'dataset',
+      action: 'delete',
+      name: 'account',
+      payload: {},
+    })
   })
 })
