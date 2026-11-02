@@ -41,6 +41,7 @@ import type {
   SemanticDraft,
   SemanticDriftItem,
   SemanticFieldInfo,
+  SemanticHierarchyInfo,
   SemanticHistoryEntry,
   SemanticIssueItem,
   SemanticMetricInfo,
@@ -470,15 +471,21 @@ function roleLabel(role: string): string {
 function kindLabel(kind: string): string {
   const map: Record<
     string,
-    'semMetric' | 'semField' | 'semDataset' | 'entitySectionTitle' | 'srcRelations'
+    | 'semMetric'
+    | 'semField'
+    | 'semDataset'
+    | 'entitySectionTitle'
+    | 'srcRelations'
+    | 'hierarchySectionTitle'
   > = {
     metric: 'semMetric',
     field: 'semField',
     dataset: 'semDataset',
     // 本体形态(O1):草稿 kind 与资产 kind 都不是新词汇,复用既有名词
-    // (「本体实体」/「连接关系」),没有第五种叫法。
+    // (「本体实体」/「连接关系」/「钻取层级」);资产视角仍只有三种。
     entity: 'entitySectionTitle',
     relationship: 'srcRelations',
+    hierarchy: 'hierarchySectionTitle',
   }
   const key = map[kind]
   return key ? t(key, ui.lang) : kind
@@ -673,7 +680,9 @@ type ConfirmCtx =
   | { mode: 'batch'; action: 'confirm' | 'reject' }
   | { mode: 'single'; draft: SemanticDraft }
   | { mode: 'change'; change: SemanticChangeDetail }
-  | { mode: 'delete'; kind: Kind; name: string }
+  // 删除走草稿通道,kind 因此是**写面**的 DraftKind(本体声明也能删),
+  // 不是资产表的三种。
+  | { mode: 'delete'; kind: DraftKind; name: string }
 
 const confirmCtx = ref<ConfirmCtx | null>(null)
 const confirmBusy = ref(false)
@@ -774,10 +783,10 @@ async function runConfirm() {
 
 /* ── draft creation / drawer ──────────────────────────────────── */
 
-/** 草稿 kind = 三种资产 + 本体形态(O1)的 entity / relationship。两者走
- *  的都是**同一条** draft 通道(同一个确认门),这里只是把写面的类型放宽;
+/** 草稿 kind = 三种资产 + 本体形态(O1)的 entity / relationship / hierarchy。
+ *  走的都是**同一条** draft 通道(同一个确认门),这里只是把写面的类型放宽;
  *  资产视角的 `Kind` 不动(资产表、引用、抽屉仍只有那三种)。 */
-type DraftKind = Kind | 'entity' | 'relationship'
+type DraftKind = Kind | 'entity' | 'relationship' | 'hierarchy'
 
 function draftsUrl(): string {
   return `/v1/admin/semantic/${encodeURIComponent(values.ds)}`
@@ -838,7 +847,7 @@ async function runDraftCheck(d: SemanticDraft) {
   draftCheckError.value = ''
   try {
     draftCheck.value = await validatePayload(
-      (d.kind as Kind) || 'metric',
+      (d.kind as DraftKind) || 'metric',
       (d.action as 'upsert' | 'delete') || 'upsert',
       d.name,
       d.payload ?? {},
@@ -1861,10 +1870,12 @@ function resetEntityForm() {
 
 // 只在**打开/换资产**时重填(assetKey 的每次赋值都是新对象):跟模型刷新
 // 联动的话,存完草稿那一次 reload 会把刚输入的值抹回去,读起来像没保存。
+// 层级表单同理(且换资产时无论哪种资产都关掉,不留上一份资产的半截输入)。
 watch(
   () => assetKey.value,
   () => {
     if (assetKey.value?.kind === 'dataset') resetEntityForm()
+    resetHierarchyForm()
   },
 )
 
@@ -1889,6 +1900,186 @@ async function saveEntity() {
   } finally {
     entityBusy.value = false
   }
+}
+
+/* ── 钻取层级声明(O1,审计 #3 剩余) ──────────────────────────────
+   数据集抽屉里的「钻取层级」节:层级名 + 显示名 + 粗 → 细级别链。
+   写路径照旧是 draft 通道(kind=hierarchy,name=层级名,payload 带
+   dataset + levels)—— 不新开写面,确认门不变。层级名是草稿寻址键与
+   lint 的全局唯一键:编辑时只读,改名 = 删旧建新。 */
+
+interface HierarchyRow {
+  /** model:<name> / draft:<id> —— 同名的已声明行与草稿行不会撞 key。 */
+  key: string
+  name: string
+  display_name: string
+  levels: string[]
+  dataset: string
+  /** 该层级名 + 数据集的最新 pending 草稿(徽标 / 编辑基线 / 删除入口）。 */
+  pending: SemanticDraft | null
+  is_declared: boolean
+}
+
+const hierarchies = computed<SemanticHierarchyInfo[]>(() => model.value?.hierarchies ?? [])
+const modelHierarchyNames = computed(() => new Set(hierarchies.value.map((h) => h.name)))
+
+/** 该层级名 + 数据集的最新 pending 草稿(delete 没有 payload.dataset,按名匹配)。 */
+function hierarchyDraftFor(name: string, dataset: string): SemanticDraft | null {
+  return (
+    pending.value
+      .filter(
+        (d) =>
+          d.kind === 'hierarchy' &&
+          d.name === name &&
+          (d.action === 'delete' || d.payload?.dataset === dataset),
+      )
+      .at(-1) ?? null
+  )
+}
+
+/** 编辑回填取**最新 pending upsert**:否则后一次编辑会静默回退上一次草稿。 */
+function hierarchyUpsertFor(name: string, dataset: string): SemanticDraft | null {
+  return (
+    pending.value
+      .filter(
+        (d) =>
+          d.kind === 'hierarchy' &&
+          d.action === 'upsert' &&
+          d.name === name &&
+          d.payload?.dataset === dataset,
+      )
+      .at(-1) ?? null
+  )
+}
+
+/** 抽屉当前数据集的层级行:已声明 + 只有 pending upsert 的草稿态行。
+ *  pending-only 行必须在**全模型**里没有同名声明;否则它是跨数据集冲突草稿,
+ *  不能渲染成「这个数据集的新层级」。 */
+const hierarchyRows = computed<HierarchyRow[]>(() => {
+  const ds = entityDataset.value
+  if (!ds) return []
+  const declared: HierarchyRow[] = hierarchies.value
+    .filter((h) => h.dataset === ds.name)
+    .map((h) => ({
+      key: `model:${h.name}`,
+      name: h.name,
+      display_name: h.display_name ?? '',
+      levels: h.levels ?? [],
+      dataset: h.dataset ?? ds.name,
+      pending: hierarchyDraftFor(h.name, ds.name),
+      is_declared: true,
+    }))
+  const adds: HierarchyRow[] = pending.value
+    .filter(
+      (d) =>
+        d.kind === 'hierarchy' &&
+        d.action === 'upsert' &&
+        d.payload?.dataset === ds.name &&
+        !modelHierarchyNames.value.has(d.name),
+    )
+    .map((d) => ({
+      key: `draft:${d.id}`,
+      name: d.name,
+      display_name:
+        typeof d.payload?.display_name === 'string' ? d.payload.display_name : '',
+      levels: Array.isArray(d.payload?.levels) ? d.payload.levels.map(String) : [],
+      dataset: ds.name,
+      pending: d,
+      is_declared: false,
+    }))
+  return [...declared, ...adds]
+})
+
+type HierarchyMode = '' | 'create' | 'edit'
+const hierarchyMode = ref<HierarchyMode>('')
+const hierarchyForm = reactive({ name: '', display_name: '', levels: '' })
+const hierarchyIssues = ref<SemanticIssueItem[]>([])
+const hierarchyBusy = ref(false)
+const hierarchyFormOpen = computed(() => hierarchyMode.value !== '')
+const hierarchyReady = computed(
+  () => !!hierarchyForm.name.trim() && splitCsv(hierarchyForm.levels).length > 0,
+)
+
+/** 新建时的名称占用守卫:已声明(**全局**,层级名跨数据集唯一)或已有 pending
+ *  upsert 同名都算 —— 否则 upsert 会静默覆盖 / 跨数据集移动。 */
+const hierarchyNameTaken = computed<{ name: string; dataset?: string } | null>(() => {
+  if (hierarchyMode.value !== 'create') return null
+  const name = hierarchyForm.name.trim()
+  if (!name) return null
+  const declared = hierarchies.value.find((h) => h.name === name)
+  if (declared) return { name, dataset: declared.dataset ?? undefined }
+  const draft = pending.value.find(
+    (d) => d.kind === 'hierarchy' && d.action === 'upsert' && d.name === name,
+  )
+  if (draft) {
+    const ds = draft.payload?.dataset
+    return { name, dataset: typeof ds === 'string' ? ds : undefined }
+  }
+  return null
+})
+
+function resetHierarchyForm() {
+  hierarchyMode.value = ''
+  Object.assign(hierarchyForm, { name: '', display_name: '', levels: '' })
+  hierarchyIssues.value = []
+}
+
+function startAddHierarchy() {
+  resetHierarchyForm()
+  hierarchyMode.value = 'create'
+}
+
+/** 编辑基线 = 最新 pending upsert 的 payload(缺席键回退模型值)。 */
+function startEditHierarchy(h: HierarchyRow) {
+  const draft = hierarchyUpsertFor(h.name, h.dataset)
+  const p = (draft?.payload ?? {}) as Record<string, unknown>
+  const levels = Array.isArray(p.levels) ? p.levels.map(String) : null
+  hierarchyIssues.value = []
+  hierarchyMode.value = 'edit'
+  Object.assign(hierarchyForm, {
+    name: h.name,
+    display_name:
+      typeof p.display_name === 'string' ? p.display_name : h.display_name,
+    levels: (levels ?? h.levels).join(', '),
+  })
+}
+
+function askDeleteHierarchy(h: HierarchyRow) {
+  confirmCtx.value = { mode: 'delete', kind: 'hierarchy', name: h.name }
+}
+
+async function saveHierarchy() {
+  const ds = entityDataset.value
+  if (!ds || !hierarchyReady.value || hierarchyNameTaken.value) return
+  hierarchyIssues.value = []
+  // 空显示名不写进 payload(缺席 = 没声明):编辑时留空按后端 carryover
+  // 保留原值,不是清空 —— 表单里有明文提示。
+  const payload: Record<string, unknown> = {
+    dataset: ds.name,
+    levels: splitCsv(hierarchyForm.levels),
+  }
+  if (hierarchyForm.display_name.trim()) payload.display_name = hierarchyForm.display_name.trim()
+  const name = hierarchyForm.name.trim()
+  hierarchyBusy.value = true
+  try {
+    const check = await validatePayload('hierarchy', 'upsert', name, payload)
+    if (!check.ok) {
+      hierarchyIssues.value = [...check.errors, ...check.warnings]
+      return
+    }
+    if (await createDraft('hierarchy', 'upsert', name, payload)) resetHierarchyForm()
+  } catch (e) {
+    toastError(e)
+  } finally {
+    hierarchyBusy.value = false
+  }
+}
+
+/** 只有「已声明且还没有 pending delete」的行才有删除入口。
+ *  pending-only 行没有(对未声明名字的 delete 是 no-op;撤销走待审列表),
+ *  已有待审删除也不重复落草稿。 */
+function hierarchyCanDelete(h: HierarchyRow): boolean {
+  return h.is_declared && h.pending?.action !== 'delete'
 }
 
 /* ── 连接关系声明(O1,设计 §4 行 2 / tech-plan E5) ──────────────────
@@ -2758,6 +2949,100 @@ const pageTitle = computed(() =>
               {{ t('semSaveDraft', ui.lang) }}
             </el-button>
             <span class="form-hint">{{ t('entityDraftHint', ui.lang) }}</span>
+          </div>
+        </section>
+
+        <!-- 钻取层级(审计 #3 剩余):数据集级声明,新建/编辑/删除都走既有
+             draft 通道。pending-only 行只读 —— 修正 / 撤销走待审列表,
+             这里只负责让刚创建的草稿看得见。 -->
+        <section v-if="isDatasetAsset" class="sem-block sem-hier-block">
+          <h4>{{ t('hierarchySectionTitle', ui.lang) }}</h4>
+          <p v-if="!hierarchyRows.length && !hierarchyFormOpen" class="empty-note">
+            {{ t('hierarchyEmpty', ui.lang) }}
+          </p>
+          <ul v-if="hierarchyRows.length" class="sem-hier-list">
+            <li v-for="h in hierarchyRows" :key="h.key" class="sem-hier-row">
+              <div class="sem-hier-main">
+                <span class="sem-hier-name">{{ h.display_name || h.name }}</span>
+                <span class="sem-hier-levels">
+                  <template v-for="(lv, i) in h.levels" :key="lv">
+                    <span v-if="i" class="sem-hier-sep">›</span>{{ lv }}
+                  </template>
+                  <span v-if="!h.levels.length" class="cell-muted">—</span>
+                </span>
+                <span v-if="h.pending" class="pill pill-neutral">{{ t('semPending', ui.lang) }}</span>
+              </div>
+              <div
+                v-if="h.is_declared && h.pending?.action !== 'delete'"
+                class="sem-hier-row-actions"
+              >
+                <button type="button" class="link-btn" @click="startEditHierarchy(h)">
+                  {{ t('semEdit', ui.lang) }}
+                </button>
+                <button
+                  v-if="hierarchyCanDelete(h)"
+                  type="button"
+                  class="link-btn sem-hier-link-danger"
+                  @click="askDeleteHierarchy(h)"
+                >
+                  {{ t('semDelete', ui.lang) }}
+                </button>
+              </div>
+            </li>
+          </ul>
+
+          <div v-if="hierarchyFormOpen" class="sem-hier-form">
+            <label class="sem-hier-label">{{ t('semName', ui.lang) }}</label>
+            <el-input
+              v-model="hierarchyForm.name"
+              size="small"
+              class="mono-input"
+              :disabled="hierarchyMode === 'edit'"
+            />
+            <p v-if="hierarchyNameTaken" class="form-error" role="alert">
+              {{ t('hierarchyNameTaken', ui.lang, hierarchyNameTaken.name) }}
+            </p>
+            <p v-else-if="hierarchyMode === 'edit'" class="form-hint">
+              {{ t('hierarchyNameLockedHint', ui.lang) }}
+            </p>
+            <label class="sem-hier-label">{{ t('entityDisplayName', ui.lang) }}</label>
+            <el-input v-model="hierarchyForm.display_name" size="small" />
+            <p v-if="hierarchyMode === 'edit'" class="form-hint">
+              {{ t('hierarchyDisplayKeepHint', ui.lang) }}
+            </p>
+            <label class="sem-hier-label">{{ t('hierarchyLevelsLabel', ui.lang) }}</label>
+            <el-input
+              v-model="hierarchyForm.levels"
+              size="small"
+              class="mono-input"
+              placeholder="A3, A2"
+            />
+          </div>
+          <ul v-if="hierarchyIssues.length" class="sem-check-list">
+            <li v-for="(it, i) in hierarchyIssues" :key="`h-${it.code}-${i}`">
+              <span class="pill" :class="severityPill(it.severity)">{{ severityLabel(it.severity) }}</span>
+              <span>{{ it.message }}</span>
+              <span v-if="it.hint" class="cell-muted">{{ it.hint }}</span>
+            </li>
+          </ul>
+          <div class="sem-hier-actions">
+            <el-button v-if="!hierarchyFormOpen" size="small" @click="startAddHierarchy">
+              {{ t('semAddHierarchy', ui.lang) }}
+            </el-button>
+            <template v-else>
+              <el-button
+                size="small"
+                :loading="hierarchyBusy"
+                :disabled="!hierarchyReady || !!hierarchyNameTaken"
+                @click="saveHierarchy"
+              >
+                {{ t('semSaveDraft', ui.lang) }}
+              </el-button>
+              <el-button size="small" @click="resetHierarchyForm">
+                {{ t('cancel', ui.lang) }}
+              </el-button>
+              <span class="form-hint">{{ t('hierarchyDraftHint', ui.lang) }}</span>
+            </template>
           </div>
         </section>
 
@@ -4088,6 +4373,72 @@ const pageTitle = computed(() =>
   align-items: center;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+
+/* ── 钻取层级节(审计 #3 剩余) ─────────────────────────────── */
+.sem-hier-list {
+  list-style: none;
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.sem-hier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.sem-hier-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.sem-hier-name {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.sem-hier-levels {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.sem-hier-sep {
+  padding: 0 2px;
+  color: var(--text-tertiary);
+}
+.sem-hier-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.sem-hier-link-danger,
+.sem-hier-link-danger:hover {
+  color: var(--danger-text);
+}
+.sem-hier-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.sem-hier-label {
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
+.sem-hier-form :deep(.el-input) {
+  margin-bottom: var(--sp-2);
+}
+.sem-hier-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  flex-wrap: wrap;
 }
 
 /* ── 关系对话框两端并排(数据源/列对同款) ────────────────────── */
