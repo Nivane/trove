@@ -156,6 +156,14 @@ export const useUiStore = defineStore('ui', {
       this.topicsLoaded = true
       this.pruneTopic()
     },
+    /** 管理端确认 / 合入会影响域清单的改动后调用:作废缓存并重拉。
+     *  平常的 loadTopics 命中缓存就返回(切会话回同源不重复拉),这里必须先
+     *  把 topicsLoaded 翻掉,否则「确认了草稿但选择器还是旧清单」。 */
+    async refreshTopics(ds: string) {
+      if (!ds) return
+      if (this.topicsFor === ds) this.topicsLoaded = false
+      await this.loadTopics(ds)
+    },
     /** 选中的域不在当前清单里(或已失效)就清掉 —— 状态自愈,不靠调用方。 */
     pruneTopic() {
       if (!this.topic) return

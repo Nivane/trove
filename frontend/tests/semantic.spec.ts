@@ -43,6 +43,8 @@ import { useUiStore } from '../src/stores/ui'
 const DESTS = [
   { name: 'demo', type: 'sqlite', default: true, status: 'connected' },
   { name: 'cold', type: 'mysql', status: 'disconnected' },
+  // 换源重置测试要一个可点的第二个源(选择器只列 connected)
+  { name: 'other', type: 'sqlite', status: 'connected' },
 ]
 
 const METRICS = [
@@ -974,5 +976,374 @@ describe('SemanticView', () => {
     const panel = drawer()
     expect(panel.textContent).toContain('为什么退款率上升?')
     expect(panel.textContent).toContain('refund_rate 口径调整')
+  })
+})
+
+/* ── 主题域创作面(审计 #3 收口) ─────────────────────────────────────
+   主题域是模型级声明(可跨数据集),写路径 = 既有 draft 通道
+   (kind=topic,name=域名):UI 只做新建/编辑/删除的收录面,确认门不动。 */
+
+const TOPIC = {
+  name: 'Loans',
+  description: '贷款业务域',
+  synonyms: ['贷款'],
+  datasets: ['loan', 'account'],
+  metrics: ['total_loan_amount'],
+  examples: ['How many loans?'],
+}
+
+type DraftLike = {
+  id: string
+  kind: string
+  action: string
+  name: string
+  note?: string
+  created_at?: string
+  payload: Record<string, unknown>
+}
+
+function topicDraft(over: Partial<DraftLike> = {}): DraftLike {
+  return {
+    id: 'td1',
+    kind: 'topic',
+    action: 'upsert',
+    name: 'Cards',
+    created_at: '2026-10-01T00:00:00Z',
+    payload: { datasets: ['loan'] },
+    ...over,
+  }
+}
+
+function setTopics(list: unknown[]) {
+  ;(DETAIL.model as Record<string, unknown>).topics = list
+}
+
+function setPending(list: unknown[]) {
+  ;(DETAIL.drafts as Record<string, unknown>).pending = list
+}
+
+function topicDialog(): HTMLElement {
+  const panel = document.body.querySelector<HTMLElement>('.sem-topic-dialog')
+  if (!panel) throw new Error('topic dialog not found')
+  return panel
+}
+
+/** el-dialog 关闭后内容仍留在 DOM(v-show),按 overlay 的可见性判断。 */
+function topicDialogVisible(): boolean {
+  const panel = document.body.querySelector<HTMLElement>('.sem-topic-dialog')
+  if (!panel) return false
+  const overlay = panel.closest<HTMLElement>('.el-overlay')
+  return !!overlay && !overlay.style.display.includes('none')
+}
+
+/** 对话框里的非下拉输入框,顺序 = 名称 / 同义词 / 备注。 */
+function topicInputs(): HTMLInputElement[] {
+  return Array.from(
+    document.body.querySelectorAll<HTMLInputElement>('.sem-topic-dialog input'),
+  ).filter((i) => !i.closest('.el-select'))
+}
+
+/** 对话框里的 textarea,顺序 = 描述 / 示例问句。 */
+function topicTextareas(): HTMLTextAreaElement[] {
+  return Array.from(
+    document.body.querySelectorAll<HTMLTextAreaElement>('.sem-topic-dialog textarea'),
+  )
+}
+
+function dropdownItem(text: string): HTMLElement {
+  const item = Array.from(
+    document.body.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+  ).find((i) => (i.textContent ?? '').trim() === text)
+  if (!item) throw new Error(`dropdown item not found: ${text}`)
+  return item
+}
+
+/** 打开第 index 个多选框并点一个选项(配方同 jobs.spec.ts)。 */
+async function pickTopicOption(index: number, text: string) {
+  const wrappers = document.body.querySelectorAll<HTMLElement>(
+    '.sem-topic-dialog .el-select__wrapper',
+  )
+  wrappers[index].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+  dropdownItem(text).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
+describe('SemanticView · 主题域创作面(审计 #3 收口)', () => {
+  it('lists declared topics with scope, metric anchors and description', async () => {
+    setTopics([TOPIC])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    expect(tabBtn(view, 'Topics').find('.tab-badge').text()).toBe('1')
+    const row = rowByText(view, 'Loans')
+    expect(row.text()).toContain('loan · account')
+    expect(row.text()).toContain('total_loan_amount')
+    expect(row.text()).toContain('贷款业务域')
+    expect(findButton(row.element as HTMLElement, 'Edit')).toBeTruthy()
+  })
+
+  it('shows a pending-only topic as a read-only row', async () => {
+    setTopics([])
+    setPending([topicDraft({ id: 'p1', name: 'Cards', payload: { datasets: ['loan'] } })])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    const row = rowByText(view, 'Cards')
+    expect(row.text()).toContain('Pending')
+    expect(row.text()).toContain('loan')
+    // 再存只会叠第二条草稿;对未声明名的 delete 是 no-op —— 不给动作
+    expect(row.findAll('button')).toHaveLength(0)
+  })
+
+  it('edits from the latest pending upsert; absent keys fall back to the model', async () => {
+    setTopics([TOPIC])
+    setPending([
+      topicDraft({
+        id: 'p1',
+        name: 'Loans',
+        payload: {
+          datasets: ['loan'],
+          description: '草稿里的新描述',
+          metrics: ['avg_salary'],
+        },
+      }),
+    ])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    const row = rowByText(view, 'Loans')
+    expect(row.text()).toContain('Pending')
+    findButton(row.element as HTMLElement, 'Edit').click()
+    await settle()
+
+    const inputs = topicInputs()
+    expect(inputs[0].value).toBe('Loans')
+    expect(inputs[0].disabled).toBe(true) // 域名是草稿寻址键
+    expect(topicTextareas()[0].value).toBe('草稿里的新描述')
+    // 草稿没写的键(carryover 保留旧值)在基线里显示模型值
+    expect(inputs[1].value).toBe('贷款')
+    expect(topicTextareas()[1].value).toBe('How many loans?')
+    expect(topicDialog().textContent).toContain('avg_salary')
+
+    findButton(topicDialog(), 'Create draft').click()
+    await settle()
+    const { name, payload } = calls('/v1/admin/semantic/demo/drafts')[0]
+    expect(name).toBe('Loans')
+    expect(payload).toEqual({
+      datasets: ['loan'],
+      description: '草稿里的新描述',
+      synonyms: ['贷款'],
+      metrics: ['avg_salary'],
+      examples: ['How many loans?'],
+    })
+  })
+
+  it('hides row actions when a delete is already pending', async () => {
+    setTopics([TOPIC])
+    setPending([topicDraft({ id: 'pd', name: 'Loans', action: 'delete', payload: {} })])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    const row = rowByText(view, 'Loans')
+    expect(row.text()).toContain('Pending')
+    expect(row.findAll('button')).toHaveLength(0)
+  })
+
+  it('creates a topic through validate then the draft endpoint', async () => {
+    setTopics([])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    const inputs = topicInputs()
+    await type(inputs[0], 'Cards')
+    await pickTopicOption(0, 'loan')
+    await pickTopicOption(1, 'total_loan_amount')
+    await type(topicTextareas()[0], '贷款业务域')
+    await type(inputs[1], '贷款, loan')
+    await type(topicTextareas()[1], 'How many loans?\nWhich district?')
+    await type(inputs[2], 'audit #3')
+
+    findButton(topicDialog(), 'Create draft').click()
+    await settle()
+
+    const expectedPayload = {
+      datasets: ['loan'],
+      description: '贷款业务域',
+      synonyms: ['贷款', 'loan'],
+      metrics: ['total_loan_amount'],
+      examples: ['How many loans?', 'Which district?'],
+    }
+    const validate = calls('/v1/admin/semantic/demo/validate')
+    expect(validate).toHaveLength(1)
+    expect(validate[0]).toEqual({
+      kind: 'topic',
+      action: 'upsert',
+      name: 'Cards',
+      payload: expectedPayload,
+    })
+    const drafts = calls('/v1/admin/semantic/demo/drafts')
+    expect(drafts).toHaveLength(1)
+    expect(drafts[0]).toEqual({
+      kind: 'topic',
+      action: 'upsert',
+      name: 'Cards',
+      payload: expectedPayload,
+      note: 'audit #3',
+    })
+    expect(topicDialogVisible()).toBe(false)
+  })
+
+  it('omits empty optional fields (absent = carryover, not clear)', async () => {
+    setTopics([])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    await type(topicInputs()[0], 'Cards')
+    await pickTopicOption(0, 'loan')
+    findButton(topicDialog(), 'Create draft').click()
+    await settle()
+
+    const { payload } = calls('/v1/admin/semantic/demo/drafts')[0]
+    expect(payload).toEqual({ datasets: ['loan'] })
+  })
+
+  it('a failing dry run shows its issues and never creates the draft', async () => {
+    setTopics([])
+    VALIDATE = () => ({
+      ok: false,
+      errors: [
+        {
+          severity: 'error',
+          code: 'topic_undeclared_dataset',
+          message: '数据集「ghost」没有在模型里声明',
+          hint: '先在数据集里声明它',
+        },
+      ],
+      warnings: [],
+      normalized: null,
+    })
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    await type(topicInputs()[0], 'Cards')
+    await pickTopicOption(0, 'loan')
+    findButton(topicDialog(), 'Create draft').click()
+    await settle()
+
+    expect(calls('/v1/admin/semantic/demo/drafts')).toHaveLength(0)
+    const text = topicDialog().textContent ?? ''
+    expect(text).toContain('数据集「ghost」没有在模型里声明')
+    expect(text).toContain('先在数据集里声明它')
+    expect(topicDialogVisible()).toBe(true)
+  })
+
+  it('guards names case-insensitively against declared and pending topics', async () => {
+    setTopics([TOPIC])
+    setPending([topicDraft({ id: 'p1', name: 'Cards', payload: { datasets: ['loan'] } })])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    await type(topicInputs()[0], 'loans')
+    await pickTopicOption(0, 'loan')
+    let text = topicDialog().textContent ?? ''
+    // 报的是已声明的写法,不是用户输入的大小写
+    expect(text).toContain('A topic named "Loans" already exists')
+    expect(findButton(topicDialog(), 'Create draft').disabled).toBe(true)
+
+    await type(topicInputs()[0], 'cards')
+    text = topicDialog().textContent ?? ''
+    expect(text).toContain('A topic named "Cards" already exists')
+    expect(findButton(topicDialog(), 'Create draft').disabled).toBe(true)
+    expect(calls('/v1/admin/semantic/demo/drafts')).toHaveLength(0)
+
+    // 换个名字就放行
+    await type(topicInputs()[0], 'Cards2')
+    expect(findButton(topicDialog(), 'Create draft').disabled).toBe(false)
+  })
+
+  it('deletes a declared topic through the shared confirm gate', async () => {
+    setTopics([TOPIC])
+    setPending([])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(rowByText(view, 'Loans').element as HTMLElement, 'Delete').click()
+    await settle()
+    const panel = confirmDialog()
+    expect(panel.textContent).toContain('Delete "Loans"')
+
+    findButton(panel, 'Delete').click()
+    await settle()
+    const drafts = calls('/v1/admin/semantic/demo/drafts')
+    expect(drafts).toHaveLength(1)
+    expect(drafts[0]).toEqual({
+      kind: 'topic',
+      action: 'delete',
+      name: 'Loans',
+      payload: {},
+      note: '',
+    })
+  })
+
+  it('closes and resets the dialog when the datasource changes', async () => {
+    setTopics([TOPIC])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=topics')
+    await settle()
+
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    await type(topicInputs()[0], 'Draft name')
+    expect(topicDialogVisible()).toBe(true)
+
+    findButton(view.element as HTMLElement, 'other').click()
+    await settle(400)
+    expect(topicDialogVisible()).toBe(false)
+
+    // 再开是空的(旧输入没有跟到新源)
+    findButton(view.element as HTMLElement, 'New topic').click()
+    await settle()
+    expect(topicInputs()[0].value).toBe('')
+  })
+
+  it('confirming a topic draft invalidates the chat topic cache', async () => {
+    setTopics([])
+    setPending([
+      ...clone(PENDING_DRAFTS),
+      topicDraft({ id: 'd3', name: 'Cards', payload: { datasets: ['loan'] } }),
+    ])
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=pending')
+    await settle()
+
+    const box = document.body.querySelector<HTMLButtonElement>('[aria-label="Select d3"]')
+    expect(box).toBeTruthy()
+    box!.click()
+    await flushPromises()
+    findButton(view.element, 'Apply selected').click()
+    await settle()
+    findButton(confirmDialog(), 'Apply selected').click()
+    await settle()
+
+    const paths = (apiGet as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(paths).toContain('/v1/semantic/topics?datasource=demo')
   })
 })

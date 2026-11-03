@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 语义层治理：语义模型工作台（指标 / 数据集 / 字段 / 待审批）、校验问题与漂移检测、表达式编辑器的校验→试跑→创建草稿、审批 diff 与落盘 semantics.yml、以及成批改动的变更评审（隔离区 → 模型级 diff → 沙箱回放 → 影响面 → 合入）。">
+<meta name="description" content="Trove 语义层治理：语义模型工作台（指标 / 数据集 / 字段 / 主题域 / 待审批 / 变更）、校验问题与漂移检测、表达式编辑器的校验→试跑→创建草稿、主题域的创建与审批、审批 diff 与落盘 semantics.yml、以及成批改动的变更评审（隔离区 → 模型级 diff → 沙箱回放 → 影响面 → 合入）。">
 <title>语义层治理 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -41,20 +41,20 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/待审批四个 tab 与资产表">
-        <span class="pin" style="--x:84.5%;--y:12.8%">1</span>
-        <span class="pin" style="--x:34.5%;--y:21.8%">2</span>
-        <span class="pin" style="--x:58.5%;--y:29.8%">3</span>
-        <span class="pin" style="--x:21.9%;--y:41.8%">4</span>
-        <span class="pin" style="--x:22.7%;--y:88.3%">5</span>
+        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/主题域/待审批/变更六个 tab 与资产表">
+        <span class="pin" style="--x:84.5%;--y:6.3%">1</span>
+        <span class="pin" style="--x:34.5%;--y:11.0%">2</span>
+        <span class="pin" style="--x:58.5%;--y:15.5%">3</span>
+        <span class="pin" style="--x:21.9%;--y:22.6%">4</span>
+        <span class="pin" style="--x:22.7%;--y:89.4%">5</span>
       </div>
       <figcaption>图 1 · 语义模型工作台（financial）。摘要行里的「漂移检测 刚刚」是这次会话刚跑过检测的结果——检测状态永远显式。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>页头动作</strong>——切换数据源、<strong>重新检测漂移</strong>（对照物理 schema 的实时探测）、<strong>新建资产</strong>（新增指标 / 数据集 / 字段，同样走草稿）。</li>
         <li><span class="n">2</span><strong>摘要行</strong>——指标 / 数据集 / 字段 / 待审批 / 最近提交时间 / 漂移检测时间。一眼确认「模型有多大、上次动是什么时候」。</li>
         <li><span class="n">3</span><strong>五项 KPI</strong>——每项都是入口：指标 / 数据集 / 字段 / 待审批点开即切 tab；「待处置问题」点开按问题过滤（再点一次取消）。</li>
-        <li><span class="n">4</span><strong>问题面板</strong>——两个独立小节：<strong>校验问题</strong>（lint：表达式语法、数据集锚定、引用完整性）与<strong>漂移</strong>（物理 schema 与模型不符，如列被删改）。全净时就是一行「无校验问题 · 未发现漂移」——这一行是日常巡检的目标状态。</li>
-        <li><span class="n">5</span><strong>四个 tab 与资产表</strong>——指标 / 数据集 / 字段 / 待审批；表内可按名称、表达式排序与搜索。点任意行打开资产详情（图 2）。</li>
+        <li><span class="n">4</span><strong>问题面板</strong>——两个独立小节：<strong>校验问题</strong>（lint：表达式语法、数据集锚定、引用完整性）与<strong>漂移</strong>（物理 schema 与模型不符，如列被删改）。全净时就是一行「无校验问题 · 未发现漂移」——这一行是日常巡检的目标状态。图里的 8 条是「层级覆盖」提示：指标口径收敛在层级某一级上，会静默排除其他分支；属警示级，不拦使用。</li>
+        <li><span class="n">5</span><strong>六个 tab 与资产表</strong>——指标 / 数据集 / 字段 / <a href="#topics">主题域</a> / 待审批 / 变更；表内可按名称、表达式排序与搜索。点任意行打开资产详情（图 2）。</li>
       </ol>
     </figure>
 
@@ -121,6 +121,60 @@
         语义模型是编译路径的输入：一条表达式改错，所有命中它的提问都会拿到一个「语法正确、口径错误」的答案，
         而且答案来源档位还会写着「语义编译」——错得越自信越危险。
         草稿 + diff + 重新校验 + 落盘留痕，四道都为了把「改口径」变成一个可回退的动作。
+      </p>
+    </div>
+
+    <h2 id="topics">主题域：把可答范围声明成域</h2>
+
+    <p>
+      主题域是<strong>模型级</strong>声明（一个域可以跨多个数据集）：名字 + 数据集清单，
+      外加给人和给检索用的佐料（描述、同义词、指标、示例问句）。
+      它决定用户提问时「选这个域」能把范围收敛到哪些表，也决定定时任务与域级授权引用的名字。
+      运行期口径（声明数据集 <strong>∩</strong> 模型当前数据集、四态解析、按域收敛锚定）见
+      <a href="../capabilities/semantic.html#topics">语义层 · 主题域</a>；这里只讲怎么维护它。
+    </p>
+
+    <p>
+      入口在语义台的<strong>「主题域」tab</strong>，不在页头的「新建资产」菜单里——
+      后者管的是指标 / 数据集 / 字段三类构件，主题域是模型级声明，列表跨数据集。
+      行 = 已声明的域 + <strong>只有待审草稿、尚未确认</strong>的新域；
+      后者的名字旁带一枚「待审批」徽标，提示它此刻还不会出现在问数页的选择器里。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>动作</th><th>行为与边界</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>新建 / 编辑</strong></td>
+            <td>保存前先<strong>干跑校验</strong>：数据集必须在模型里已声明，指标必须锚定在所选数据集内，重名与空作用域都会被拦下；通过后落一条 <code>pending</code> 草稿，确认后才写进 <code>semantics.yml</code>。校验是主题域唯一的干跑——它没有表达式编辑器那种「试跑」，别找一个不存在的预览按钮。</td>
+          </tr>
+          <tr>
+            <td><strong>删除</strong></td>
+            <td>同样先落删除草稿、经审批才生效（与资产删除同一条确认门）。已有待审删除的行不再提供编辑 / 删除入口，避免在同一个名字上叠加互相矛盾的草稿。</td>
+          </tr>
+          <tr>
+            <td><strong>数据集</strong></td>
+            <td><strong>必填且闭集</strong>：只能勾选模型里已声明的数据集。老域里已经悬空的声明名不会从下拉里消失——它作为可移除的当前值显示，保存时由校验如实拦下，而不是静默吞掉。</td>
+          </tr>
+          <tr>
+            <td><strong>可选字段留空</strong></td>
+            <td><strong>保留旧值，不是清空</strong>：描述 / 同义词 / 指标 / 示例问句只在非空时写入，空着提交等于沿用当前值（后端 carryover）。要清空某个可选字段，只能删除该域后重建。编辑对话框里有这句明文提示。</td>
+          </tr>
+          <tr>
+            <td><strong>域名的身份</strong></td>
+            <td>域名是草稿的寻址键，<strong>编辑时只读</strong>；改名 = 删旧建新（两条草稿、同一确认门）。新建时按<strong>大小写不敏感</strong>防重：已声明或已有待审 upsert 的同名域都会挡下——草稿写盘按精确比较、运行期查找按小写首匹配，只差大小写的两个域会让后者永远命不中。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">确认后选择器立即更新</span>
+      <p>
+        域草稿在「待审批」里确认、或从变更评审合入之后，问数页的主题域选择器会
+        <strong>直接重拉清单</strong>，不需要整页刷新。单纯创建草稿、拒绝草稿都不触发——
+        只有真正让域生效的路径才刷新。
       </p>
     </div>
 

@@ -113,18 +113,18 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台（financial）：顶栏数据源切换与「重新检测漂移 / 新建资产」；摘要行 86 指标 · 8 数据集 · 55 字段 · 0 待审批 · 漂移检测 刚刚；KPI 行；问题卡里「校验问题」与「漂移」两节都为空，汇总一行「无校验问题 · 未发现漂移」；底部 tab 行与搜索框">
-        <span class="pin" style="--x:73.5%;--y:13.0%">1</span>
-        <span class="pin" style="--x:30.0%;--y:22.4%">2</span>
-        <span class="pin" style="--x:58.5%;--y:60.8%">3</span>
+        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台（financial）：顶栏数据源切换与「重新检测漂移 / 新建资产」；摘要行 86 指标 · 8 数据集 · 55 字段 · 0 待审批 · 最近提交 1 分钟前 · 漂移检测 刚刚；KPI 行（待处置问题 8）；问题卡里「校验问题 (8)」列出 8 条层级覆盖提示、「漂移 (0)」为空；底部 tab 行（指标 / 数据集 / 字段 / 主题域 / 待审批 / 变更）与搜索框">
+        <span class="pin" style="--x:73.5%;--y:6.3%">1</span>
+        <span class="pin" style="--x:30.0%;--y:11.0%">2</span>
+        <span class="pin" style="--x:58.5%;--y:29.3%">3</span>
         <span class="pin" style="--x:22.7%;--y:89.6%">4</span>
       </div>
-      <figcaption>图 2 · 语义模型工作台（<code>financial</code>）：可答边界在这里维护——摘要、问题卡与四类构件的入口同屏。</figcaption>
+      <figcaption>图 2 · 语义模型工作台（<code>financial</code>）：可答边界在这里维护——摘要、问题卡与各类构件（含主题域）的入口同屏。</figcaption>
       <ol class="shot-legend">
-        <li><span class="n">1</span><strong>顶栏：数据源切换 + 动作</strong>——语义模型按源分开（<code>financial · default</code> 与 <code>demo</code> 两枚胶囊），切换即换整份模型；「重新检测漂移」手动跑一次库与模型的对照，「新建资产」是四类构件的统一入口。</li>
-        <li><span class="n">2</span><strong>摘要行</strong>——86 指标 · 8 数据集 · 55 字段 · 0 待审批，后面缀着「最近提交 2 分钟前 · 漂移检测 刚刚」：这是一句 freshness 声明，漂移读数过期时它自己会说。</li>
-        <li><span class="n">3</span><strong>问题卡：校验问题 + 漂移</strong>——两节各自列问题；都为空时卡片底部汇总一行「无校验问题 · 未发现漂移」，而不是渲染两张空表。漂移 = 物理库与模型声明的对照结果。</li>
-        <li><span class="n">4</span><strong>tab 行 + 搜索</strong>——指标 / 数据集 / 字段 / 待审批是四类条目的入口（本图 86 条指标选中中）；改动一律先落 <code>pending</code> 草稿，经审批流应用到 <code>semantics.yml</code>。</li>
+        <li><span class="n">1</span><strong>顶栏：数据源切换 + 动作</strong>——语义模型按源分开（<code>financial · default</code> 与 <code>demo</code> 两枚胶囊），切换即换整份模型；「重新检测漂移」手动跑一次库与模型的对照，「新建资产」是指标 / 数据集 / 字段三类构件的统一入口。</li>
+        <li><span class="n">2</span><strong>摘要行</strong>——86 指标 · 8 数据集 · 55 字段 · 0 待审批，后面缀着「最近提交 1 分钟前 · 漂移检测 刚刚」：这是一句 freshness 声明，漂移读数过期时它自己会说。</li>
+        <li><span class="n">3</span><strong>问题卡：校验问题 + 漂移</strong>——两节各自列问题；本图「校验问题」有 8 条层级覆盖提示（指标的过滤条件收敛在层级某一级上，会静默排除其他分支），「漂移」为空。两节都为空时卡片底部汇总一行「无校验问题 · 未发现漂移」，而不是渲染两张空表。漂移 = 物理库与模型声明的对照结果。</li>
+        <li><span class="n">4</span><strong>tab 行 + 搜索</strong>——指标 / 数据集 / 字段 / <a href="../admin/semantic.html#topics">主题域</a> / 待审批 / 变更是各类条目的入口（本图 86 条指标选中中）；改动一律先落 <code>pending</code> 草稿，经审批流应用到 <code>semantics.yml</code>。</li>
       </ol>
     </figure>
 
@@ -160,6 +160,10 @@
       用户端的选择器（<a href="../user/ask.html#topic">提问时选域收敛范围</a>）、
       定时任务的域引用（<a href="../admin/automation.html#jobs">写任务时校验</a>）、
       以及域级授权（<a href="../admin/access.html#topic-grants">谁可见哪些域</a>）。
+      创作面在管理端<strong>语义台「主题域」tab</strong>：新建 / 编辑 / 删除都走
+      <code>validate → pending → confirm</code> 同一条草稿审批流
+      （<a href="../admin/semantic.html#topics">语义层治理 · 主题域</a>），
+      YAML 仍是唯一真源。
     </p>
 
     <p>
@@ -181,7 +185,7 @@
           </tr>
           <tr>
             <td><strong>算作用域</strong></td>
-            <td>声明数据集 <strong>∩</strong> 模型当前数据集。<em>交集而不是直接采信声明</em>：域写在 YAML 里、模型会随 <code>/kb init</code> 演进，悬空名字只会让作用域比作者以为的更窄；交集为空也是显式状态——<code>empty_scope</code>，域过期，不是「不限制」</td>
+            <td>声明数据集 <strong>∩</strong> 模型当前数据集。<em>交集而不是直接采信声明</em>：域是 YAML 里的声明（管理端维护）、模型会随 <code>/kb init</code> 演进，悬空名字只会让作用域比作者以为的更窄；交集为空也是显式状态——<code>empty_scope</code>，域过期，不是「不限制」</td>
           </tr>
           <tr>
             <td><strong>收敛<br>（入口，不是出口）</strong></td>
