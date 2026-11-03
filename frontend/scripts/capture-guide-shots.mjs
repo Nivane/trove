@@ -311,10 +311,16 @@ const SHOTS = [
     wait: '.kb-assets .dt-row',
   },
   {
+    // 语义模型工作台「全貌」:自 B8/本体批次起,financial 模型带着 8 条层级
+    // 覆盖 advisory(问题卡是真实的巡检形态,不是空卡),900px 首屏装不下
+    // 下面的 tab 行。用更高的视口把「摘要 → KPI → 问题 → 六个 tab → 资产表」
+    // 一次装进来(同 admin-ontology 的例外做法),否则图注里的 tab 行不可见。
     name: 'admin-semantic',
     role: 'admin',
-    path: '/admin/semantic',
+    path: '/admin/semantic?ds=financial',
+    viewport: { width: 1440, height: 1800 },
     wait: '.sem-page .dt-row',
+    settle: 800,
   },
   {
     name: 'admin-semantic-detail',

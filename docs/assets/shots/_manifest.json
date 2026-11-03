@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-12T11:11:23.130Z",
-  "frontendCommit": "4ef7ee9",
+  "generatedAt": "2026-11-03T00:55:44.756Z",
+  "frontendCommit": "381bdd2",
   "baseUrl": "http://localhost:5173",
   "viewport": {
     "width": 1440,
@@ -250,16 +250,16 @@
     {
       "name": "admin-semantic",
       "file": "admin-semantic.png",
-      "capturedAt": "2026-10-05T14:54:49.000Z",
-      "frontendCommit": "a6a7c60",
-      "baseUrl": "http://localhost:5174",
+      "capturedAt": "2026-11-03T00:55:47.308Z",
+      "frontendCommit": "381bdd2",
+      "baseUrl": "http://localhost:5173",
       "captured": {
         "width": 2880,
-        "height": 1800
+        "height": 3600
       },
       "width": 2880,
-      "height": 1800,
-      "bytes": 250841
+      "height": 3600,
+      "bytes": 1193940
     },
     {
       "name": "admin-semantic-detail",
