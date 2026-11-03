@@ -690,6 +690,18 @@ export interface SemanticHierarchyInfo {
   levels?: string[]
 }
 
+/** 主题域声明(语义模型详情里的原文;运行期投影另有 TopicInfo —— 那份
+ *  带 scope/status 与数据集交集,这份是可能含悬空名的声明本身)。 */
+export interface SemanticTopicInfo {
+  name: string
+  description?: string | null
+  synonyms?: string[]
+  datasets?: string[]
+  metrics?: string[]
+  examples?: string[]
+  custom_extensions?: unknown[]
+}
+
 export interface SemanticTimeSpine {
   field?: string
   granularity?: string
@@ -705,6 +717,8 @@ export interface SemanticModelInfo {
   relationships: SemanticRelationshipInfo[]
   /** 钻取层级:老后端 / 无层级的源不返回该键(缺省 = 空)。 */
   hierarchies?: SemanticHierarchyInfo[]
+  /** 主题域声明;老后端 / 无域的源不返回该键(缺省 = 空)。 */
+  topics?: SemanticTopicInfo[]
   version?: string
   examples?: string[]
   time_spine?: SemanticTimeSpine | null

@@ -252,4 +252,25 @@ describe('topic domains', () => {
     expect(ui.topic).toBe('')
     expect(ui.activeTopic).toBe('')
   })
+
+  // ⑥'' 管理端确认域草稿后:refreshTopics 绕过同源缓存真的重拉,
+  // 并按新清单校正选择(否则「确认了草稿但选择器还是旧清单」)。
+  it('refreshTopics bypasses the cache and revalidates the selection', async () => {
+    const ui = useUiStore()
+    ui.datasourceList = [{ name: 'demo', type: 'sqlite', default: true }]
+    ui.datasourcesLoaded = true
+    ui.setDatasource('demo')
+    mockApi({ demo: TOPICS })
+    await ui.loadTopics('demo')
+    const calls = vi.mocked(apiGet).mock.calls.length
+    ui.setTopic('Loans')
+
+    // 后台把它删了(或改了):再确认一条草稿时清单已经不一样
+    mockApi({ demo: [] })
+    await ui.refreshTopics('demo')
+    expect(vi.mocked(apiGet).mock.calls.length).toBe(calls + 1)
+    expect(ui.topicList).toEqual([])
+    expect(ui.topic).toBe('')
+    expect(ui.activeTopic).toBe('')
+  })
 })

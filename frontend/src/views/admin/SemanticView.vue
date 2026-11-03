@@ -47,6 +47,7 @@ import type {
   SemanticMetricInfo,
   SemanticModelInfo,
   SemanticPreviewResult,
+  SemanticTopicInfo,
   SemanticValidateResult,
 } from '../../api/types'
 import { apiGet, apiPost } from '../../api/http'
@@ -117,6 +118,7 @@ const datasets = computed<SemanticDatasetInfo[]>(() => model.value?.datasets ?? 
 const fields = computed<FieldRow[]>(() =>
   datasets.value.flatMap((d) => (d.fields ?? []).map((f) => ({ ...f, dataset: d.name }))),
 )
+const topics = computed<SemanticTopicInfo[]>(() => model.value?.topics ?? [])
 const pending = computed<SemanticDraft[]>(() => detail.value?.drafts.pending ?? [])
 const applied = computed<SemanticDraft[]>(() => detail.value?.drafts.applied ?? [])
 const rejected = computed<SemanticDraft[]>(() => detail.value?.drafts.rejected ?? [])
@@ -126,6 +128,7 @@ const driftItems = computed<SemanticDriftItem[]>(() => drift.value?.items ?? [])
 const driftSkipped = computed(() => drift.value?.status === 'skipped')
 const driftClean = computed(() => drift.value?.status === 'ok' && driftItems.value.length === 0)
 const datasetNames = computed(() => datasets.value.map((d) => d.name))
+const metricNames = computed(() => metrics.value.map((m) => m.name))
 
 function errMsg(e: unknown): string {
   if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
@@ -184,6 +187,8 @@ function resetViewState() {
   changeDetailError.value = ''
   changeRejectReason.value = ''
   changeRejectError.value = ''
+  topicOpen.value = false
+  resetTopicForm()
 }
 
 onMounted(async () => {
@@ -224,6 +229,7 @@ const tabDefs = computed(() => [
   { key: 'metrics', label: t('semMetrics', ui.lang), count: metrics.value.length },
   { key: 'datasets', label: t('semDatasets', ui.lang), count: datasets.value.length },
   { key: 'fields', label: t('semFields', ui.lang), count: fields.value.length },
+  { key: 'topics', label: t('semTopics', ui.lang), count: topicRows.value.length },
   { key: 'pending', label: t('semPending', ui.lang), count: pending.value.length },
   { key: 'changes', label: t('semTabChanges', ui.lang), count: openChanges.value.length },
 ])
@@ -336,6 +342,90 @@ const filteredChanges = computed(() =>
   ),
 )
 
+/* ── 主题域行(审计 #3 收口) ────────────────────────────────────
+   主题域是**模型级**声明(不是数据集抽屉的一节):同一个域可以跨多个
+   数据集。行 = 已声明域 + 只有 pending upsert 的草稿态行。 */
+
+interface TopicRow {
+  /** model:<name> / draft:<id> —— 同名的已声明行与草稿行不会撞 key。 */
+  key: string
+  name: string
+  description: string
+  synonyms: string[]
+  datasets: string[]
+  metrics: string[]
+  examples: string[]
+  /** 该域名的最新 pending 草稿(徽标 / 编辑基线 / 删除入口)。 */
+  pending: SemanticDraft | null
+  is_declared: boolean
+}
+
+/** 该域名的最新 pending 草稿(delete 没有 payload,按名匹配)。 */
+function topicDraftFor(name: string): SemanticDraft | null {
+  return pending.value.filter((d) => d.kind === 'topic' && d.name === name).at(-1) ?? null
+}
+
+/** 编辑回填取**最新 pending upsert**:否则后一次编辑会静默回退上一次草稿。 */
+function topicUpsertFor(name: string): SemanticDraft | null {
+  return (
+    pending.value
+      .filter((d) => d.kind === 'topic' && d.action === 'upsert' && d.name === name)
+      .at(-1) ?? null
+  )
+}
+
+function topicPayloadArray(payload: Record<string, unknown> | null | undefined, key: string): string[] {
+  const v = payload?.[key]
+  return Array.isArray(v) ? v.map(String) : []
+}
+
+const topicRows = computed<TopicRow[]>(() => {
+  const declared: TopicRow[] = topics.value.map((t) => ({
+    key: `model:${t.name}`,
+    name: t.name,
+    description: t.description ?? '',
+    synonyms: t.synonyms ?? [],
+    datasets: t.datasets ?? [],
+    metrics: t.metrics ?? [],
+    examples: t.examples ?? [],
+    pending: topicDraftFor(t.name),
+    is_declared: true,
+  }))
+  // pending-only 行必须在**全模型**里没有同名声明;delete 草稿不是一条新域。
+  const adds: TopicRow[] = pending.value
+    .filter(
+      (d) =>
+        d.kind === 'topic' &&
+        d.action === 'upsert' &&
+        !topics.value.some((t) => t.name === d.name),
+    )
+    .map((d) => ({
+      key: `draft:${d.id}`,
+      name: d.name,
+      description: typeof d.payload?.description === 'string' ? d.payload.description : '',
+      synonyms: topicPayloadArray(d.payload, 'synonyms'),
+      datasets: topicPayloadArray(d.payload, 'datasets'),
+      metrics: topicPayloadArray(d.payload, 'metrics'),
+      examples: topicPayloadArray(d.payload, 'examples'),
+      pending: d,
+      is_declared: false,
+    }))
+  return [...declared, ...adds]
+})
+
+const filteredTopics = computed(() =>
+  topicRows.value.filter((t) =>
+    matchesQ(
+      q.value,
+      t.name,
+      t.description,
+      t.datasets.join(' '),
+      t.metrics.join(' '),
+      t.synonyms.join(' '),
+    ),
+  ),
+)
+
 const METRIC_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'name', label: t('semName', ui.lang), sortable: true },
   { key: 'expression', label: t('semExpression', ui.lang), sortable: true },
@@ -359,6 +449,13 @@ const DATASET_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'fieldsCount', label: t('semFieldsCount', ui.lang), sortable: true, align: 'right' as const },
   { key: 'description', label: t('semDefinition', ui.lang) },
   { key: 'changed', label: t('semChanged', ui.lang), sortable: true, defaultDir: 'desc' as const },
+])
+const TOPIC_COLUMNS = computed<DataTableColumn[]>(() => [
+  { key: 'name', label: t('semName', ui.lang), sortable: true },
+  { key: 'datasets', label: t('semDatasets', ui.lang) },
+  { key: 'metrics', label: t('semMetrics', ui.lang) },
+  { key: 'description', label: t('semDefinition', ui.lang) },
+  { key: 'actions', label: t('actions', ui.lang), width: '120px', align: 'right' as const },
 ])
 const PENDING_COLUMNS = computed<DataTableColumn[]>(() => [
   { key: 'kind', label: t('semKindLabel', ui.lang) },
@@ -413,6 +510,13 @@ const sortedPending = computed(() => {
   }[s.key] ?? ((d: SemanticDraft) => d.name)
   return sortWith(filteredPending.value, get, s.dir)
 })
+const sortedTopics = computed(() => {
+  const s = sortOf('name')
+  const get = {
+    name: (t: TopicRow) => t.name,
+  }[s.key] ?? ((t: TopicRow) => t.name)
+  return sortWith(filteredTopics.value, get, s.dir)
+})
 const sortedChanges = computed(() => {
   const s = sortOf('created_at', 'desc')
   const get = {
@@ -437,11 +541,13 @@ const pageNum = computed(() => {
 const visibleMetrics = computed(() => pageOf(sortedMetrics.value))
 const visibleFields = computed(() => pageOf(sortedFields.value))
 const visibleDatasets = computed(() => pageOf(sortedDatasets.value))
+const visibleTopics = computed(() => pageOf(sortedTopics.value))
 const visibleChanges = computed(() => pageOf(sortedChanges.value))
 
 const currentTotal = computed(() => {
   if (values.tab === 'datasets') return sortedDatasets.value.length
   if (values.tab === 'fields') return sortedFields.value.length
+  if (values.tab === 'topics') return sortedTopics.value.length
   if (values.tab === 'pending') return sortedPending.value.length
   if (values.tab === 'changes') return sortedChanges.value.length
   return sortedMetrics.value.length
@@ -477,15 +583,17 @@ function kindLabel(kind: string): string {
     | 'entitySectionTitle'
     | 'srcRelations'
     | 'hierarchySectionTitle'
+    | 'semImpactTopic'
   > = {
     metric: 'semMetric',
     field: 'semField',
     dataset: 'semDataset',
-    // 本体形态(O1):草稿 kind 与资产 kind 都不是新词汇,复用既有名词
-    // (「本体实体」/「连接关系」/「钻取层级」);资产视角仍只有三种。
+    // 本体形态(O1)与主题域:草稿 kind 与资产 kind 都不是新词汇,复用既有名词
+    // (「本体实体」/「连接关系」/「钻取层级」/「主题域」);资产视角仍只有三种。
     entity: 'entitySectionTitle',
     relationship: 'srcRelations',
     hierarchy: 'hierarchySectionTitle',
+    topic: 'semImpactTopic',
   }
   const key = map[kind]
   return key ? t(key, ui.lang) : kind
@@ -636,6 +744,10 @@ function draftNameOf(id: string): string {
 
 async function runBatch(action: 'confirm' | 'reject', ids: string[]) {
   if (!ids.length || !values.ds) return
+  // 确认域草稿会让运行期域清单变化 —— 请求前先记下这批 id 里哪些是域,
+  // 成功后再让问数页的选择器重拉(拒绝不动清单,不刷新)。
+  const topicIds = new Set(pending.value.filter((d) => d.kind === 'topic').map((d) => d.id))
+  const touchedTopics = ids.some((id) => topicIds.has(id))
   bulkBusy.value = true
   try {
     const body = await apiPost<SemanticBatchResult>(
@@ -663,6 +775,7 @@ async function runBatch(action: 'confirm' | 'reject', ids: string[]) {
       selected.value = merged.filter((r) => !r.ok).map((r) => r.id)
     }
     await loadDetail()
+    if (action === 'confirm' && touchedTopics && values.ds) void ui.refreshTopics(values.ds)
   } catch (e) {
     toastError(e)
   } finally {
@@ -783,10 +896,10 @@ async function runConfirm() {
 
 /* ── draft creation / drawer ──────────────────────────────────── */
 
-/** 草稿 kind = 三种资产 + 本体形态(O1)的 entity / relationship / hierarchy。
- *  走的都是**同一条** draft 通道(同一个确认门),这里只是把写面的类型放宽;
- *  资产视角的 `Kind` 不动(资产表、引用、抽屉仍只有那三种)。 */
-type DraftKind = Kind | 'entity' | 'relationship' | 'hierarchy'
+/** 草稿 kind = 三种资产 + 本体形态(O1)的 entity / relationship / hierarchy
+ *  + 主题域 topic。走的都是**同一条** draft 通道(同一个确认门),这里只是把
+ *  写面的类型放宽;资产视角的 `Kind` 不动(资产表、引用、抽屉仍只有那三种)。 */
+type DraftKind = Kind | 'entity' | 'relationship' | 'hierarchy' | 'topic'
 
 function draftsUrl(): string {
   return `/v1/admin/semantic/${encodeURIComponent(values.ds)}`
@@ -871,6 +984,8 @@ async function applyDraft() {
     notifySuccess(t('semDraftConfirmed', ui.lang))
     values.draft = ''
     await loadDetail()
+    // 确认域草稿 = 运行期域清单变了;问数页的缓存按源住着,必须显式作废。
+    if (d.kind === 'topic' && values.ds) void ui.refreshTopics(values.ds)
   } catch (e) {
     toastError(e)
   }
@@ -1046,6 +1161,10 @@ async function mergeChange(rec: SemanticChangeDetail) {
     notifySuccess(t('semChangeMergedOk', ui.lang))
     values.change = ''
     await Promise.all([loadChanges(), loadDetail()])
+    // 合入的变更单碰到主题域 → 运行期域清单可能变了,让选择器重拉。
+    if ((rec.subjects ?? []).some((s) => s.kind === 'topic') && values.ds) {
+      void ui.refreshTopics(values.ds)
+    }
   } catch (e) {
     // 409 stale_change 的 message 逐字由 http 层带出(detail 是 {code,message} 对象)
     toastError(e)
@@ -1472,6 +1591,14 @@ onBeforeUnmount(() => {
 function splitCsv(v: string): string[] {
   return v
     .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/** 示例问句一行一条:换行是分隔符,行内逗号是句子的一部分。 */
+function splitLines(v: string): string[] {
+  return v
+    .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean)
 }
@@ -2082,6 +2209,141 @@ function hierarchyCanDelete(h: HierarchyRow): boolean {
   return h.is_declared && h.pending?.action !== 'delete'
 }
 
+/* ── 主题域声明(审计 #3 收口) ──────────────────────────────────
+   模型级声明:域名 + 数据集(必填、闭集)+ 可选指标 / 描述 / 同义词 /
+   示例问句。写路径照旧是 draft 通道(kind=topic,name=域名)—— 不新开写面,
+   确认门不变。域名是草稿寻址键,编辑时只读,改名 = 删旧建新。 */
+
+type TopicMode = '' | 'create' | 'edit'
+const topicOpen = ref(false)
+const topicMode = ref<TopicMode>('')
+const topicForm = reactive({
+  name: '',
+  datasets: [] as string[],
+  metrics: [] as string[],
+  description: '',
+  synonyms: '',
+  examples: '',
+  note: '',
+})
+const topicIssues = ref<SemanticIssueItem[]>([])
+const topicBusy = ref(false)
+
+/** 下拉选项 = 已声明集合 ∪ 当前表单值:老域里的悬空名仍可见、可移除,
+ *  不被静默吞掉(保存时由 validate 如实拦)。不加 allow-create —— 作用域
+ *  是闭集,不在 UI 里制造必然失败的输入。 */
+const topicDatasetOptions = computed(() =>
+  Array.from(new Set([...datasetNames.value, ...topicForm.datasets])),
+)
+const topicMetricOptions = computed(() =>
+  Array.from(new Set([...metricNames.value, ...topicForm.metrics])),
+)
+
+/** 新建时的名称占用守卫:已声明或已有 pending upsert 同名都算,大小写不敏感
+ *  —— 草稿写盘按精确比较,运行期查找按小写首匹配,只差大小写的两个域会让
+ *  后者永远命不中。编辑时名称只读,不需要这条。 */
+const topicNameTaken = computed<{ name: string } | null>(() => {
+  if (topicMode.value !== 'create') return null
+  const typed = topicForm.name.trim()
+  if (!typed) return null
+  const needle = typed.toLowerCase()
+  const declared = topics.value.find((t) => t.name.trim().toLowerCase() === needle)
+  if (declared) return { name: declared.name }
+  const draft = pending.value.find(
+    (d) => d.kind === 'topic' && d.action === 'upsert' && d.name.trim().toLowerCase() === needle,
+  )
+  return draft ? { name: draft.name } : null
+})
+
+const topicReady = computed(
+  () => !!topicForm.name.trim() && topicForm.datasets.length > 0 && !topicNameTaken.value,
+)
+
+function resetTopicForm() {
+  topicMode.value = ''
+  Object.assign(topicForm, {
+    name: '',
+    datasets: [],
+    metrics: [],
+    description: '',
+    synonyms: '',
+    examples: '',
+    note: '',
+  })
+  topicIssues.value = []
+}
+
+function clearTopicForm() {
+  resetTopicForm()
+  topicOpen.value = false
+}
+
+function openTopicCreate() {
+  resetTopicForm()
+  topicMode.value = 'create'
+  topicOpen.value = true
+}
+
+/** 编辑基线 = 最新 pending upsert 的 payload(缺席 / 空键回退模型值 ——
+ *  后端对这些字段是 truthy 才写,空 = carryover 保留旧值)。 */
+function openTopicEdit(row: TopicRow) {
+  const draft = topicUpsertFor(row.name)
+  const p = (draft?.payload ?? {}) as Record<string, unknown>
+  const datasets = topicPayloadArray(p, 'datasets')
+  const metrics = topicPayloadArray(p, 'metrics')
+  const synonyms = topicPayloadArray(p, 'synonyms')
+  const examples = topicPayloadArray(p, 'examples')
+  topicIssues.value = []
+  topicMode.value = 'edit'
+  Object.assign(topicForm, {
+    name: row.name,
+    datasets: datasets.length ? datasets : [...row.datasets],
+    metrics: metrics.length ? metrics : [...row.metrics],
+    description:
+      typeof p.description === 'string' && p.description ? p.description : row.description,
+    synonyms: (synonyms.length ? synonyms : row.synonyms).join(', '),
+    examples: (examples.length ? examples : row.examples).join('\n'),
+    note: '',
+  })
+  topicOpen.value = true
+}
+
+/** 只有「已声明且还没有 pending delete」的行才有删除入口。pending-only 行
+ *  没有(对未声明名字的 delete 是 no-op;撤销走待审列表)。 */
+function askDeleteTopic(row: TopicRow) {
+  confirmCtx.value = { mode: 'delete', kind: 'topic', name: row.name }
+}
+
+async function saveTopic() {
+  if (!topicReady.value) return
+  const name = topicForm.name.trim()
+  topicIssues.value = []
+  const payload: Record<string, unknown> = { datasets: [...topicForm.datasets] }
+  // 空的可选字段**不写键**(缺席 = carryover 保留旧值,不是清空)——
+  // 编辑模式表单里有明文提示。
+  if (topicForm.description.trim()) payload.description = topicForm.description.trim()
+  const synonyms = splitCsv(topicForm.synonyms)
+  if (synonyms.length) payload.synonyms = synonyms
+  if (topicForm.metrics.length) payload.metrics = [...topicForm.metrics]
+  const examples = splitLines(topicForm.examples)
+  if (examples.length) payload.examples = examples
+  topicBusy.value = true
+  try {
+    const check = await validatePayload('topic', 'upsert', name, payload)
+    if (!check.ok) {
+      topicIssues.value = [...check.errors, ...check.warnings]
+      return
+    }
+    if (await createDraft('topic', 'upsert', name, payload, topicForm.note.trim())) {
+      clearTopicForm()
+    }
+  } catch (e) {
+    toastError(e)
+  } finally {
+    topicBusy.value = false
+  }
+}
+
 /* ── 连接关系声明(O1,设计 §4 行 2 / tech-plan E5) ──────────────────
    声明一条 join 关系:两端数据集 + 连接列对(可空)+ 可选的显示名与基数。
    写路径照旧是 draft 通道(kind=relationship,name=关系名);拒绝卡的
@@ -2180,6 +2442,9 @@ function metricRowKey(row: unknown): string {
 }
 function datasetRowKey(row: unknown): string {
   return (row as SemanticDatasetInfo).name
+}
+function topicRowKey(row: unknown): string {
+  return (row as TopicRow).key
 }
 
 function askDeleteAsset() {
@@ -2662,6 +2927,58 @@ const pageTitle = computed(() =>
               </span>
             </template>
           </DataTable>
+
+          <!-- ── topics（主题域创作面，审计 #3 收口）── -->
+          <template v-else-if="values.tab === 'topics'">
+            <div class="sem-topic-actions">
+              <el-button size="small" type="primary" @click="openTopicCreate">
+                <Plus :size="14" class="btn-icon" />
+                {{ t('semTopicAdd', ui.lang) }}
+              </el-button>
+            </div>
+            <DataTable
+              :columns="TOPIC_COLUMNS"
+              :rows="visibleTopics"
+              :row-key="topicRowKey"
+              :sort="sortState"
+              :loading="loading"
+              :empty-text="t('semTopicEmpty', ui.lang)"
+              @update:sort="onSort"
+            >
+              <template #cell-name="{ row }">
+                <span class="asset-name">{{ (row as TopicRow).name }}</span>
+                <span v-if="(row as TopicRow).pending" class="pill pill-neutral">
+                  {{ t('semPending', ui.lang) }}
+                </span>
+              </template>
+              <template #cell-datasets="{ row }">
+                <span class="cell-muted">{{ (row as TopicRow).datasets.join(' · ') || '—' }}</span>
+              </template>
+              <template #cell-metrics="{ row }">
+                <span class="cell-muted">{{ (row as TopicRow).metrics.join(' · ') || '—' }}</span>
+              </template>
+              <template #cell-description="{ row }">
+                <span class="cell-muted">{{ trunc((row as TopicRow).description, 40) || '—' }}</span>
+              </template>
+              <template #cell-actions="{ row }">
+                <span
+                  v-if="(row as TopicRow).is_declared && (row as TopicRow).pending?.action !== 'delete'"
+                  class="sem-topic-row-actions"
+                >
+                  <button type="button" class="link-btn" @click="openTopicEdit(row as TopicRow)">
+                    {{ t('semEdit', ui.lang) }}
+                  </button>
+                  <button
+                    type="button"
+                    class="link-btn sem-topic-link-danger"
+                    @click="askDeleteTopic(row as TopicRow)"
+                  >
+                    {{ t('semDelete', ui.lang) }}
+                  </button>
+                </span>
+              </template>
+            </DataTable>
+          </template>
 
           <!-- ── pending drafts ── -->
           <template v-else>
@@ -3631,6 +3948,66 @@ const pageTitle = computed(() =>
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- ── topic(主题域,审计 #3 收口):模型级声明;写路径 = 既有草稿通道 ── -->
+    <el-dialog
+      v-model="topicOpen"
+      :title="topicMode === 'edit' ? t('semTopicEditTitle', ui.lang) : t('semTopicAdd', ui.lang)"
+      width="600"
+      class="admin-dialog sem-topic-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top" @submit.prevent="saveTopic">
+        <el-form-item :label="t('semName', ui.lang)">
+          <el-input v-model="topicForm.name" class="mono-input" :disabled="topicMode === 'edit'" />
+          <p v-if="topicNameTaken" class="form-error" role="alert">
+            {{ t('semTopicNameTaken', ui.lang, topicNameTaken.name) }}
+          </p>
+          <p v-else-if="topicMode === 'edit'" class="form-hint">
+            {{ t('semTopicNameLockedHint', ui.lang) }}
+          </p>
+        </el-form-item>
+        <el-form-item :label="t('semDatasets', ui.lang)">
+          <el-select v-model="topicForm.datasets" multiple filterable class="sem-dialog-select">
+            <el-option v-for="d in topicDatasetOptions" :key="d" :value="d" :label="d" />
+          </el-select>
+          <p class="form-hint">{{ t('semTopicDatasetsHint', ui.lang) }}</p>
+        </el-form-item>
+        <el-form-item :label="t('semMetrics', ui.lang)">
+          <el-select v-model="topicForm.metrics" multiple filterable class="sem-dialog-select">
+            <el-option v-for="m in topicMetricOptions" :key="m" :value="m" :label="m" />
+          </el-select>
+          <p class="form-hint">{{ t('semTopicMetricsHint', ui.lang) }}</p>
+        </el-form-item>
+        <el-form-item :label="t('semDefinition', ui.lang)">
+          <el-input v-model="topicForm.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item :label="t('semSynonyms', ui.lang)">
+          <el-input v-model="topicForm.synonyms" />
+        </el-form-item>
+        <el-form-item :label="t('semTopicExamples', ui.lang)">
+          <el-input v-model="topicForm.examples" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item :label="t('semNote', ui.lang)">
+          <el-input v-model="topicForm.note" :placeholder="t('semNoteHint', ui.lang)" />
+        </el-form-item>
+        <p v-if="topicMode === 'edit'" class="form-hint">{{ t('semTopicKeepHint', ui.lang) }}</p>
+        <p class="form-hint">{{ t('semTopicDraftHint', ui.lang) }}</p>
+        <ul v-if="topicIssues.length" class="sem-check-list">
+          <li v-for="(it, i) in topicIssues" :key="`t-${it.code}-${i}`">
+            <span class="pill" :class="severityPill(it.severity)">{{ severityLabel(it.severity) }}</span>
+            <span>{{ it.message }}</span>
+            <span v-if="it.hint" class="cell-muted">{{ it.hint }}</span>
+          </li>
+        </ul>
+      </el-form>
+      <template #footer>
+        <el-button @click="topicOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button type="primary" :loading="topicBusy" :disabled="!topicReady" @click="saveTopic">
+          {{ t('semSaveDraft', ui.lang) }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -4439,6 +4816,23 @@ const pageTitle = computed(() =>
   gap: var(--sp-2);
   margin-top: var(--sp-2);
   flex-wrap: wrap;
+}
+
+/* ── 主题域创作面(审计 #3 收口) ─────────────────────────────── */
+.sem-topic-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--sp-2);
+}
+.sem-topic-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.sem-topic-link-danger,
+.sem-topic-link-danger:hover {
+  color: var(--danger-text);
 }
 
 /* ── 关系对话框两端并排(数据源/列对同款) ────────────────────── */

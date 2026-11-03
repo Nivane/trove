@@ -68,6 +68,18 @@ export const messages = {
     hierarchyDraftHint: '保存生成草稿，管理员确认后生效',
     hierarchyNameLockedHint: '层级名是草稿的寻址键，编辑时不可改；改名请删除后重建',
     hierarchyDisplayKeepHint: '留空保留当前显示名（不会清空）',
+    // ── 主题域(审计 #3 收口):语义工作台的主题域创作面 ──
+    semTopics: '主题域',
+    semTopicAdd: '新建主题域',
+    semTopicEditTitle: '编辑主题域',
+    semTopicEmpty: '还没有声明主题域',
+    semTopicNameTaken: '主题域「{n}」已存在——请直接编辑它，或换个名字',
+    semTopicNameLockedHint: '主题域名是草稿的寻址键，编辑时不可改；改名请删除后重建',
+    semTopicDatasetsHint: '作用域 = 这里勾选的数据集与模型现有数据集的交集；只能选已声明的数据集',
+    semTopicMetricsHint: '可选；指标必须锚定在所选数据集内，否则校验会拦下',
+    semTopicExamples: '示例问句（每行一条）',
+    semTopicKeepHint: '留空的可选字段保留当前值，不是清空；要清空请删除后重建',
+    semTopicDraftHint: '保存生成草稿，管理员确认后生效',
     refusalRelatedLinks: '已声明的链接',
     refusalRelatedLinksEmpty: '这个方向还没有声明的链接——补一条即可让这类问题可答',
     semName: '名称',
@@ -2555,6 +2567,22 @@ export const messages = {
     hierarchyNameLockedHint:
       'The name is the draft address; it cannot be changed while editing — to rename, delete and re-add',
     hierarchyDisplayKeepHint: 'Leave blank to keep the current display name (it is not cleared)',
+    // ── Topics (audit #3 residual): authoring in the semantic workbench ──
+    semTopics: 'Topics',
+    semTopicAdd: 'New topic',
+    semTopicEditTitle: 'Edit topic',
+    semTopicEmpty: 'No topics declared',
+    semTopicNameTaken: 'A topic named "{n}" already exists — edit it directly or choose another name',
+    semTopicNameLockedHint:
+      'The name is the draft address; it cannot be changed while editing — to rename, delete and re-add',
+    semTopicDatasetsHint:
+      "Scope = these datasets ∩ the model's current datasets; only declared datasets can be selected",
+    semTopicMetricsHint:
+      'Optional; each metric must be anchored inside the selected datasets or validation blocks it',
+    semTopicExamples: 'Example questions (one per line)',
+    semTopicKeepHint:
+      'Blank optional fields keep the current value — they do not clear it. To clear, delete and re-add',
+    semTopicDraftHint: 'Saving creates a draft; it takes effect after confirmation',
     refusalRelatedLinks: 'Declared links',
     refusalRelatedLinksEmpty:
       'No link declared in this direction yet — add one to make such questions answerable',
