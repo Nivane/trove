@@ -25,9 +25,12 @@ edge is the coverage report's business (``_coverage`` — advisories, zero
 queries), so an entity-less model costs nothing but its coverage lines and
 this module never invents a claim the author did not make.
 
-Probes need backtick-quoted identifiers (mysql / sqlite / duckdb /
-clickhouse / doris); other dialects get one honest ``unverifiable`` instead
-of N fake alarms — the same call as ``kb.columns``' MySQL-only gate.
+Probes need quoted identifiers. Backtick dialects (mysql / sqlite / duckdb /
+clickhouse / doris) and double-quote dialects (postgres) are supported;
+other dialects get one honest ``unverifiable`` instead of N fake alarms —
+the same call as ``kb.columns``' MySQL-only gate. Snowflake is deliberately
+left out: its unquoted identifiers fold to uppercase, so quoting the
+lowercase spellings a semantic model carries would probe the wrong names.
 """
 
 from __future__ import annotations
@@ -45,10 +48,12 @@ VIOLATED = "violated"
 ADVISORY = "advisory"
 UNVERIFIABLE = "unverifiable"
 
-#: 探测用反引号引用标识符;其余方言给一条诚实的"跳过"(与 kb.columns
+#: 方言 → 标识符引用符。其余方言给一条诚实的"跳过"(与 kb.columns
 #: 的 MySQL-only 闸同款:逐条报 SQL 错只会刷屏)。
-_QUOTED_DIALECTS = frozenset(
-    {"mysql", "sqlite", "duckdb", "clickhouse", "doris"})
+_PROBE_QUOTES = {
+    **{d: "`" for d in ("mysql", "sqlite", "duckdb", "clickhouse", "doris")},
+    "postgres": '"',
+}
 
 
 @dataclass(frozen=True)
@@ -67,20 +72,20 @@ class Probe:
     message: str
 
 
-def _q(part: str) -> str:
-    return "`" + str(part).replace("`", "``") + "`"
+def _q(part: str, quote: str = "`") -> str:
+    return quote + str(part).replace(quote, quote * 2) + quote
 
 
-def _table_ref(source: str) -> str:
-    return ".".join(_q(p) for p in str(source).split(".") if p)
+def _table_ref(source: str, quote: str = "`") -> str:
+    return ".".join(_q(p, quote) for p in str(source).split(".") if p)
 
 
-def _cols(cols: list[str]) -> str:
-    return ", ".join(_q(c) for c in cols)
+def _cols(cols: list[str], quote: str = "`") -> str:
+    return ", ".join(_q(c, quote) for c in cols)
 
 
-def _not_null(cols: list[str]) -> str:
-    return " AND ".join(f"{_q(c)} IS NOT NULL" for c in cols)
+def _not_null(cols: list[str], quote: str = "`") -> str:
+    return " AND ".join(f"{_q(c, quote)} IS NOT NULL" for c in cols)
 
 
 async def _scalar(adapter, sql: str) -> int:
@@ -93,21 +98,25 @@ async def verify_declarations(
 ) -> list[Probe]:
     """Every probe for one semantic model. Read-only; per-probe failures are
     verdicts (``unverifiable``), not exceptions."""
-    if dialect not in _QUOTED_DIALECTS:
+    quote = _PROBE_QUOTES.get(dialect)
+    if quote is None:
         return [Probe(
             "verify", "", UNVERIFIABLE,
-            f"声明验证需要反引号引用标识符,本次 dialect={dialect or '未知'},跳过")]
+            f"声明验证需要可引用的标识符引用(反引号或双引号),"
+            f"本次 dialect={dialect or '未知'},跳过")]
     probes: list[Probe] = []
     by_name = {d.name: d for d in model.datasets}
     for ds in model.datasets:
-        probes += await _verify_dataset_key(adapter, ds)
+        probes += await _verify_dataset_key(adapter, ds, quote)
     for rel in model.relationships:
-        probes += await _verify_relationship(adapter, rel, by_name)
+        probes += await _verify_relationship(adapter, rel, by_name, quote)
     probes += _coverage(model)
     return probes
 
 
-async def _verify_dataset_key(adapter, ds: SemanticDataset) -> list[Probe]:
+async def _verify_dataset_key(
+    adapter, ds: SemanticDataset, quote: str,
+) -> list[Probe]:
     """Entity natural key (or the primary-key fallback) vs the live table.
 
     Only *declared* keys are probed — a dataset that declared neither is a
@@ -130,14 +139,14 @@ async def _verify_dataset_key(adapter, ds: SemanticDataset) -> list[Probe]:
     if not ds.source:
         return [Probe("keys", target, UNVERIFIABLE,
                       f"数据集「{ds.name}」未声明物理来源(source),{label}无法探测")]
-    table = _table_ref(ds.source)
-    cols, notnull = _cols(keys), _not_null(keys)
+    table = _table_ref(ds.source, quote)
+    cols, notnull = _cols(keys, quote), _not_null(keys, quote)
     try:
         total = await _scalar(adapter, f"SELECT COUNT(*) FROM {table}")
         nulls = await _scalar(
             adapter,
             f"SELECT COUNT(*) FROM {table} WHERE "
-            + " OR ".join(f"{_q(c)} IS NULL" for c in keys))
+            + " OR ".join(f"{_q(c, quote)} IS NULL" for c in keys))
         clean = total - nulls
         distinct = await _scalar(
             adapter,
@@ -166,6 +175,7 @@ async def _verify_dataset_key(adapter, ds: SemanticDataset) -> list[Probe]:
 
 async def _verify_relationship(
     adapter, rel: SemanticRelationship, by_name: dict[str, SemanticDataset],
+    quote: str,
 ) -> list[Probe]:
     """The verifiable claim of one edge: the "one" side is unique.
 
@@ -191,12 +201,14 @@ async def _verify_relationship(
     probes: list[Probe] = []
     if rel.cardinality != "M:N":
         probes += await _probe_side_unique(
-            adapter, rel.name, dst, rel.to_columns, label="to 侧(「一」侧)键")
+            adapter, rel.name, dst, rel.to_columns, quote,
+            label="to 侧(「一」侧)键")
         if rel.cardinality == "1:1":
             probes += await _probe_side_unique(
-                adapter, rel.name, src, rel.from_columns, label="from 侧键(1:1)")
+                adapter, rel.name, src, rel.from_columns, quote,
+                label="from 侧键(1:1)")
     if rel.fan_out == "dedup":
-        probes += await _probe_dedup(adapter, rel, src)
+        probes += await _probe_dedup(adapter, rel, src, quote)
     elif rel.fan_out.startswith("bridge:"):
         # 编译期对 bridge 是「保留未实现 → 仍拒」(compiler.py 的 fan_out
         # 分支)—— 一条看起来放行了、实际什么都没放行的豁免,正是 validate
@@ -209,20 +221,20 @@ async def _verify_relationship(
 
 
 async def _probe_side_unique(
-    adapter, rel_name: str, ds: SemanticDataset, cols: list[str], *,
+    adapter, rel_name: str, ds: SemanticDataset, cols: list[str], quote: str, *,
     label: str,
 ) -> list[Probe]:
     if not ds.source:
         return [Probe("relationships", rel_name, UNVERIFIABLE,
                       f"数据集「{ds.name}」未声明物理来源(source),{label}无法探测")]
-    table = _table_ref(ds.source)
-    notnull = _not_null(cols)
+    table = _table_ref(ds.source, quote)
+    notnull = _not_null(cols, quote)
     try:
         clean = await _scalar(
             adapter, f"SELECT COUNT(*) FROM {table} WHERE {notnull}")
         distinct = await _scalar(
             adapter,
-            f"SELECT COUNT(*) FROM (SELECT DISTINCT {_cols(cols)} FROM {table}"
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT {_cols(cols, quote)} FROM {table}"
             f" WHERE {notnull}) AS _dk")
     except Exception as e:  # noqa: BLE001
         return [Probe("relationships", rel_name, UNVERIFIABLE,
@@ -237,7 +249,7 @@ async def _probe_side_unique(
 
 
 async def _probe_dedup(
-    adapter, rel: SemanticRelationship, src: SemanticDataset,
+    adapter, rel: SemanticRelationship, src: SemanticDataset, quote: str,
 ) -> list[Probe]:
     """``fan_out: dedup`` 的可证伪前提:DISTINCT * 之后每键恰一行。
 
@@ -250,8 +262,8 @@ async def _probe_dedup(
     if not src.source:
         return [Probe("fan_out", rel.name, UNVERIFIABLE,
                       f"数据集「{src.name}」未声明物理来源(source),dedup 前提无法探测")]
-    table = _table_ref(src.source)
-    cols = _cols(rel.from_columns)
+    table = _table_ref(src.source, quote)
+    cols = _cols(rel.from_columns, quote)
     try:
         total = await _scalar(adapter, f"SELECT COUNT(*) FROM {table}")
         distinct_rows = await _scalar(

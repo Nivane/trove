@@ -36,7 +36,10 @@ export const GOVERNANCE_INBOX_SORTS = ['oldest', 'newest', 'confidence', 'severi
 export type GovernanceInboxSort = (typeof GOVERNANCE_INBOX_SORTS)[number]
 
 export const GOVERNANCE_DRIFT_STATUSES = ['open', 'waived', 'resolved', 'all'] as const
-export const GOVERNANCE_DRIFT_LEVELS = ['L1', 'L2', 'L4'] as const
+/** L4 仍只能经外部声明进入;L3 是检测级别(需显式深度检测才会跑)。 */
+export const GOVERNANCE_DRIFT_LEVELS = ['L1', 'L2', 'L3', 'L4'] as const
+/** 深度检测 = 在默认 L1+L2 之上加 L3 活库探测。 */
+export const GOVERNANCE_DEEP_DRIFT_LEVELS = ['L1', 'L2', 'L3'] as const
 
 /** 收件箱八类(顺序即页面展示顺序;行动两类随 P3 并入,只导向行动页,不就地处置)。 */
 export const GOVERNANCE_TODO_KINDS = [
@@ -234,10 +237,18 @@ export async function fetchDriftDetail(
  * 跑一次检测。**未完成时后端回 503、响应体的 detail 就是完整报告** ——
  * 这里把它当数据 resolve 出来,调用方据此渲染「检测未能完成 · skip_reason」。
  * 其余非 2xx(400 未知级别 / 404 源不存在)照常抛。
+ *
+ * `levels` 不传 = 沿用后端默认(L1+L2,逐字节不变);传了才拼重复的
+ * `level` 参数 —— 深度检测是**本次动作的选项**,不是持久设置。
  */
-export async function runDriftCheck(ds: string): Promise<GovernanceDriftCheck> {
+export async function runDriftCheck(
+  ds: string,
+  levels?: readonly string[],
+): Promise<GovernanceDriftCheck> {
+  const params = new URLSearchParams({ datasource: ds })
+  for (const lv of levels ?? []) params.append('level', lv)
   const resp = await apiFetch(
-    `/v1/admin/drift/check?datasource=${encodeURIComponent(ds)}`,
+    `/v1/admin/drift/check?${params.toString()}`,
     { method: 'POST' },
   )
   const body = await readJson(resp)

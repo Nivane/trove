@@ -103,7 +103,7 @@ _DRIFT_RUN_IDX = ("CREATE INDEX IF NOT EXISTS idx_drift_run "
                   "ON drift_run (datasource, started_at)")
 
 def _migrations():
-    from trove.storage.migrations import Migration
+    from trove.storage.migrations import AddColumn, Migration
 
     return [
         Migration(
@@ -111,6 +111,14 @@ def _migrations():
             description="semantic_drift + drift_run 两张表与索引",
             ops=[_SEMANTIC_DRIFT_SQL, _DRIFT_RUN_SQL,
                  _DRIFT_STATUS_IDX, _DRIFT_SEEN_IDX, _DRIFT_RUN_IDX],
+        ),
+        Migration(
+            version=2,
+            description="drift_run.detail:每次运行验证了哪几级、哪些声明判不了",
+            ops=[AddColumn(
+                "drift_run", "detail",
+                "TEXT NOT NULL DEFAULT '{}'", "TEXT NOT NULL DEFAULT '{}'",
+            )],
         ),
     ]
 
@@ -148,6 +156,18 @@ def _loads(raw: Any) -> dict:
 
 def _dumps(val: Any) -> str:
     return json.dumps(val or {}, ensure_ascii=False, sort_keys=True)
+
+
+def _run_detail(report: DriftReport) -> str:
+    """一次运行的「验证到哪、哪些判不了」——随 run 落库。
+
+    不把 ``unverified`` 折进条目:它们不是漂移,是**判不了**。混进条目表
+    会让「没有这条漂移」与「这条漂不了」在列表上长得一样。
+    """
+    return _dumps({
+        "levels_verified": sorted(report.levels_verified),
+        "unverified": [u.to_dict() for u in report.unverified],
+    })
 
 
 class DriftStore:
@@ -216,10 +236,11 @@ class DriftStore:
                 # 未检测:只记 run,**不碰任何条目**。理由见模块 docstring。
                 await conn.execute(
                     "INSERT INTO drift_run (datasource, started_at, finished_at,"
-                    " status, skip_reason, detected, new_count)"
-                    " VALUES (?,?,?,?,?,?,?)",
+                    " status, skip_reason, detected, new_count, detail)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
                     (report.datasource, report.generated_at, report.generated_at,
-                     report.status, report.skip_reason, 0, 0),
+                     report.status, report.skip_reason, 0, 0,
+                     _run_detail(report)),
                 )
                 await conn.commit()
                 logger.info(
@@ -240,9 +261,11 @@ class DriftStore:
 
             await conn.execute(
                 "INSERT INTO drift_run (datasource, started_at, finished_at,"
-                " status, skip_reason, detected, new_count) VALUES (?,?,?,?,?,?,?)",
+                " status, skip_reason, detected, new_count, detail)"
+                " VALUES (?,?,?,?,?,?,?,?)",
                 (report.datasource, report.generated_at, report.generated_at,
-                 RUN_OK, None, len(report.items), new_count),
+                 RUN_OK, None, len(report.items), new_count,
+                 _run_detail(report)),
             )
             await conn.commit()
             logger.info(
@@ -439,16 +462,25 @@ class DriftStore:
         try:
             cursor = await conn.execute(
                 "SELECT id, datasource, started_at, finished_at, status,"
-                " skip_reason, detected, new_count FROM drift_run"
+                " skip_reason, detected, new_count, detail FROM drift_run"
                 " WHERE datasource = ? ORDER BY started_at DESC LIMIT ?",
                 (datasource, int(limit)),
             )
-            rows = [
-                {"id": r[0], "datasource": r[1], "started_at": r[2],
-                 "finished_at": r[3], "status": r[4], "skip_reason": r[5],
-                 "detected": r[6], "new_count": r[7]}
-                async for r in cursor
-            ]
+            rows = []
+            async for r in cursor:
+                detail = _loads(r[8])
+                rows.append({
+                    "id": r[0], "datasource": r[1], "started_at": r[2],
+                    "finished_at": r[3], "status": r[4], "skip_reason": r[5],
+                    "detected": r[6], "new_count": r[7],
+                    "levels_verified": [
+                        str(x) for x in (detail.get("levels_verified") or [])
+                    ],
+                    "unverified": [
+                        u for u in (detail.get("unverified") or [])
+                        if isinstance(u, dict)
+                    ],
+                })
         finally:
             await conn.close()
         return rows

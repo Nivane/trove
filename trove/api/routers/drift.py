@@ -82,6 +82,7 @@ async def _live_schema(request: Request, ds: str) -> dict[str, set[str]]:
 
 def _service(request: Request, ds: str) -> DriftService:
     from trove.services.drift import DriftStore
+    from trove.services.semantic_layer.live_drift import detect_live_drift
     from trove.services.semantic_layer.provider import SemanticLayerProvider
 
     kb = _kb(request)
@@ -112,9 +113,17 @@ def _service(request: Request, ds: str) -> DriftService:
             catalog=catalog,
         )
 
+    async def live_detector(datasource: str, model):
+        """L3 执行面。模型由服务层从同一个语义层 provider 取,
+        这里只负责拿 adapter / 方言 —— 连接 I/O 留在接线层。"""
+        adapter = await _registry(request).get(datasource)
+        dialect = adapter.dialect() or "sqlite"
+        return await detect_live_drift(adapter, model, dialect)
+
     return DriftService(
         root, kb=kb, schema_provider=schema_provider,
-        semantic_factory=semantic_factory, store=DriftStore(root),
+        semantic_factory=semantic_factory, live_detector=live_detector,
+        store=DriftStore(root),
     )
 
 
@@ -163,7 +172,8 @@ def _row_payload(row) -> dict[str, Any]:
 async def drift_check(
     request: Request, admin: dict = Depends(require_admin),
 ) -> dict:
-    """跑一次检测(默认全级别)。未完成 → **503**,不是 200 + 空列表。"""
+    """跑一次检测(默认 L1+L2;L3 需显式 ``?level=L3``)。
+    未完成 → **503**,不是 200 + 空列表。"""
     ds = _query_ds(request)
     levels = [lv for lv in request.query_params.getlist("level") if lv]
 
@@ -182,6 +192,7 @@ async def drift_check(
     await _audit(request, "drift.check", admin, 200, {
         "datasource": ds, "detected": len(report.items),
         "new": report.new_count, "levels": sorted(report.levels_verified),
+        "unverified": len(report.unverified),
     })
     return report.to_dict()
 

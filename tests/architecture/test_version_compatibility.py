@@ -572,11 +572,13 @@ MIGRATION_STORES: tuple[MigrationStore, ...] = (
             "::TestSchema::test_migrations_are_idempotent",
         )),
     MigrationStore(
-        "trove/services/drift/store.py", 1, (
+        "trove/services/drift/store.py", 2, (
             "tests/services/drift/test_store.py"
             "::test_schema_is_created_and_reopen_is_idempotent",
             "tests/services/drift/test_store.py"
             "::test_store_is_usable_without_explicit_migration_call",
+            "tests/services/drift/test_store.py"
+            "::test_legacy_v1_db_is_adopted_and_gains_detail",
         )),
     MigrationStore(
         "trove/services/kb/ledger.py", 1, (

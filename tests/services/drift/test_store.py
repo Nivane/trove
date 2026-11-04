@@ -9,11 +9,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from trove.services.drift.models import (
     L1,
     L2,
+    L3,
     RUN_OK,
     RUN_SKIPPED,
     SEVERITY_CRITICAL,
@@ -25,16 +28,20 @@ from trove.services.drift.models import (
     STATUS_WAIVED,
     DriftItem,
     DriftReport,
+    UnverifiedClaim,
 )
-from trove.services.drift.store import DriftStore
+from trove.services.drift.store import STORE_NAME, DriftStore, _migrations
 
 DS = "demo"
 
 
-def _report(items, *, status=RUN_OK, skip_reason=None, at="2026-09-28T00:00:00Z"):
+def _report(items, *, status=RUN_OK, skip_reason=None,
+            at="2026-09-28T00:00:00Z", levels_verified=frozenset(),
+            unverified=()):
     return DriftReport(
         datasource=DS, status=status, items=list(items), generated_at=at,
-        skip_reason=skip_reason,
+        skip_reason=skip_reason, levels_verified=levels_verified,
+        unverified=tuple(unverified),
     )
 
 
@@ -62,6 +69,99 @@ async def test_schema_is_created_and_reopen_is_idempotent(store, tmp_path):
 async def test_store_is_usable_without_explicit_migration_call(store):
     """构造即可用 —— 迁移由第一次访问惰性触发,调用方不必记得去 apply。"""
     assert await store.list_items(DS) == []
+
+
+async def test_legacy_v1_db_is_adopted_and_gains_detail(tmp_path):
+    """老代码建的 v1 库(八个 run 列、没有 ``detail``)→ 打开即升级。
+
+    升级是**采纳**不是重建:老 run 行原样还在,只是它们的
+    ``levels_verified`` / ``unverified`` 读作空 —— 那两次检测确实没有
+    记录过这两件事,回填一个猜测值比空更糟。
+    """
+    from trove.storage.backends import SqliteBackend
+    from trove.storage.migrations import SQLITE, apply_migrations
+
+    db_path = tmp_path / ".trove" / "drift" / "drift.sqlite"
+    db_path.parent.mkdir(parents=True)
+    backend = SqliteBackend(str(db_path))
+    try:
+        await apply_migrations(backend, STORE_NAME, _migrations()[:1],
+                               dialect=SQLITE)
+        await backend.execute(
+            "INSERT INTO drift_run (datasource, started_at, finished_at,"
+            " status, skip_reason, detected, new_count) VALUES (?,?,?,?,?,?,?)",
+            (DS, "2026-09-27T00:00:00Z", "2026-09-27T00:00:00Z",
+             RUN_OK, None, 0, 0))
+        await backend.commit()
+    finally:
+        await backend.dispose()
+
+    legacy = DriftStore(tmp_path)
+    try:
+        runs = await legacy.list_runs(DS)
+        assert len(runs) == 1, "老 run 行必须还在"
+        assert runs[0]["levels_verified"] == []
+        assert runs[0]["unverified"] == []
+        await legacy.record(_report([], levels_verified=frozenset({L1}),
+                                    at="2026-09-28T00:00:00Z"))
+        after = await legacy.list_runs(DS)
+        assert len(after) == 2
+        assert after[0]["levels_verified"] == ["L1"], "升级后可写 detail"
+    finally:
+        await legacy.dispose()
+
+
+async def test_list_runs_round_trips_levels_verified_and_unverified(store):
+    claim = UnverifiedClaim(level=L3, subject="loan.status",
+                            reason="value_domain_too_large")
+    await store.record(_report(
+        [_item()], levels_verified=frozenset({L1, L2}), unverified=(claim,)))
+
+    run = (await store.list_runs(DS))[0]
+    assert run["levels_verified"] == ["L1", "L2"]
+    assert run["unverified"] == [{
+        "level": L3, "subject": "loan.status",
+        "reason": "value_domain_too_large",
+    }]
+
+
+async def test_skipped_run_keeps_what_could_not_be_judged(store):
+    """未完成的 run 也要如实记下它判不了什么 —— 历史里两件事都看得见。"""
+    await store.record(_report(
+        [], status=RUN_SKIPPED, skip_reason="live_probe_failed",
+        unverified=(UnverifiedClaim(level=L3, subject="shop",
+                                    reason="connection refused"),)))
+
+    run = (await store.list_runs(DS))[0]
+    assert run["status"] == RUN_SKIPPED
+    assert run["levels_verified"] == []
+    assert run["unverified"][0]["reason"] == "connection refused"
+
+
+async def test_corrupt_detail_json_reads_as_empty_not_raise(store):
+    """读端宽容:坏 JSON 不得让整份检测历史 500。"""
+    await store.record(_report([_item()]))
+    conn = await store._conn()
+    await conn.execute("UPDATE drift_run SET detail = ?", ("{not json",))
+    await conn.commit()
+    await conn.close()
+
+    run = (await store.list_runs(DS))[0]
+    assert run["levels_verified"] == [] and run["unverified"] == []
+
+
+async def test_detail_with_wrong_shapes_reads_as_empty(store):
+    """缺键 / 非列表 / 非 dict 条目 —— 一律折空,不猜。"""
+    await store.record(_report([_item()]))
+    conn = await store._conn()
+    await conn.execute("UPDATE drift_run SET detail = ?",
+                       (json.dumps({"unverified": ["x", {"level": L3}]}),))
+    await conn.commit()
+    await conn.close()
+
+    run = (await store.list_runs(DS))[0]
+    assert run["levels_verified"] == []
+    assert run["unverified"] == [{"level": L3}]
 
 
 # ── I5 幂等 ─────────────────────────────────────────────

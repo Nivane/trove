@@ -1103,6 +1103,13 @@ export interface GovernanceDriftItem {
   resolve_reason?: string | null
 }
 
+/** 一条「判不了」的声明 —— 不是漂移,也**不是通过**(不进 levels_verified)。 */
+export interface GovernanceDriftUnverified {
+  level: string
+  subject: string
+  reason: string
+}
+
 /** GET /v1/admin/drift/runs 的一条运行记录(含 skipped —— 未检测也要看得见)。 */
 export interface GovernanceDriftRun {
   id: number
@@ -1114,6 +1121,10 @@ export interface GovernanceDriftRun {
   skip_reason?: string | null
   detected: number
   new_count: number
+  /** 这次运行实际验证了哪几级(旧后端/旧运行缺键 → 空)。 */
+  levels_verified?: string[]
+  /** 这次运行里判不了的声明(逐条带原因)。 */
+  unverified?: GovernanceDriftUnverified[]
 }
 
 /** POST /v1/admin/drift/check 的报告,503 时就是响应体的 detail(不吞)。 */
@@ -1126,6 +1137,8 @@ export interface GovernanceDriftCheck {
   new_count: number
   /** 本次检测中**验证通过**的级别;skipped 恒为空集。 */
   levels_verified: string[]
+  /** 只在有判不了的声明时出现(缺省 = 全部验证通过)。 */
+  unverified?: GovernanceDriftUnverified[]
   items: unknown[]
 }
 

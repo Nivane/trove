@@ -28,6 +28,7 @@ from typing import Any
 from trove.services.drift.models import (
     L1,
     L2,
+    L3,
     RUN_OK,
     RUN_SKIPPED,
     SEVERITY_CRITICAL,
@@ -35,6 +36,7 @@ from trove.services.drift.models import (
     SEVERITY_WARNING,
     DriftItem,
     DriftReport,
+    UnverifiedClaim,
     normalize_subject,
 )
 
@@ -219,12 +221,63 @@ def from_semantic_drift(report: dict[str, Any], datasource: str = "") -> DriftRe
     )
 
 
+# ── L3:声明 vs 活库(取值锚定 / 关系可加)────────────────────────────
+
+
+def from_live_drift(report: dict[str, Any], datasource: str = "") -> DriftReport:
+    """``semantic_layer.live_drift.detect_live_drift`` → :class:`DriftReport`。
+
+    输入契约::
+
+        {"status": "ok"|"skipped", "skip_reason": str|None,
+         "items": [{level, kind, subject, severity, detail}],
+         "unverified": [{level, subject, reason}]}
+
+    ``unverified`` 原样带上来,不折成条目、不丢弃:它是「判不了」的
+    唯一载体,合流层据此把 L3 排除出 ``levels_verified``。
+    """
+    status, skip_reason = _status_of(report)
+    unverified = tuple(
+        UnverifiedClaim(
+            level=str(u.get("level") or L3),
+            subject=str(u.get("subject") or ""),
+            reason=str(u.get("reason") or "unspecified"),
+        )
+        for u in (report.get("unverified") or []) if isinstance(u, dict)
+    )
+    if status != RUN_OK:
+        return DriftReport(
+            datasource=datasource, status=status, items=[], generated_at=_now(),
+            skip_reason=skip_reason, unverified=unverified,
+        )
+
+    items: list[DriftItem] = []
+    for raw in report.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        subject = normalize_subject(str(raw.get("subject") or ""))
+        kind = str(raw.get("kind") or "")
+        if not subject or not kind:
+            continue
+        items.append(DriftItem(
+            level=L3, kind=kind, subject=subject,
+            severity=str(raw.get("severity") or SEVERITY_WARNING),
+            detail=dict(raw.get("detail") or {}),
+        ))
+
+    return DriftReport(
+        datasource=datasource, status=RUN_OK, items=items, generated_at=_now(),
+        unverified=unverified,
+    )
+
+
 def collect(
     schema_report: dict[str, Any] | None,
     semantic_report: dict[str, Any] | None,
     datasource: str,
+    live_report: dict[str, Any] | None = None,
 ) -> DriftReport:
-    """把两条路的报告合成**一份** :class:`DriftReport`。
+    """把三条路的报告合成**一份** :class:`DriftReport`。
 
     **合成的语义**:任一路 ``skipped`` → 整体 ``skipped``。
 
@@ -240,6 +293,8 @@ def collect(
         parts.append((L1, from_schema_drift(schema_report, datasource)))
     if semantic_report is not None:
         parts.append((L2, from_semantic_drift(semantic_report, datasource)))
+    if live_report is not None:
+        parts.append((L3, from_live_drift(live_report, datasource)))
 
     if not parts:
         return DriftReport(
@@ -255,14 +310,19 @@ def collect(
         return DriftReport(
             datasource=datasource, status=RUN_SKIPPED, items=[],
             generated_at=_now(), skip_reason=reasons,
+            # 判不了的原因不因整份报告 skipped 而消失:它解释的是
+            # 「哪些声明没能判」,不是「哪些条目成立」。
+            unverified=tuple(u for _, p in parts for u in p.unverified),
         )
 
     # verified = 「这一级的检测器**真的跑了并给出了结论**」。没有语义层的
     # datasource 其 semantic_report 为 None(L2 那路压根没进 parts)——
     # 于是 L2 不在 verified 里,门禁不会把「没有契约可违反」误当成「契约成立」。
+    # 一个产生了 unverified 的级别同样不进:跑过但判不了 ≠ 验证通过。
     return DriftReport(
         datasource=datasource, status=RUN_OK,
         items=[i for _, p in parts for i in p.items],
         generated_at=_now(),
-        levels_verified=frozenset(lv for lv, _ in parts),
+        levels_verified=frozenset(lv for lv, p in parts if not p.unverified),
+        unverified=tuple(u for _, p in parts for u in p.unverified),
     )

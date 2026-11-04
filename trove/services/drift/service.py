@@ -27,6 +27,8 @@ from trove.services.drift import adapters
 from trove.services.drift.models import (
     L1,
     L2,
+    L3,
+    L4,
     LEVELS,
     RUN_SKIPPED,
     SEVERITY_ORDER,
@@ -43,10 +45,17 @@ from trove.services.drift.store import DriftStore
 
 logger = get_logger(__name__)
 
-#: 检测器目前实现的级别。L3(取值可锚定)需要活库探测、L4(口径)只承接
-#: 外部声明 —— 两者都还没接。写在这里而不是靠 ``if`` 散落各处:
-#: 请求一个未实现的级别应当**明确报错**,而不是安静地返回空。
-SUPPORTED_LEVELS = (L1, L2)
+#: 检测器目前实现的级别。L3(取值可锚定 / 关系可加)需要活库探测,
+#: L4(口径)只承接外部声明 —— 后者永不进自动检测。写在这里而不是靠
+#: ``if`` 散落各处:请求一个未实现的级别应当**明确报错**,而不是安静地
+#: 返回空。
+SUPPORTED_LEVELS = (L1, L2, L3)
+
+#: 不显式指定级别时跑哪几级。**L3 不进默认**:活库探测是按字段/关系
+#: 计的查询,和 L1/L2 的 catalog 比对不是一个成本量级。默认检测必须
+#: 与 L3 接入前逐字节一致,opt-in 走 API ``?level=L3`` / CLI ``--level``
+#: / 管理台深度检测。
+DEFAULT_DETECT_LEVELS = (L1, L2)
 
 #: 哪些状态可以再被 resolve / waive。已 resolved 的重复 resolve → 409。
 RESOLVABLE_FROM = (STATUS_OPEN, STATUS_ACKNOWLEDGED)
@@ -114,12 +123,17 @@ class DriftService:
         schema_provider: Callable[[str], Awaitable[dict[str, set[str]]]] | None = None,
         semantic_factory: (
             Callable[[str, dict[str, set[str]]], Awaitable[Any]] | None) = None,
+        live_detector: (
+            Callable[[str, Any], Awaitable[dict[str, Any] | None]] | None) = None,
         store: DriftStore | None = None,
     ) -> None:
         self.root = Path(project_root)
         self.kb = kb
         self._schema_provider = schema_provider
         self._semantic_factory = semantic_factory
+        #: L3 的唯一 I/O 面:``async (datasource, model) -> report | None``。
+        #: 服务自己仍然不开连接 —— adapter 的获取留在 API/CLI 接线层。
+        self._live_detector = live_detector
         self.store = store if store is not None else DriftStore(self.root)
 
     async def dispose(self) -> None:
@@ -155,24 +169,31 @@ class DriftService:
 
         schema_report = await self._run_l1(datasource, schema, wanted)
         semantic_report = await self._run_l2(datasource, schema, wanted)
+        live_report = await self._run_l3(datasource, schema, wanted)
 
         # ``levels_verified`` 由 collect() 自行推导,这里**不覆写**:它只知道
         # 「想查哪几级」,collect() 才知道「哪几级真跑出了结论」。用 wanted 覆写
         # 会让「没有语义层的库」被标成 L2 已验证 —— 又是一次未知洗成通过。
-        report = adapters.collect(schema_report, semantic_report, datasource)
+        report = adapters.collect(
+            schema_report, semantic_report, datasource, live_report)
 
         new_count = await self.store.record(report)
         return replace(report, new_count=new_count)
 
     def _resolve_levels(self, levels: set[str] | None) -> tuple[str, ...]:
-        if levels is None:
-            return tuple(SUPPORTED_LEVELS)
+        if not levels:
+            return DEFAULT_DETECT_LEVELS
         unknown = {lv for lv in levels if lv not in LEVELS}
         if unknown:
             raise UnknownLevel(f"未知级别: {sorted(unknown)}")
         unsupported = {lv for lv in levels if lv not in SUPPORTED_LEVELS}
         if unsupported:
-            # 明确报错而非返回空:请求 L3 拿到一份「干净」报告,是最糟的结果。
+            if L4 in unsupported:
+                # L4 不是「还没实现」,是设计上永不自动检测。
+                raise UnknownLevel(
+                    "L4 口径漂移只承接外部声明,不参与自动检测")
+            # 明确报错而非返回空:请求一个未实现的级别拿到一份「干净」
+            # 报告,是最糟的结果。
             raise UnknownLevel(
                 f"级别尚未实现: {sorted(unsupported)}(当前支持 "
                 f"{list(SUPPORTED_LEVELS)})")
@@ -208,6 +229,41 @@ class DriftService:
             # collect() 只看 L1,而不是把它算成 skipped。
             return None
         return provider.drift()
+
+    async def _run_l3(self, datasource: str, schema: dict[str, set[str]] | None,
+                      wanted: tuple[str, ...]) -> dict[str, Any] | None:
+        """L3 的活库探测。判据复用语义层 provider 的模型,执行走注入的
+        ``live_detector`` —— 服务自身仍不碰连接。"""
+        if L3 not in wanted:
+            return None
+
+        def skipped(reason: str) -> dict[str, Any]:
+            return {"status": RUN_SKIPPED, "skip_reason": reason,
+                    "items": [], "unverified": []}
+
+        if self._live_detector is None:
+            # 接线上没给 L3 执行面。请求了就必须响亮,不能假装干净。
+            return skipped("no_live_detector")
+        if schema is None:
+            # catalog 都取不到时不做孤立的 L3 —— 与 L1/L2 同一个世界前提。
+            return skipped("catalog_unreachable")
+        if self._semantic_factory is None:
+            return skipped("no_semantic_model")
+
+        provider = await self._semantic_factory(datasource, schema)
+        if provider is None:
+            # 没有语义层 = 不适用,与 L2 同一条。
+            return None
+        model = provider.model() if hasattr(provider, "model") else None
+        if model is None:
+            # 有文件但读不出来 —— 这是「判不了」,不是「没有可违反的契约」。
+            return skipped("no_semantic_model")
+        try:
+            return await self._live_detector(datasource, model)
+        except Exception as exc:  # noqa: BLE001 — 探测失败如实报,不当通过
+            logger.warning(
+                "drift: live probe failed for %s: %s", datasource, exc)
+            return skipped(f"live_probe_failed: {exc}")
 
     # ── 查询 ─────────────────────────────────────────────
 

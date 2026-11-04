@@ -29,6 +29,7 @@ L4 **明确不检测**。把它写进分类学而不是留在实现者脑子里,
 
 from trove.services.drift.adapters import (
     collect,
+    from_live_drift,
     from_schema_drift,
     from_semantic_drift,
 )
@@ -56,9 +57,11 @@ from trove.services.drift.models import (
     GateDecision,
     ImpactSet,
     SemanticChange,
+    UnverifiedClaim,
     normalize_subject,
 )
 from trove.services.drift.service import (
+    DEFAULT_DETECT_LEVELS,
     RESOLVABLE_FROM,
     SUPPORTED_LEVELS,
     DriftError,
@@ -78,11 +81,11 @@ __all__ = [
     "STATUS_OPEN", "STATUS_ACKNOWLEDGED", "STATUS_RESOLVED", "STATUS_WAIVED",
     "ALLOW", "WARN", "BLOCK",
     "DriftItem", "DriftReport", "DriftRow", "ImpactSet",
-    "SemanticChange", "GateDecision", "normalize_subject",
+    "SemanticChange", "GateDecision", "UnverifiedClaim", "normalize_subject",
     # adapters
-    "collect", "from_schema_drift", "from_semantic_drift",
+    "collect", "from_schema_drift", "from_semantic_drift", "from_live_drift",
     # store / service
     "DriftStore", "DriftService", "ExternalDrift",
-    "SUPPORTED_LEVELS", "RESOLVABLE_FROM",
+    "SUPPORTED_LEVELS", "DEFAULT_DETECT_LEVELS", "RESOLVABLE_FROM",
     "DriftError", "UnknownLevel", "DriftNotFound", "IllegalTransition",
 ]

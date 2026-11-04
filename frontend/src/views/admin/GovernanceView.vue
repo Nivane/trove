@@ -42,6 +42,7 @@ import { notifySuccess, toastError } from '../../utils/notify'
 import { useReadOnly } from '../../composables/useReadOnly'
 import { fetchOverview } from '../../api/overview'
 import {
+  GOVERNANCE_DEEP_DRIFT_LEVELS,
   GOVERNANCE_DRIFT_STATUSES,
   GOVERNANCE_INBOX_SORTS,
   GOVERNANCE_TABS,
@@ -78,6 +79,7 @@ import type {
   GovernanceCoverage,
   GovernanceCoverageSource,
   GovernanceDriftItem,
+  GovernanceDriftUnverified,
   GovernanceTodoItem,
   GovernanceTodos,
   SemanticHistoryEntry,
@@ -614,6 +616,10 @@ interface DriftSourceState {
   stale: boolean
   skipReason: string
   lastRunAt: string
+  /** 最近一次运行实际验证了哪几级(旧后端缺键 → 空)。 */
+  levelsVerified: string[]
+  /** 最近一次运行里判不了的声明 —— 展示,但绝不折进条目表。 */
+  unverified: GovernanceDriftUnverified[]
 }
 
 const EMPTY_DRIFT: DriftSourceState = {
@@ -624,10 +630,17 @@ const EMPTY_DRIFT: DriftSourceState = {
   stale: false,
   skipReason: '',
   lastRunAt: '',
+  levelsVerified: [],
+  unverified: [],
 }
 
 const driftMap = ref<Record<string, DriftSourceState>>({})
 const driftNotice = ref('')
+/**
+ * 深度检测是**本次动作的选项**,不是列表筛选 —— 因此留在本地 ref,不写 URL。
+ * 默认关:L3 的活库探测是按声明条数计的查询,不该被一次刷新悄悄打开。
+ */
+const deepDrift = ref(false)
 
 const driftSources = computed(() => (values.ds ? [values.ds] : dsNames.value))
 
@@ -675,6 +688,13 @@ async function loadDriftSource(ds: string) {
       st.stale = last.status !== 'ok'
       st.skipReason = last.skip_reason ?? ''
       st.lastRunAt = last.started_at
+      // 刷新后仍要能回答「上次跑到哪几级、哪些声明判不了」——
+      // 旧后端/旧运行没有这两个键,按空数组处理(不是「全部验证」)。
+      st.levelsVerified = last.levels_verified ?? []
+      st.unverified = last.unverified ?? []
+    } else {
+      st.levelsVerified = []
+      st.unverified = []
     }
   }
   st.loading = false
@@ -686,11 +706,19 @@ async function checkDrift(ds: string) {
   driftNotice.value = ''
   try {
     // 503 带完整报告 → 这里 resolve 出 skipped 报告,画面写「检测未能完成」。
-    const report = await runDriftCheck(ds)
+    // 不勾深度检测时不传 levels = 后端默认 L1+L2(与 L3 接入前完全一致)。
+    const report = await runDriftCheck(
+      ds,
+      deepDrift.value ? [...GOVERNANCE_DEEP_DRIFT_LEVELS] : undefined,
+    )
     await loadDriftSource(ds)
     st.checked = true
     st.stale = report.status !== 'ok'
     st.skipReason = report.skip_reason ?? ''
+    // report 是“这次”的真相;loadDriftSource 读的是最近一次 run,
+    // 两者在并发/落库延迟下可能不一致 —— 以本次响应为准。
+    st.levelsVerified = report.levels_verified ?? []
+    st.unverified = report.unverified ?? []
   } catch (e) {
     st.error = e instanceof Error ? e.message : String(e)
   } finally {
@@ -1216,6 +1244,7 @@ const activeLoading = computed(
         >
           <el-option value="L1" :label="t('govDriftLevelL1', ui.lang)" />
           <el-option value="L2" :label="t('govDriftLevelL2', ui.lang)" />
+          <el-option value="L3" :label="t('govDriftLevelL3', ui.lang)" />
           <el-option value="L4" :label="t('govDriftLevelL4', ui.lang)" />
         </el-select>
         <el-input
@@ -1224,6 +1253,14 @@ const activeLoading = computed(
           clearable
           :placeholder="t('govInboxSearch', ui.lang)"
         />
+        <el-checkbox
+          v-if="!readOnly"
+          v-model="deepDrift"
+          class="filter-deep"
+          :title="t('govDriftDeepHint', ui.lang)"
+        >
+          {{ t('govDriftDeepCheck', ui.lang) }}
+        </el-checkbox>
         <span class="gov-spacer" />
         <el-button v-if="!readOnly && values.ds" :loading="driftState(values.ds).loading" @click="checkDrift(values.ds)">
           {{ t('govDriftCheck', ui.lang) }}
@@ -1314,6 +1351,8 @@ const activeLoading = computed(
           :checked="driftState(ds).checked"
           :stale="driftState(ds).stale"
           :skip-reason="driftState(ds).skipReason"
+          :levels-verified="driftState(ds).levelsVerified"
+          :unverified="driftState(ds).unverified"
           :filtered="driftFiltered"
           @detail="openDriftDetail"
           @resolve="(item) => openDriftAction('resolve', item)"
@@ -1505,6 +1544,10 @@ const activeLoading = computed(
 }
 .filter-input {
   width: 220px;
+}
+.filter-deep {
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 .gov-spacer {
   flex: 1;
