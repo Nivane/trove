@@ -17,11 +17,14 @@ import { t } from '../../i18n'
 import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
-import type { GovernanceDriftItem } from '../../api/types'
+import type {
+  GovernanceDriftItem,
+  GovernanceDriftUnverified,
+} from '../../api/types'
 
 const { readOnly, canOpen } = useReadOnly()
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     ds: string
     items: GovernanceDriftItem[]
@@ -31,11 +34,29 @@ withDefaults(
     /** 最近一次未完成(503/跳过),items 是上一次成功的结果。 */
     stale?: boolean
     skipReason?: string
+    /** 最近一次运行实际验证了哪几级(空 = 没有记录,不是「全部验证」)。 */
+    levelsVerified?: string[]
+    /** 判不了的声明:展示出来,但不等于通过、也不是漂移条目。 */
+    unverified?: GovernanceDriftUnverified[]
     /** 有筛选(清除筛选入口随之出现)。 */
     filtered?: boolean
   }>(),
-  { loading: false, checked: true, stale: false, skipReason: '', filtered: false },
+  {
+    loading: false,
+    checked: true,
+    stale: false,
+    skipReason: '',
+    levelsVerified: () => [],
+    unverified: () => [],
+    filtered: false,
+  },
 )
+
+const levelsLabel = computed(() =>
+  props.levelsVerified.length ? props.levelsVerified.join(', ') : '—',
+)
+const MAX_UNVERIFIED_SHOWN = 8
+const shownUnverified = computed(() => props.unverified.slice(0, MAX_UNVERIFIED_SHOWN))
 
 const emit = defineEmits<{
   (e: 'detail', item: GovernanceDriftItem): void
@@ -92,7 +113,7 @@ function lifeText(item: GovernanceDriftItem): string {
           {{ t('govDriftSkipReasonLabel', ui.lang) }}: <code>{{ skipReason }}</code>
         </span>
         <span class="dt-skip-levels">
-          {{ t('govDriftLevelsVerifiedLabel', ui.lang) }}: <code>[]</code>
+          {{ t('govDriftLevelsVerifiedLabel', ui.lang) }}: <code>{{ levelsLabel }}</code>
         </span>
       </div>
       <p class="dt-skip-explain">{{ t('govDriftSkipExplain', ui.lang) }}</p>
@@ -104,6 +125,34 @@ function lifeText(item: GovernanceDriftItem): string {
           {{ t('govDriftGoDatasources', ui.lang) }}
         </button>
       </div>
+    </div>
+
+    <!-- ①b 判不了:与 ① 分开 —— 「没查成」与「查了但有些声明探不动」
+         是两种不同的事实;共同点是都不得读成通过。 -->
+    <div v-if="unverified.length" class="dt-partial" role="alert">
+      <div class="dt-partial-head">
+        <span class="dt-partial-title">
+          {{ t('govDriftPartial', ui.lang, unverified.length) }}
+        </span>
+      </div>
+      <p class="dt-skip-explain">{{ t('govDriftPartialHint', ui.lang) }}</p>
+      <ul class="dt-partial-list">
+        <li v-for="(u, i) in shownUnverified" :key="`${u.level}-${u.subject}-${i}`">
+          <code>{{ u.level }}</code>
+          <span class="dt-subject">{{ u.subject }}</span>
+          <span class="dt-meta"> — {{ u.reason }}</span>
+        </li>
+      </ul>
+      <p v-if="unverified.length > shownUnverified.length" class="dt-meta">
+        {{ t('govDriftPartialMore', ui.lang, unverified.length - shownUnverified.length) }}
+      </p>
+    </div>
+
+    <!-- 上次跑到哪几级 —— 刷新后仍然可见(不再是硬编码的 []）。 -->
+    <div v-if="checked && !stale" class="dt-verified">
+      <span class="dt-meta">
+        {{ t('govDriftLevelsVerifiedLabel', ui.lang) }}: <code>{{ levelsLabel }}</code>
+      </span>
     </div>
 
     <DataTable
@@ -223,6 +272,36 @@ function lifeText(item: GovernanceDriftItem): string {
 .dt-skip-actions {
   display: flex;
   gap: 8px;
+}
+.dt-partial {
+  border: 1px solid var(--warn, #d97706);
+  border-left: 3px solid var(--warn, #d97706);
+  border-radius: var(--r-md);
+  background: var(--warn-soft, var(--surface-sunken));
+  padding: var(--sp-2) var(--sp-3);
+}
+.dt-partial-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: baseline;
+}
+.dt-partial-title {
+  font-weight: 700;
+  color: var(--warn, #d97706);
+}
+.dt-partial-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.dt-partial-list li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+.dt-verified {
+  padding: 0 2px;
 }
 .dt-cell {
   display: flex;

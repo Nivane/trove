@@ -41,12 +41,12 @@ def _l1(**over):
     return base
 
 
-def _rep(kb_report, semantic=None, name="demo"):
+def _rep(kb_report, semantic=None, name="demo", live=None):
     """``decide`` 的输入形状 —— 走真的 ``collect``,不手搓 DriftReport。
 
     手搓会让这些测试与合流逻辑脱钩:哪天 ``collect`` 改了判定,测试仍然绿。
     """
-    return {"drift": collect(kb_report, semantic, name)}
+    return {"drift": collect(kb_report, semantic, name, live)}
 
 
 # ── 修掉的那条 ──────────────────────────────────────────────────────
@@ -122,6 +122,61 @@ def test_errors_exit_2(cd):
     assert code == 2
 
 
+# ── L3:部分判不了也是 2 ──────────────────────────────────────────────
+
+
+def _live(items=(), unverified=()):
+    return {"status": "ok", "skip_reason": None,
+            "items": list(items), "unverified": list(unverified)}
+
+
+def test_unverified_claims_exit_2_not_1(cd):
+    """请求了 L3、却有些声明探不动 —— 判不了 ≠ 通过,与「没查成」同级。
+
+    只看「有没有条目」会让一次漏掉关键声明的检查以 exit 1 收场,而
+    「判不了」在退出码里根本看不见。
+    """
+    live = _live(unverified=[{"level": "L3", "subject": "loan.status",
+                              "reason": "value_domain_too_large"}])
+    payload, code = cd.decide({"demo": _rep(_l1(), live=live)}, errors=[])
+
+    assert code == 2
+    assert payload["partial"] == {"demo": [{
+        "level": "L3", "subject": "loan.status",
+        "reason": "value_domain_too_large"}]}
+
+
+def test_partial_does_not_hide_the_drift_that_was_found(cd):
+    """判不了的声明与真漂移是两件事:两者都留在载荷里。"""
+    live = _live(
+        items=[{"level": "L3", "kind": "value_missing", "subject": "loan.status",
+                "severity": "warning", "detail": {"dataset": "loan",
+                                                  "field": "status",
+                                                  "missing": ["B"]}}],
+        unverified=[{"level": "L3", "subject": "loan.note",
+                     "reason": "field_expression_not_physical"}],
+    )
+    payload, code = cd.decide({"demo": _rep(_l1(), live=live)}, errors=[])
+
+    assert code == 2
+    levels = {i["level"] for i in payload["datasources"]["demo"]["drift"]["items"]}
+    assert levels == {"L3"}
+    assert "partial" in payload
+
+
+def test_l3_verified_when_everything_was_judged(cd):
+    live = _live(items=[{"level": "L3", "kind": "value_missing",
+                         "subject": "loan.status", "severity": "warning",
+                         "detail": {"dataset": "loan", "field": "status",
+                                    "missing": ["B"]}}])
+    payload, code = cd.decide({"demo": _rep(_l1(), live=live)}, errors=[])
+
+    drift = payload["datasources"]["demo"]["drift"]
+    assert drift["levels_verified"] == ["L1", "L3"]
+    assert "partial" not in payload
+    assert code == 1, "全部判得了 → 只按「有没有漂移」决定"
+
+
 def test_one_bad_datasource_does_not_hide_a_good_one(cd):
     """一个数据源未完成,另一个干净 → 仍 exit 2,但干净的仍出现在 payload。"""
     reports = {
@@ -152,6 +207,28 @@ def test_render_human_clean_path_unchanged(cd, capsys):
     out, _ = capsys.readouterr()
     assert "KB drift: OK" in out
     assert "Semantic drift: n/a (no semantic layer)" in out
+    assert "Live semantics: n/a (not requested)" in out, "默认不跑 L3"
+
+
+def test_render_human_marks_l3_partial_and_lists_reasons(cd, capsys):
+    """一句笼统的 PARTIAL 会让人以为「差一点就查完了」;要写清是哪些声明。"""
+    live = _live(unverified=[{"level": "L3", "subject": "loan.status",
+                              "reason": "value_domain_too_large"}])
+    cd._render_human(
+        cd.decide({"demo": _rep(_l1(), live=live)}, errors=[])[0],
+        {"L1", "L2", "L3"})
+    out, _ = capsys.readouterr()
+    assert "Live semantics: PARTIAL" in out
+    assert "loan.status: value_domain_too_large" in out
+    assert "Live semantics: OK" not in out
+
+
+def test_render_human_l3_clean_when_requested_and_judged(cd, capsys):
+    cd._render_human(
+        cd.decide({"demo": _rep(_l1(), live=_live())}, errors=[])[0],
+        {"L1", "L2", "L3"})
+    out, _ = capsys.readouterr()
+    assert "Live semantics: OK" in out
 
 
 def test_render_human_lists_both_levels_from_the_unified_items(cd, capsys):
@@ -183,6 +260,28 @@ def test_render_item_never_silently_drops_an_unknown_kind(cd):
                             "subject": "orders.status", "severity": "warning",
                             "detail": {}})
     assert "orders.status" in line and "value_not_anchorable" in line
+
+
+def test_render_item_value_missing_shows_the_missing_values(cd):
+    line = cd._render_item({
+        "level": "L3", "kind": "value_missing", "subject": "loan.status",
+        "severity": "warning",
+        "detail": {"dataset": "loan", "field": "status",
+                   "missing": ["A", "B"]},
+    })
+    assert "loan.status" in line and "A, B" in line
+
+
+def test_render_item_key_and_relationship_kinds(cd):
+    for kind, needle in (("key_not_unique", "loan.loan_id"),
+                         ("relationship_not_additive", "loan_to_customer"),
+                         ("fan_out_not_deduplicable", "account_owners")):
+        line = cd._render_item({
+            "level": "L3", "kind": kind, "subject": needle,
+            "severity": "critical",
+            "detail": {"target": needle, "message": "重复 1 行"},
+        })
+        assert needle in line and "重复 1 行" in line
 
 
 # ── payload 契约 ────────────────────────────────────────────────────
@@ -221,20 +320,23 @@ def test_payload_is_json_serializable(cd):
 # 地方。这组测试补的就是这个缺口。
 
 def _ns(**over) -> argparse.Namespace:
-    base = {"datasource": "demo", "kb_dir": None, "json": False, "verbose": False}
+    base = {"datasource": "demo", "kb_dir": None, "json": False,
+            "verbose": False, "level": None}
     base.update(over)
     return argparse.Namespace(**base)
 
 
-def _stub_check(seen: list):
+def _stub_check(seen: list, levels_seen: list | None = None):
     """把 ``_check_datasource`` 换成记录器 —— 选源是这里要测的,真建 demo 库不是。
 
     记的是**整个 cfg** 而不是 (name, type):后者对「注册表来的」与「兜底造的」
     完全一样,断言它就等于断言了一个两种路径都能满足的条件 —— 兜底即使越权,
     那条测试也照样绿。
     """
-    async def fake(name, cfg, kb):
+    async def fake(name, cfg, kb, levels=None):
         seen.append(cfg)
+        if levels_seen is not None:
+            levels_seen.append(levels)
         return {"drift": collect(_l1(), None, name)}
     return fake
 
@@ -300,3 +402,28 @@ def test_unknown_name_still_exits_2(cd, monkeypatch, tmp_path):
 
     assert code == 2
     assert "not found" in payload["error"]
+
+
+def test_level_flag_is_passed_through(cd, monkeypatch, tmp_path):
+    """``--level L3`` 必须真的传到服务层 —— 否则请求了 L3 却跑的是默认。"""
+    monkeypatch.chdir(tmp_path)
+    levels_seen: list = []
+    monkeypatch.setattr(cd, "_check_datasource",
+                        _stub_check([], levels_seen))
+
+    _, code = asyncio.run(cd._run(_ns(level=["L3"])))
+
+    assert code == 0
+    assert levels_seen == [{"L3"}]
+
+
+def test_no_level_flag_requests_defaults_not_l3(cd, monkeypatch, tmp_path):
+    """不传 ``--level`` = 默认 L1+L2;活库探测不进默认门禁。"""
+    monkeypatch.chdir(tmp_path)
+    levels_seen: list = []
+    monkeypatch.setattr(cd, "_check_datasource",
+                        _stub_check([], levels_seen))
+
+    asyncio.run(cd._run(_ns()))
+
+    assert levels_seen == [None]

@@ -17,6 +17,7 @@ from trove.services.drift.models import (
     L1,
     L2,
     L3,
+    L4,
     RUN_OK,
     RUN_SKIPPED,
     STATUS_OPEN,
@@ -57,11 +58,15 @@ def _write_kb(root, tables: dict[str, set[str]], datasource: str = DS) -> KbServ
 
 
 class _FakeSemantic:
-    def __init__(self, report):
+    def __init__(self, report, model=None):
         self._report = report
+        self._model = model if model is not None else object()
 
     def drift(self):
         return self._report
+
+    def model(self):
+        return self._model
 
 
 def _ok_semantic(**overrides):
@@ -223,12 +228,12 @@ async def test_requesting_only_l1_does_not_claim_l2_is_clean(tmp_path):
     await svc.dispose()
 
 
-async def test_requesting_unimplemented_level_raises_instead_of_clean(tmp_path):
-    """请求 L3 拿到一份「干净」报告是最糟的结果 —— 明确报错。"""
+async def test_requesting_l4_raises_instead_of_clean(tmp_path):
+    """L4 永不自动检测 —— 请求它必须明确报错,而不是给一份「干净」报告。"""
     svc = _service(tmp_path)
     with pytest.raises(UnknownLevel) as exc:
-        await svc.detect(DS, levels={L3})
-    assert "L3" in str(exc.value)
+        await svc.detect(DS, levels={L4})
+    assert "L4" in str(exc.value)
     await svc.dispose()
 
 
@@ -236,6 +241,74 @@ async def test_requesting_bogus_level_raises(tmp_path):
     svc = _service(tmp_path)
     with pytest.raises(UnknownLevel):
         await svc.detect(DS, levels={"L9"})
+    await svc.dispose()
+
+
+# ── L3:opt-in 活库探测 ──────────────────────────────────
+
+
+async def test_default_detect_never_calls_live_detector(tmp_path):
+    """默认检测与 L3 接入前逐字节一致:不调 detector、载荷无 unverified。"""
+    calls = []
+
+    async def live_detector(ds, model):
+        calls.append(ds)
+        return {"status": RUN_OK, "skip_reason": None,
+                "items": [], "unverified": []}
+
+    svc = _service(tmp_path, live_detector=live_detector)
+    report = await svc.detect(DS)
+
+    assert calls == []
+    assert report.levels_verified == frozenset({L1, L2})
+    assert "unverified" not in report.to_dict()
+    await svc.dispose()
+
+
+async def test_l3_without_detector_is_skipped_not_clean(tmp_path):
+    """请求了 L3 却没接执行面 —— 响亮跳过,绝不能当成「L3 干净」。"""
+    svc = _service(tmp_path)
+    report = await svc.detect(DS, levels={L3})
+
+    assert report.status == RUN_SKIPPED
+    assert report.skip_reason == "no_live_detector"
+    assert report.levels_verified == frozenset()
+    await svc.dispose()
+
+
+async def test_l3_items_and_unverified_merge_without_claiming_verified(tmp_path):
+    """真实条目照常进报告;判不了的声明不折成条目,且 L3 不进 verified。"""
+    async def live_detector(ds, model):
+        return {
+            "status": RUN_OK, "skip_reason": None,
+            "items": [{
+                "level": L3, "kind": "value_missing", "severity": "warning",
+                "subject": "orders.status",
+                "detail": {"dataset": "orders", "field": "status",
+                           "missing": ["X"]},
+            }],
+            "unverified": [{
+                "level": L3, "subject": "orders.note",
+                "reason": "field_expression_not_physical",
+            }],
+        }
+
+    svc = _service(tmp_path, kb_tables={"orders": {"id"}},
+                   live_detector=live_detector)
+    report = await svc.detect(DS, levels={L1, L2, L3})
+
+    assert report.status == RUN_OK
+    # L1 的条目仍在(它不因 L3 判不了而被丢弃)。
+    assert "orders.amount" in {i.subject for i in report.items}
+    assert "orders.status" in {i.subject for i in report.items}
+    # 部分验证不是验证。
+    assert L3 not in report.levels_verified
+    assert {L1, L2} == report.levels_verified
+    payload = report.to_dict()
+    assert payload["unverified"] == [{
+        "level": L3, "subject": "orders.note",
+        "reason": "field_expression_not_physical",
+    }]
     await svc.dispose()
 
 

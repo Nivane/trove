@@ -719,6 +719,111 @@ describe('drift', () => {
     expect(bodyText()).toContain(tr('govActionDone'))
   })
 
+  /* ── L3 深度检测:默认不变、勾选才跑、判不了单独说 ──────────────── */
+
+  it('does not request L3 unless deep check is ticked (default gate unchanged)', async () => {
+    await mountView('/admin/governance?tab=drift&ds=sales')
+
+    await findButton(document.body, tr('govDriftCheck')).click()
+    await settle()
+
+    const call = (apiFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/v1/admin/drift/check'),
+    )
+    expect(call).toBeTruthy()
+    // 活库探测有成本:默认不勾就不发 level 参数,后端走 L1+L2。
+    expect(qs(String(call![0])).getAll('level')).toEqual([])
+  })
+
+  it('sends L1+L2+L3 as repeated level params when deep check is ticked', async () => {
+    const view = await mountView('/admin/governance?tab=drift&ds=sales')
+
+    await view.find('.filter-deep input').setValue(true)
+    await settle()
+    await findButton(document.body, tr('govDriftCheck')).click()
+    await settle()
+
+    const call = (apiFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/v1/admin/drift/check'),
+    )
+    expect(qs(String(call![0])).getAll('level')).toEqual(['L1', 'L2', 'L3'])
+  })
+
+  it('shows the levels the last run actually verified, not a hardcoded []', async () => {
+    driftRuns.sales = [run({ levels_verified: ['L1', 'L2'] })]
+    await mountView('/admin/governance?tab=drift&ds=sales')
+
+    expect(bodyText()).toContain(`${tr('govDriftLevelsVerifiedLabel')}: L1, L2`)
+    expect(bodyText()).not.toContain(`${tr('govDriftLevelsVerifiedLabel')}: []`)
+  })
+
+  it('renders a partial banner for claims it could not judge (never a pass)', async () => {
+    driftRuns.sales = [
+      run({
+        levels_verified: ['L1', 'L2'],
+        unverified: [
+          { level: 'L3', subject: 'loan.status', reason: 'value_domain_too_large' },
+        ],
+      }),
+    ]
+    await mountView('/admin/governance?tab=drift&ds=sales')
+
+    expect(bodyText()).toContain(tr('govDriftPartial', 1))
+    expect(bodyText()).toContain(tr('govDriftPartialHint'))
+    expect(bodyText()).toContain('loan.status')
+    expect(bodyText()).toContain('value_domain_too_large')
+    // 判不了的声明不进 levels_verified —— L3 不能说成已验证。
+    expect(bodyText()).toContain(`${tr('govDriftLevelsVerifiedLabel')}: L1, L2`)
+    expect(bodyText()).not.toContain(`${tr('govDriftLevelsVerifiedLabel')}: L1, L2, L3`)
+  })
+
+  it('surfaces unverified claims from a fresh deep check immediately', async () => {
+    checkRoute = {
+      status: 200,
+      body: {
+        datasource: 'sales',
+        status: 'ok',
+        skip_reason: null,
+        generated_at: '2026-10-02T10:05:00Z',
+        detected: 0,
+        new_count: 0,
+        levels_verified: ['L1', 'L2'],
+        unverified: [
+          { level: 'L3', subject: 'loan.note', reason: 'value_probe_failed: boom' },
+        ],
+        items: [],
+      },
+    }
+    const view = await mountView('/admin/governance?tab=drift&ds=sales')
+
+    await view.find('.filter-deep input').setValue(true)
+    await settle()
+    await findButton(document.body, tr('govDriftCheck')).click()
+    await settle()
+
+    // 本次响应是「这次」的真相:reload 拿回的持久化 run 没带 unverified,
+    // 也不能把刚判不了的那条盖掉。
+    expect(bodyText()).toContain(tr('govDriftPartial', 1))
+    expect(bodyText()).toContain('loan.note')
+    expect(bodyText()).toContain('value_probe_failed: boom')
+  })
+
+  it('offers L3 in the level filter', async () => {
+    await mountView('/admin/governance?tab=drift&ds=sales')
+
+    const levelSelect = document.querySelectorAll('.gov-filters .filter-select')[1]
+    expect(levelSelect).toBeTruthy()
+    levelSelect.querySelector('.el-select__wrapper')!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await flushPromises()
+
+    const labels = Array.from(
+      document.body.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+    ).map((i) => i.textContent ?? '')
+    expect(labels.some((l) => l.includes(tr('govDriftLevelL3')))).toBe(true)
+  })
+
   it('rolls back only after the runtime file list is in place and the name is typed', async () => {
     driftLists.sales = [driftItem()]
     const view = await mountView('/admin/governance?tab=drift&ds=sales')

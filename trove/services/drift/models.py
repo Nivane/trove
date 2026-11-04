@@ -156,6 +156,31 @@ class ImpactSet:
 
 
 @dataclass(frozen=True)
+class UnverifiedClaim:
+    """一条**判不了**的声明(级别 / 主体 / 原因)。
+
+    ``levels_verified`` 是整级的布尔;这条是整级判不了**为什么**。两者
+    必须同时存在:只报「L3 没验证」会让读者以为是没请求,只报原因又
+    没有一个可机检的门。任何 unverified 都存在时,该级别不得进
+    ``levels_verified`` —— 判不了不是通过(模块级 I3)。
+    """
+
+    level: str
+    subject: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.level not in LEVELS:
+            raise ValueError(f"unknown drift level: {self.level!r}")
+        if not self.reason:
+            raise ValueError("UnverifiedClaim.reason must be non-empty")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"level": self.level, "subject": self.subject,
+                "reason": self.reason}
+
+
+@dataclass(frozen=True)
 class DriftReport:
     """一次检测的结果。
 
@@ -183,6 +208,9 @@ class DriftReport:
     new_count: int = 0
     error: str | None = None
     levels_verified: frozenset[str] = frozenset()
+    #: 本次**判不了**的声明。非空时对应级别不进 ``levels_verified``;
+    #: 默认空元组,``to_dict`` 也不输出该键 —— 老载荷逐字节不变。
+    unverified: tuple[UnverifiedClaim, ...] = ()
 
     def verified(self, level: str) -> bool:
         """该级别是否**在本次检测中被验证通过**。门禁的 coverage 判定入口。"""
@@ -204,7 +232,7 @@ class DriftReport:
         两个前门各写一遍 ``to_dict`` 是漂移的温床:``levels_verified`` 这种
         后加的字段会只出现在其中一边,而消费方看不出少了的那个键意味着什么。
         """
-        return {
+        out = {
             "datasource": self.datasource,
             "status": self.status,
             "skip_reason": self.skip_reason,
@@ -216,6 +244,9 @@ class DriftReport:
             "levels_verified": sorted(self.levels_verified),
             "items": [i.to_dict() for i in self.items],
         }
+        if self.unverified:
+            out["unverified"] = [u.to_dict() for u in self.unverified]
+        return out
 
 
 @dataclass(frozen=True)

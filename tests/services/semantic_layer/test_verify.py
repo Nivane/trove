@@ -382,13 +382,39 @@ datasets:
 
 
 async def test_unsupported_dialect_single_honest_skip():
-    """不支持反引号引用的方言:一条 unverifiable,不是 N 条假警报。
+    """不支持可引用标识符的方言:一条 unverifiable,不是 N 条假警报。
 
     适配器刻意传 None —— 该路径必须在碰连接之前返回。
     """
-    probes = await verify_declarations(None, _model(_KEY_YAML), "postgres")
+    probes = await verify_declarations(None, _model(_KEY_YAML), "oracle")
     assert [(p.kind, p.verdict) for p in probes] == [("verify", UNVERIFIABLE)]
-    assert "postgres" in probes[0].message
+    assert "标识符引用" in probes[0].message
+    assert "oracle" in probes[0].message
+
+
+async def test_postgres_identifiers_use_double_quotes(make_adapter):
+    """PostgreSQL 用双引号;SQLite 也接受双引号,所以能在同一个 fixture 上
+    真跑 —— 钉的是「我们发出的 SQL 形状」,不是数据库行为。"""
+    adapter = await make_adapter(
+        "CREATE TABLE loan (loan_id INTEGER, amount REAL);"
+        "INSERT INTO loan VALUES (1, 10.0), (2, 20.0)")
+
+    class _Recording:
+        def __init__(self, inner):
+            self.inner = inner
+            self.sqls: list[str] = []
+
+        async def execute(self, sql):
+            self.sqls.append(sql)
+            return await self.inner.execute(sql)
+
+    rec = _Recording(adapter)
+    probes = await verify_declarations(rec, _model(_KEY_YAML), "postgres")
+
+    assert _verdicts(probes, "keys") == [VERIFIED]
+    assert rec.sqls, "探针应当真的发出 SQL"
+    assert all("`" not in sql for sql in rec.sqls)
+    assert any('"loan"' in sql for sql in rec.sqls)
 
 
 async def test_multi_dataset_without_relationships_is_coverage_gap(make_adapter):

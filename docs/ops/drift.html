@@ -35,7 +35,7 @@
 
     <nav class="doc-toc" data-toc></nav>
 
-    <h2 id="levels">四级分类：能自动检测的只有前两级</h2>
+    <h2 id="levels">四级分类：能自动检测的是前三级（L3 需显式请求）</h2>
 
     <p>
       漂移被分成四级。这个分类的价值在于<strong>明确说出哪些不检测</strong>——
@@ -61,7 +61,7 @@
           <tr>
             <td><strong>L3 语义漂移</strong></td>
             <td>取值是否还能锚定、关系是否可加</td>
-            <td>❌ <strong>尚未实现</strong>（判据上需要活库探测）</td>
+            <td>✅ <strong>显式请求时</strong>做活库探测（opt-in，有查询成本）</td>
           </tr>
           <tr>
             <td><strong>L4 口径漂移</strong></td>
@@ -72,17 +72,53 @@
       </table>
     </div>
 
+    <h3 id="l3">L3：声明是否仍然为真</h3>
+
     <p>
-      L3 那一格写的是<strong>判据上的可能性</strong>，不是现状：要锚定取值得先探测活库，
-      而这条探测还没接——今天真正实现的检测器只有 L1、L2（<code>SUPPORTED_LEVELS</code>）。
-      并且请求一个未实现的级别会被<strong>明确报错</strong>，而不是返回一份空报告：
-      「L3 干净」与「L3 没跑」在报告上必须是两件事，这正是这一层其余设计的前提。
+      L1/L2 回答的是「表和列还在不在」。语义模型最容易骗人的地方不在这里，而在
+      <strong>声明的内容是否仍然为真</strong>：<code>SemanticField.values</code> 里声明的枚举值
+      可能已经从数据里消失——带该值的过滤会静默返回 0 行，看起来像「这个地区没有贷款」；
+      声明的自然键可能并不唯一——join 会悄悄放大行数；声明的「一」侧可能不唯一——
+      <code>fan_out: dedup</code> 守卫建立在一个假前提上。这些错误的共同点是
+      <strong>运行时不会响亮失败，只会给出一个看起来合理的错数</strong>。
     </p>
 
     <p>
+      L3 用两条判据抓它们，全部只读、零 LLM：
+      <strong>取值可锚定</strong>——对每个声明了 <code>values</code> 的字段发一条
+      <code>SELECT DISTINCT … LIMIT cap+1</code>，在 Python 侧做精确/数值/大小写无关比较。
+      声明值从活库消失 = 漂移；活库多出值只是快照陈旧，<em>不报</em>。
+      <strong>关系可加</strong>——复用语义层已有的活库探针：键唯一性、关系「一」侧唯一性、
+      <code>fan_out: dedup</code> 前提，违反即 critical 条目。
+    </p>
+
+    <p>
+      <strong>L3 默认不跑</strong>。活库探测是按声明条数计的查询，不能悄悄加进每天的巡检：
+      不传级别时只跑 L1+L2，与接入 L3 之前逐字节一致。显式入口只有三处：
+      API <code>?level=L3</code>、CLI <code>--level L3</code>、管理台「深度检测」勾选。
+      方言上支持反引号族（MySQL / SQLite / DuckDB / ClickHouse / Doris）与 PostgreSQL 双引号；
+      Snowflake / BigQuery 不做引用适配，而是<strong>诚实跳过</strong>——未加引号的标识符在
+      Snowflake 会折成大写，照模型里的名字去探会探错对象，那比不探更糟。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">判不了 ≠ 通过</span>
+      <div>
+        <p>
+          表达式不是裸列、值域超过探测上限、方言不支持、SQL 执行失败——这些情况下 L3
+          <strong>不猜</strong>，而是把声明记进报告的 <code>unverified</code> 通道。
+          有任一 <code>unverified</code> 时，L3 <strong>整体不进</strong>
+          <code>levels_verified</code>：部分验证不是验证。但 L1/L2 的结论照常保留，
+          真实检出的 L3 条目也照常落库、走同一套处置流程。
+        </p>
+      </div>
+    </div>
+
+    <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L36">models.py:36 <span class="ref-line">L1</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L49">service.py:49 <span class="ref-line">SUPPORTED_LEVELS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L176">service.py:176 <span class="ref-line">UnknownLevel</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L52">service.py:52 <span class="ref-line">SUPPORTED_LEVELS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/live_drift.py#L204">live_drift.py:204 <span class="ref-line">detect_live_drift</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/verify.py#L96">verify.py:96 <span class="ref-line">verify_declarations</span></a>
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -91,18 +127,21 @@
 flowchart LR
     LIVE["活库 schema"]:::ext --> D1["L1 结构漂移<br/>表 / 列还在不在"]:::exec
     LIVE --> D2["L2 引用漂移<br/>语义模型引用的表 / 字段还可达吗"]:::exec
+    PROBE["活库探测<br/>仅显式请求时"]:::opt --> D3["L3 语义漂移<br/>声明值还在吗 / 关系可加吗"]:::exec
     EXT["外部声明<br/>治理流程 / 人的通知"]:::ext --> D4["L4 口径漂移<br/>业务算法改了，库里没有痕迹"]:::ext
     D1 --> ENT["同一条漂移条目<br/>影响面快照 + 同一套处置流程"]:::entry
     D2 --> ENT
+    D3 --> ENT
     D4 --> ENT
 
     classDef entry fill:#71717a14,stroke:#71717a59,stroke-width:1px;
     classDef exec fill:#14b8a614,stroke:#14b8a699,stroke-width:1.5px;
     classDef ext fill:transparent,stroke:#71717a80,stroke-width:1.5px,stroke-dasharray:4 4;
+    classDef opt fill:transparent,stroke:#d9770680,stroke-width:1.5px,stroke-dasharray:4 4;
         </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 四级里只有 L1、L2 是检测出来的，L4 是「承接」进来的声明——所以它们最终落在同一条条目上，走同一套影响面与处置流程。L3 尚未实现，请求它会被明确报错，而不是返回一份空报告。</span>
+        <span class="cap-rendered">图 1 · L1/L2 默认检测，L3 只在显式请求时做活库探测，L4 是「承接」进来的声明——它们最终落在同一条条目上，走同一套影响面与处置流程。L3 里判不了的声明不混进条目，也不被算作验证通过。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
@@ -125,8 +164,8 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L91">service.py:91 <span class="ref-line">DriftService</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L130">service.py:130 <span class="ref-line">detect</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L100">service.py:100 <span class="ref-line">DriftService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L144">service.py:144 <span class="ref-line">detect</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/schema_drift.py#L16">schema_drift.py:16 <span class="ref-line">detect_drift</span></a>
     </p>
 
@@ -155,7 +194,8 @@ flowchart LR
       默认 24 小时）。它挂在记忆子系统的生命周期清理上，顺带跑一次
       <code>detect_schema_drift()</code>（开关 <code>memory.schema_drift_check</code>，默认开）
       ——<strong>只跑 L1</strong>：拿 KB 的 <code>schema_notes.yml</code> 比活库列集合。
-      想跑 L2（语义引用）得有人在 API 或 <code>check_drift.py</code> 上显式触发。
+      想跑 L2（语义引用）得有人在 API 或 <code>check_drift.py</code> 上显式触发；
+      <strong>L3 从不进后台巡检</strong>——它的活库探测按声明条数计费，只能在显式入口跑。
     </p>
 
     <p>
@@ -180,8 +220,8 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L185">models.py:185 <span class="ref-line">levels_verified</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L187">models.py:187 <span class="ref-line">verified</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L210">models.py:210 <span class="ref-line">levels_verified</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L215">models.py:215 <span class="ref-line">verified</span></a>
     </p>
 
     <p>
@@ -208,8 +248,8 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L43">models.py:43 <span class="ref-line">STATUS_OPEN</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L240">service.py:240 <span class="ref-line">resolve</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L261">service.py:261 <span class="ref-line">declare_external</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L296">service.py:296 <span class="ref-line">resolve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L317">service.py:317 <span class="ref-line">declare_external</span></a>
     </p>
 
     <div class="callout warn">
@@ -244,7 +284,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L122">models.py:122 <span class="ref-line">metrics</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L225">service.py:225 <span class="ref-line">impact</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L281">service.py:281 <span class="ref-line">impact</span></a>
     </p>
 
     <p>
@@ -277,7 +317,7 @@ flowchart LR
           <tr><th>端点</th><th>作用</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">POST /v1/admin/drift/check</td><td>跑一次检测</td></tr>
+          <tr><td class="mono">POST /v1/admin/drift/check</td><td>跑一次检测（默认 L1+L2；<code>?level=L3</code> 追加活库探测）</td></tr>
           <tr><td class="mono">GET /v1/admin/drift</td><td>列出条目</td></tr>
           <tr><td class="mono">GET /v1/admin/drift/{id}</td><td>单条详情 + 影响面快照</td></tr>
           <tr><td class="mono">GET /v1/admin/drift/runs</td><td>运行历史（含 <code>skipped</code> 的轮次）</td></tr>
@@ -295,9 +335,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L162">drift.py:162 <span class="ref-line">check</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L180">drift.py:180 <span class="ref-line">503</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L225">drift.py:225 <span class="ref-line">drift_detail</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L171">drift.py:171 <span class="ref-line">check</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L190">drift.py:190 <span class="ref-line">503</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L236">drift.py:236 <span class="ref-line">drift_detail</span></a>
     </p>
 
     <p>
@@ -306,14 +346,24 @@ flowchart LR
     </p>
 
     <p>
-      命令行门禁脚本 <code>scripts/check_drift.py</code> 的退出码分三档：
-      <code>0</code> 干净且<strong>每一项检查都真的跑了</strong>、<code>1</code> 发现漂移、
-      <code>2</code> 出错<strong>或任一检查未能完成</strong>。最后那句限定词是关键——
-      它让「没检查成」不会被 CI 当成通过。
+      请求 L3 而部分声明判不了时，端点仍回 <strong>200</strong>（报告 <code>status=ok</code>，
+      真实条目与 <code>unverified</code> 并列返回）——判不了不是「检查没跑成」；
+      但该级别不会出现在 <code>levels_verified</code> 里。只有整次检查未完成才回 503。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/check_drift.py#L51">check_drift.py:51 <span class="ref-line">_check_datasource</span></a>
+      命令行门禁脚本 <code>scripts/check_drift.py</code> 的退出码分三档：
+      <code>0</code> 干净且<strong>每一项检查都真的跑了</strong>、<code>1</code> 发现漂移、
+      <code>2</code> 出错、任一检查未能完成、<strong>或请求了 L3 但有声明判不了</strong>。
+      最后那句限定词是关键——它让「没检查成」与「判不了」都不会被 CI 当成通过。
+      级别用可重复的 <code>--level</code> 指定，缺省仍是 L1+L2：
+    </p>
+
+    <pre><code>uv run python scripts/check_drift.py --datasource demo --level L1 --level L2 --json
+uv run python scripts/check_drift.py --datasource demo --level L3 --json</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/check_drift.py#L56">check_drift.py:56 <span class="ref-line">_check_datasource</span></a>
     </p>
 
     <h2 id="next">继续读</h2>
@@ -335,7 +385,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: e6c3705</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: a1dacb2</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

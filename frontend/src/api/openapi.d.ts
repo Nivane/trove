@@ -1137,7 +1137,8 @@ export interface paths {
         put?: never;
         /**
          * Drift Check
-         * @description 跑一次检测(默认全级别)。未完成 → **503**,不是 200 + 空列表。
+         * @description 跑一次检测(默认 L1+L2;L3 需显式 ``?level=L3``)。
+         *     未完成 → **503**,不是 200 + 空列表。
          */
         post: operations["drift_check_v1_admin_drift_check_post"];
         delete?: never;

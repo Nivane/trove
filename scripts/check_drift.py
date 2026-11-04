@@ -24,7 +24,12 @@ exit 2 的文档语义本来就是「连接失败」,所以这不是新增契约
 
 Usage:
     uv run python scripts/check_drift.py [--datasource NAME_OR_URL] [--json]
-        [--kb-dir DIR] [--verbose]
+        [--kb-dir DIR] [--level L1|L2|L3] [--verbose]
+
+``--level`` is repeatable and defaults to L1+L2. L3 (live value anchoring /
+relationship additivity) is opt-in: it probes the live DB once per declared
+field value-set and once per declared key/relationship, so it is not part of
+the default gate.
 
 Datasources come from ``.trove/datasources.yml`` (what serve registered);
 ``--datasource`` selects one by registered name or a ``scheme://...`` URL.
@@ -48,7 +53,7 @@ from trove.services.kb.service import KbService, resolve_kb_root
 DEMO_NAME = "demo"
 
 
-async def _check_datasource(name: str, cfg, kb) -> dict:
+async def _check_datasource(name: str, cfg, kb, levels: set[str] | None = None) -> dict:
     """跑一次检测。**本函数只做接线**,检测/合流/落库都在 ``DriftService``。
 
     在 2026-09-28 之前这里自己串了两个检测器,于是同一个「合流」逻辑在
@@ -93,10 +98,19 @@ async def _check_datasource(name: str, cfg, kb) -> dict:
                 catalog=catalog,
             )
 
+        async def live_detector(datasource: str, model):
+            """L3 只拿 adapter;模型由服务层从同一个 provider 取。"""
+            from trove.services.semantic_layer.live_drift import detect_live_drift
+
+            adapter = await registry.get(datasource)
+            return await detect_live_drift(
+                adapter, model, adapter.dialect() or "sqlite")
+
         svc = DriftService(Path.cwd(), kb=kb, schema_provider=schema_provider,
-                           semantic_factory=semantic_factory)
+                           semantic_factory=semantic_factory,
+                           live_detector=live_detector)
         try:
-            drift = await svc.detect(name)
+            drift = await svc.detect(name, levels=levels)
         finally:
             await svc.dispose()
         return {"drift": drift}
@@ -137,11 +151,13 @@ async def _run(args) -> tuple[dict, int]:
     kb_root = resolve_kb_root(args.kb_dir, configs[0].name)
     kb = KbService(Path.cwd(), kb_dir=kb_root)
 
+    levels = set(args.level) if args.level else None
     reports = {}
     errors = []
     for cfg in configs:
         try:
-            reports[cfg.name] = await _check_datasource(cfg.name, cfg, kb)
+            reports[cfg.name] = await _check_datasource(
+                cfg.name, cfg, kb, levels)
         except Exception as e:
             errors.append(f"{cfg.name}: {e}")
 
@@ -153,9 +169,16 @@ def decide(reports: dict, errors: list[str]) -> tuple[dict, int]:
 
     退出码是整个脚本的意义所在(CI 靠它判断)。这条决策此前埋在 ``_run``
     里、没有任何测试覆盖,于是「连不上库 → exit 0」活了很久没人发现。
+
+    **部分判不了也是 2**。L3 请求了、条目也检出来了,但有些声明探不动
+    (表达式不是裸列 / 域太大 / 方言不支持):这时报告 ``ok`` 且可能带
+    若干条目 —— 若只看「有没有条目」,一次漏掉关键声明的检查会以 exit 1
+    (只报漂移)收场,而「判不了」在退出码里根本看不见。判不了 ≠ 通过,
+    与「没查成」同级,都归 2。
     """
     dirty = {}
     incomplete = {}
+    partial = {}
     for name, rep in reports.items():
         drift = rep["drift"]
         if not drift.ok:
@@ -165,15 +188,19 @@ def decide(reports: dict, errors: list[str]) -> tuple[dict, int]:
             continue
         if drift.items:
             dirty[name] = rep
+        if drift.unverified:
+            partial[name] = [u.to_dict() for u in drift.unverified]
 
     payload = {"datasources": {n: {"drift": rep["drift"].to_dict()}
                                for n, rep in reports.items()}}
     if incomplete:
         payload["incomplete"] = incomplete
+    if partial:
+        payload["partial"] = partial
     if errors:
         payload["errors"] = errors
 
-    if errors or incomplete:
+    if errors or incomplete or partial:
         return payload, 2
     return payload, 1 if dirty else 0
 
@@ -186,6 +213,8 @@ def main() -> int:
                         help="KB 根目录;默认 <cwd>/.trove/kb")
     parser.add_argument("--json", action="store_true",
                         help="输出机器可读 JSON(报警用)")
+    parser.add_argument("--level", action="append", choices=["L1", "L2", "L3"],
+                        help="可重复;缺省 L1+L2。L3 = 活库探测,不进默认")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -193,11 +222,11 @@ def main() -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, default=str))
     else:
-        _render_human(result)
+        _render_human(result, set(args.level) if args.level else None)
     return code
 
 
-def _render_human(result: dict) -> None:
+def _render_human(result: dict, requested: set[str] | None = None) -> None:
     # 未完成的数据源先单独喊出来。它们的 KB drift 会显示为 OK(因为报告确实
     # 是空的),不先把这层说清楚,读者只会看到一片 OK。
     incomplete = result.get("incomplete") or {}
@@ -212,31 +241,48 @@ def _render_human(result: dict) -> None:
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         return
+    requested = set(requested) if requested else {"L1", "L2"}
     for name, rep in sorted(result.get("datasources", {}).items()):
         drift = rep["drift"]
         status = drift["status"]
         verified = set(drift.get("levels_verified") or ())
         items = drift.get("items") or []
         by_level = {lv: [i for i in items if i["level"] == lv]
-                    for lv in ("L1", "L2")}
+                    for lv in ("L1", "L2", "L3")}
+        by_unverified: dict[str, list[dict]] = {}
+        for u in drift.get("unverified") or []:
+            by_unverified.setdefault(u.get("level"), []).append(u)
 
         print(f"== {name} ==")
 
         # 每一级单独说「查了没有」。整体 status=ok 只说明**被请求的那些级**
         # 跑完了 —— 一个只跑了 L1 的 ok 报告对 L2 一无所知,不能渲染成 OK。
-        for level, label in (("L1", "KB drift"), ("L2", "Semantic drift")):
+        for level, label in (("L1", "KB drift"), ("L2", "Semantic drift"),
+                             ("L3", "Live semantics")):
             if status != "ok":
                 print(f"{label}: 未检查 ({drift.get('skip_reason')})")
                 continue
-            if level not in verified:
-                # CLI 恒请求全级别,所以 L2 不在 verified 里只有一个原因:
-                # 该数据源没有 semantics.yml —— 不适用,不是失败。
-                print(f"{label}: n/a (no semantic layer)")
+            if level in verified:
+                found = by_level[level]
+                print(f"{label}: {'OK' if not found else 'DRIFT'}")
+                for i in found:
+                    print(_render_item(i))
                 continue
-            found = by_level[level]
-            print(f"{label}: {'OK' if not found else 'DRIFT'}")
-            for i in found:
-                print(_render_item(i))
+            pending = by_unverified.get(level) or []
+            if pending:
+                # 逐条写出判不了的原因:一句笼统的 PARTIAL 会让人以为
+                # 「差一点就查完了」,而真正要修的是这些具体声明。
+                print(f"{label}: PARTIAL (判不了 {len(pending)} 项,不得视为通过)")
+                for u in pending:
+                    print(f"  ? {u.get('subject')}: {u.get('reason')}")
+                continue
+            if level not in requested:
+                print(f"{label}: n/a (not requested)")
+            elif level in ("L2", "L3"):
+                # 请求了但没有 semantics.yml —— 不适用,不是失败。
+                print(f"{label}: n/a (no semantic layer)")
+            else:
+                print(f"{label}: n/a")
 
 
 def _render_item(item: dict) -> str:
@@ -263,6 +309,20 @@ def _render_item(item: dict) -> str:
         return f"  - {d.get('dataset')} missing key: {d.get('key')}"
     if kind == "relationship_broken":
         return f"  - relationship {d.get('relationship')}: {d.get('problems')}"
+    if kind == "value_missing":
+        missing = d.get("missing") or []
+        shown = ", ".join(str(v) for v in missing[:8])
+        more = f" (+{len(missing) - 8} more)" if len(missing) > 8 else ""
+        return (f"  - {d.get('dataset')}.{d.get('field')} declared value(s) "
+                f"missing from live data: {shown}{more}")
+    if kind == "key_not_unique":
+        return f"  - key not unique: {d.get('target')} — {d.get('message')}"
+    if kind == "relationship_not_additive":
+        return (f"  - relationship not additive: {d.get('target')}"
+                f" — {d.get('message')}")
+    if kind == "fan_out_not_deduplicable":
+        return (f"  - fan_out dedup precondition broken: {d.get('target')}"
+                f" — {d.get('message')}")
     # 未知 kind 也要出得来:静默丢弃等于让检测器的发现消失。
     return f"  - [{item['level']}] {item['subject']} ({kind})"
 
