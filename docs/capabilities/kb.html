@@ -500,7 +500,8 @@ flowchart TB
         <p>
           <code>AssetLedger</code>（每条资产被用了几次、成没成、p50 耗时）已实现、有测试钉住，
           但<strong>没有任何生产构造点</strong>——答案是「不猜、不编」：拿不到统计就只报档位那一档，
-          而不是编一个数出来。另外 <code>status</code> 今天只披露、还没参与检索加权。
+          而不是编一个数出来。资产的 <code>status</code> 则已经参与检索加权：
+          命中分 = 归一化 RRF + α·authority（<code>rrf_authority_alpha</code>，默认 0.1，设 0 关闭）。
         </p>
         <p>统计不写进 <code>examples.yml</code> 是有理由的：那个目录每次写入都触发一次 git commit，高频运行时数据会把资产库的历史淹在统计噪声里，真正想回看的那次「某条 SQL 被谁改坏了」也就找不到了。</p>
       </div>

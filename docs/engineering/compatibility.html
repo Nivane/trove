@@ -246,7 +246,7 @@ flowchart LR
     <p>
       未版本化的 store 不是「漏了」——设置面列变更走 <code>ensure_column</code>、向量索引派生重建、
       观测日志没有兼容语义；但每一行都要求<strong>非空理由</strong>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L634">test_version_compatibility.py:634 <span class="ref-line">UNVERSIONED_STORES</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L636">test_version_compatibility.py:636 <span class="ref-line">UNVERSIONED_STORES</span></a>，
       不允许用沉默表示「不需要」。迁移侧同理
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L561">test_version_compatibility.py:561 <span class="ref-line">MIGRATION_STORES</span></a>：
       冻结的是实测最大版本，测试如实测值对不上就红。
@@ -254,7 +254,7 @@ flowchart LR
 
     <p>
       一条纪律值得单独说：<strong>缺口也要引 golden</strong>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L678">test_version_compatibility.py:678 <span class="ref-line">GAPS</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/tests/architecture/test_version_compatibility.py#L680">test_version_compatibility.py:680 <span class="ref-line">GAPS</span></a>。
       缺口行不是注释，而是一条被测试钉住的现状——「新版本被原样保留」这件事有 golden 证明。
       将来真给这个缺口加门时，那条 golden 必红：改行为的人被迫在同一提交里改注册表与文档。
       这是<strong>有意的摩擦</strong>——兼容语义变化本来就该是一次显式决定，而不是一次顺手的重构。
@@ -404,7 +404,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 1473541</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: a1dacb2</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
