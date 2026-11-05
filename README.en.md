@@ -300,7 +300,7 @@ Every row has a deeper layer — a docs-site chapter:
 | Actions | A trigger freezes into a proposal → human approval → dispatch and receipt → measured effect; backoff retry and dry-run rehearsal are built in, and Trove itself holds no write channel | [Actions & approval](https://nivane.github.io/trove/capabilities/actions.html) |
 | Decision quality | Verdict history is scored back per rule revision: trigger rate, and how many actions proved effective / showed no change / could not be measured — no rate on thin samples | [Decision rules · quality](https://nivane.github.io/trove/capabilities/decisions.html#quality) |
 | Subscriptions | Scheduled analysis is delivered to a notification channel as "every run / alerts only", failures on record; a job can be scoped to a topic area | [Automation & governance](https://nivane.github.io/trove/admin/automation.html) |
-| Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
+| Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift checks cover structure / references, with semantic probes on request | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | LLM egress governance | Tool results are redacted against declared `mask` fields before reaching the model, and a failed redaction withholds the whole observation; a provider allowlist gates the gateway before any call; audit records field names, never values | [Security · model data egress](https://nivane.github.io/trove/ops/security.html#egress) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
@@ -354,7 +354,7 @@ Every item above invites a follow-up: "and when it breaks?" The answer is unifor
 | OIDC state / signature / audience check fails | Refuse the login | No token issued; the failure code is surfaced via the frontend fragment |
 | No authorization basis (`None`) | Deny everything | "Forgot to grant" never degrades into access |
 | Read-only self-check cannot complete | Recorded "unverified" | Never rendered as "safe" |
-| KB drift check cannot read | Non-zero exit code | "Could not check" is not "nothing wrong" |
+| KB drift check cannot read, or an L3 claim cannot be verified | Non-zero exit code (partial → 2) | "Could not check" is not "nothing wrong" |
 | Confidence undecidable | The most conservative band | Understating beats overstating |
 | Noise band unmeasurable (too few blocks / no history) | Report "cannot tell" as-is | A rule that gates on the band raises an error run rather than quietly passing |
 
@@ -407,7 +407,7 @@ Code layout: `trove/workflow/` (graphs and nodes) · `trove/services/` (datasour
 
 **Do I need a vector database?** No. Retrieval runs on a built-in SQLite FTS5 mirror out of the box; under PostgreSQL the same instance hosts pg_bm25 + pgvector for hybrid retrieval, and episodic memory may use an embedder when one is configured, falling back gracefully to lexical matching.
 
-**How does the semantic model stay honest as the schema drifts?** Runtime guards keep behaviour safe; a drift check compares declarations against the live schema, reports `stale` in the admin console where rebuilding via `/kb init` preserves human-reviewed definitions. The important part is that it **never reads "could not check" as "no problem"**: an unreachable datasource or an unreadable KB is recorded as unverified and returns a non-zero exit code. See [drift governance](https://nivane.github.io/trove/ops/drift.html).
+**How does the semantic model stay honest as the schema drifts?** Runtime guards keep behaviour safe; a drift check compares declarations against the live schema, reports `stale` in the admin console where rebuilding via `/kb init` preserves human-reviewed definitions. On explicit request it can also probe declared content — whether declared enum values still exist in the data, and whether declared relationships remain additive (key uniqueness, the "one" side, `fan_out: dedup` preconditions); claims it cannot verify are listed separately and never count as verified. The important part is that it **never reads "could not check" as "no problem"**: an unreachable datasource or an unreadable KB is recorded as unverified and returns a non-zero exit code. See [drift governance](https://nivane.github.io/trove/ops/drift.html).
 
 ## Contributing
 

@@ -299,7 +299,7 @@ docker compose down
 | 行动 | 判定触发冻结成提案 → 人工审批 → 外送回执 → 效果验收;退避重试与 dry-run 预演内建,系统自身不接写通道 | [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) |
 | 判定质量 | 历史判定按规则版本分桶回评:触发率、行动有效 / 无变化 / 测不了的条数;样本不足不报比率 | [判定规则 · 质量回评](https://nivane.github.io/trove/capabilities/decisions.html#quality) |
 | 订阅 | 定时分析的结果按「每期 / 仅告警」投递到通知通道,失败留痕;任务可限定主题域 | [自动化与治理](https://nivane.github.io/trove/admin/automation.html) |
-| 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
+| 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移检查(结构 / 引用,语义探测按需) | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | LLM 数据出境治理 | 工具回喂在进模型前按 `mask` 声明脱敏,失败整条扣留;provider 白名单在网关前置拦截;审计只记字段名不记值 | [安全 · 模型数据出境治理](https://nivane.github.io/trove/ops/security.html#egress) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
@@ -357,7 +357,7 @@ docker compose down
 | OIDC state / 签名 / 受众校验不通过 | 拒绝登录 | 不签发令牌;失败码经前端 fragment 提示 |
 | 拿不到授权依据(`None`) | 拒绝一切 | 「忘了授权」不退化成放行 |
 | 只读自检查不成 | 记「未验证」 | 绝不渲染成「安全」 |
-| KB 漂移检查读不出来 | 非零退出码 | 不把「没查成」当「没问题」 |
+| KB 漂移检查读不出来,或 L3 有声明判不了 | 非零退出码(部分判不了 → 2) | 不把「没查成」当「没问题」 |
 | 置信度判定不出 | 倒向最保守的档 | 虚低好过虚高 |
 | 噪声带测不出(块数不足 / 无历史) | 如实记「判不了」 | 要求噪声带兜底的规则宁可报错误运行,不静默放行 |
 
@@ -410,7 +410,7 @@ uv run pytest -m "not slow"       # 跳过慢测试
 
 **需要向量数据库吗?** 不需要。内置 SQLite FTS5 即可开箱检索;PostgreSQL 下同一实例同时承载 pg_bm25 + pgvector 混合检索;情景记忆在配置了 embedder 时用向量,未配置则优雅回退词法匹配。
 
-**schema 漂移了,语义模型怎么保持诚实?** 运行时守卫保证行为安全,漂移检查把声明与实时 schema 对比并在管理端报 `stale`,此时 `/kb init` 重建会保留人工审过的定义。关键是它**不把「没查成」当成「没问题」**:数据源连不上、KB 读不出来,一律记「未验证」并给出非零退出码。见[漂移治理](https://nivane.github.io/trove/ops/drift.html)。
+**schema 漂移了,语义模型怎么保持诚实?** 运行时守卫保证行为安全,漂移检查把声明与实时 schema 对比并在管理端报 `stale`,此时 `/kb init` 重建会保留人工审过的定义。显式请求时还可以加一层语义探测——声明的枚举值是否还存在于数据里、声明的关系是否仍然可加(键唯一 / 关系「一」侧 / `fan_out: dedup` 前提);判不了的声明单独列出,不算验证通过。关键是它**不把「没查成」当成「没问题」**:数据源连不上、KB 读不出来,一律记「未验证」并给出非零退出码。见[漂移治理](https://nivane.github.io/trove/ops/drift.html)。
 
 ## 参与贡献
 
