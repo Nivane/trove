@@ -9,6 +9,7 @@ history, not "latest flush"), retention with event cascade, and
 from __future__ import annotations
 
 import os
+from itertools import count
 
 import pytest
 
@@ -30,8 +31,18 @@ def _header(run_id: str, **over) -> dict:
     return base
 
 
+#: The recorder stamps ``created_at`` on every event **at capture time**, and
+#: the store's re-flush identity is ``(kind, node, payload, created_at)``.
+#: Stamping it here too keeps idempotence a property of the event instead of
+#: the wall clock: without it the store falls back to its per-flush ``now``
+#: (second granularity), so two flushes of the same buffer that straddle a
+#: second boundary would read as different events and append duplicates.
+_EVENT_CREATED_AT = "2026-01-01T00:00:00+00:00"
+
+
 def _event(seq: int, kind: str = "tool", **payload) -> dict:
-    return {"seq": seq, "kind": kind, "payload": payload or {"x": seq}}
+    return {"seq": seq, "kind": kind, "payload": payload or {"x": seq},
+            "created_at": _EVENT_CREATED_AT}
 
 
 class TestRoundTrip:
@@ -220,6 +231,31 @@ class TestSeqReconciliation:
             assert again == 0, "同一快照重发不该再长出第三份"
             record = await store.get("r1")
             assert [e["seq"] for e in record["events"]] == [0, 1, 2]
+        finally:
+            await store.dispose()
+
+    async def test_reflush_is_idempotent_when_the_flush_clock_advances(
+            self, tmp_path, monkeypatch):
+        """幂等属于事件本身,不靠「两次 flush 恰好落在同一秒」。
+
+        身份包含 ``created_at``;事件自带它(recorder 在捕获时写),flush
+        时钟怎么走都不改变身份。CI 曾在跨秒时红过:事件缺 ``created_at``
+        时 store 用秒级 flush 时钟补,重发就被当成新事件追加。
+        """
+        from trove.storage import run_record_store as store_mod
+
+        ticks = count()
+        monkeypatch.setattr(
+            store_mod, "utc_now",
+            lambda: f"2026-01-01T00:00:{next(ticks):02d}+00:00")
+        store = RunRecordStore(tmp_path)
+        try:
+            snapshot = [_event(0, "llm", n=1), _event(1, "tool", n=2)]
+            await store.write(_header("r1"), snapshot)
+            again = await store.write(_header("r1"), snapshot)
+            assert again == 0, "flush 时钟前进不该把重发变成新增"
+            record = await store.get("r1")
+            assert [e["seq"] for e in record["events"]] == [0, 1]
         finally:
             await store.dispose()
 

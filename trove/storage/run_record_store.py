@@ -255,9 +255,17 @@ class RunRecordStore:
                     events: list[dict[str, Any]]) -> int:
         """Upsert the run header and append events; returns events written.
 
-        ``events`` entries are ``{seq, kind, node?, payload?, truncated?}``.
-        A caller that omits ``seq`` gets a contiguous block starting after
-        the current maximum — the recorder always supplies one.
+        ``events`` entries are ``{seq, kind, node?, payload?, created_at?,
+        truncated?}``. A caller that omits ``seq`` gets a contiguous block
+        starting after the current maximum — the recorder always supplies one.
+
+        ``created_at`` is part of the re-flush identity (see
+        :meth:`_insert_event`). Omitted means "no stable identity": each
+        flush fills in its own clock (second granularity), so a re-sent event
+        in a later second is a **new** event and is appended at
+        ``MAX(seq)+1``. The recorder stamps every event at capture time;
+        any caller that needs retried flushes to stay idempotent across
+        seconds must do the same.
         """
         run_id = str(header.get("run_id") or "")
         if not run_id:
