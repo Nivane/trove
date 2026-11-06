@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-9000%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-10000%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[Documentation](https://nivane.github.io/trove/)** — 47 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 48 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -362,7 +362,7 @@ The same bias shows up elsewhere: health distinguishes `unavailable` from `degra
 
 ## Docs Map
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 47 pages, from product concepts to API reference, including illustrated guides with 34 real-UI screenshots
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 48 pages, from product concepts to API reference, including illustrated guides with 35 real-UI screenshots
 
 | | |
 |---|---|
@@ -390,7 +390,7 @@ Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 9000+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 10000+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```
