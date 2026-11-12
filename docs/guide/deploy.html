@@ -303,7 +303,7 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <h2 id="extras">依赖 extras：按需安装</h2>
 
     <p>
-      数据库驱动不放进基础依赖。这样「支持六种数据源」不会让所有人都背上六个驱动的安装成本。
+      数据库驱动不放进基础依赖。这样「支持八种数据源」不会让所有人都背上全部驱动的安装成本。
     </p>
 
     <div class="table-wrap">
@@ -317,6 +317,8 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
           <tr><td class="mono">doris</td><td>aiomysql</td><td>Doris 复用 MySQL 协议驱动</td></tr>
           <tr><td class="mono">clickhouse</td><td>clickhouse-connect</td><td>ClickHouse</td></tr>
           <tr><td class="mono">duckdb</td><td>duckdb</td><td>本地分析型文件库</td></tr>
+          <tr><td class="mono">snowflake</td><td>snowflake-connector-python</td><td>Snowflake（同步驱动，适配器用线程包装）</td></tr>
+          <tr><td class="mono">bigquery</td><td>google-cloud-bigquery</td><td>BigQuery（同步驱动，同上）</td></tr>
         </tbody>
       </table>
     </div>
