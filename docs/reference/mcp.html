@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove MCP 集成：三种 transport（stdio / sse / streamable-http）、网络绑定的 fail-closed 鉴权、三个 tool、三个 resource 与两个 prompt。">
+<meta name="description" content="Trove MCP 集成：三种 transport（stdio / sse / streamable-http）、网络绑定的 fail-closed 鉴权、六个 tool、四个 resource 与两个 prompt。">
 <title>MCP 集成 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -183,7 +183,7 @@ flowchart TB
       </figcaption>
     </figure>
 
-    <h2 id="tools">三个 tool</h2>
+    <h2 id="tools">六个 tool</h2>
 
     <div class="table-wrap">
       <table>
@@ -197,6 +197,9 @@ flowchart TB
           </tr>
           <tr><td class="mono">list_datasources</td><td>列出当前身份可见的数据源</td></tr>
           <tr><td class="mono">kb_status</td><td>看某个数据源的 KB 状态</td></tr>
+          <tr><td class="mono">list_proposals</td><td>列出行动提案（只读；按状态 / 数据源过滤）</td></tr>
+          <tr><td class="mono">fetch_proposal</td><td>取一条提案：被批准过的载荷 + 审批与回执记录</td></tr>
+          <tr><td class="mono">ack_proposal</td><td>签收（幂等；签收不是批准——批准只发生在管理台）</td></tr>
         </tbody>
       </table>
     </div>
@@ -205,6 +208,17 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L396">server.py:396 <span class="ref-line">ask_data</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L465">server.py:465 <span class="ref-line">list_datasources</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L472">server.py:472 <span class="ref-line">kb_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L486">server.py:486 <span class="ref-line">list_proposals</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L513">server.py:513 <span class="ref-line">fetch_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L549">server.py:549 <span class="ref-line">ack_proposal</span></a>
+    </p>
+
+    <p>
+      后三个 tool 是<a href="../capabilities/actions.html#pull">行动层的拉通道</a>：
+      判定触发、人批准之后，客户端可以拉取提案并签收。边界是硬的——
+      <strong>批准 / 拒绝 / 外送 / 批量审批都不在 MCP 面</strong>，
+      只有人在管理台里能做；签收（<code>ack_proposal</code>）只表示动作已执行，
+      不改变任何审批状态。
     </p>
 
     <p>
@@ -223,7 +237,7 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L235">server.py:235 <span class="ref-line">_ds_name_safe</span></a>
     </p>
 
-    <h2 id="resources">三个 resource</h2>
+    <h2 id="resources">四个 resource</h2>
 
     <div class="table-wrap">
       <table>
@@ -234,6 +248,7 @@ flowchart TB
           <tr><td class="mono">trove://datasources</td><td>可用数据源清单</td></tr>
           <tr><td class="mono">trove://{datasource}/schema</td><td>该数据源的表结构</td></tr>
           <tr><td class="mono">trove://{datasource}/semantics</td><td>该数据源的语义模型</td></tr>
+          <tr><td class="mono">trove://proposals</td><td>已批准且未过期的行动提案（只读索引）</td></tr>
         </tbody>
       </table>
     </div>
@@ -242,6 +257,7 @@ flowchart TB
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L257">server.py:257 <span class="ref-line">datasources</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L277">server.py:277 <span class="ref-line">schema</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L283">server.py:283 <span class="ref-line">semantics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L351">server.py:351 <span class="ref-line">proposals_resource</span></a>
     </p>
 
     <p>
