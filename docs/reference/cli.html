@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve / mcp / admin / job / schedule / maintenance / validate / extensions / preset 子命令（<code>index</code> 归 <code>trove-cli</code>），以及 REPL 里的全部斜杠命令。">
+<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve / mcp / admin / job / schedule / maintenance / validate / extensions / preset / import / evalset 子命令（<code>index</code> 归 <code>trove-cli</code>），以及 REPL 里的全部斜杠命令。">
 <title>CLI 参考 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -126,6 +126,7 @@ flowchart LR
           <tr><td class="mono">extensions</td><td>扩展资产：<code>list</code> / <code>show</code> / <code>plan</code>（信封，能力从引用推导）；<code>export</code> / <code>import</code>（资产包，导入全落 pending）</td></tr>
           <tr><td class="mono">preset</td><td>预设包（接入模板）：<code>list</code> / <code>show</code> / <code>apply</code>——套用只落 pending 草稿</td></tr>
           <tr><td class="mono">import</td><td>外部语义层导入：<code>semantic</code>——dbt YAML / Cube 编译 meta → 语义模型；preview 零写入、bootstrap 走白名单写入、stage 进语义变更评审</td></tr>
+          <tr><td class="mono">evalset</td><td>按数据源验收集：<code>generate</code> / <code>list</code> / <code>create</code> / <code>confirm</code> / <code>reject</code> / <code>vouch</code> / <code>retire</code> / <code>run</code> / <code>readiness</code>——生成与新建全落 pending；无 <code>--yes</code> 的成本动作只干跑</td></tr>
           <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code>——<strong>只属于 <code>trove-cli</code> 入口</strong>，<code>trove index …</code> 不认它</td></tr>
         </tbody>
       </table>
@@ -255,6 +256,31 @@ trove import semantic --source cube --path ./cube-meta.json \
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1237">main.py:1237 <span class="ref-line">import</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/import_cmds.py#L75">import_cmds.py:75 <span class="ref-line">main_import</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/importers/landing.py#L234">landing.py:234 <span class="ref-line">land_bootstrap</span></a>
+    </p>
+
+    <h3>evalset</h3>
+
+    <pre><code>trove evalset generate --datasource demo --sources semantic   # 生成候选（全部 pending）
+trove evalset list --datasource demo --status pending          # 待审清单
+trove evalset confirm &lt;qid&gt; --datasource demo                  # 走确认门
+trove evalset vouch &lt;qid&gt; --datasource demo --note "口径已核"  # 人工背书 → verified
+trove evalset run --datasource demo --tier verified            # 无 --yes = dry-run
+trove evalset readiness --datasource demo --json               # 只读就绪视图</code></pre>
+
+    <p>
+      验收集按数据源存放（<code>.trove/evalsets/&lt;datasource&gt;/evalset.yml</code>，
+      git 版本化）。<code>generate</code>（semantic / synthetic / production）与手工
+      <code>create</code> 一律落 <code>pending</code>，<code>confirm</code> 之后才参与评分；
+      <code>vouch</code> 把已确认的生成条目升为 <code>verified</code>，
+      <code>reject</code> / <code>retire</code> 是墓碑而不是硬删除。成本动作有护栏：
+      <code>generate</code> 含 synthetic / <code>--rewrite</code> 而无 <code>--yes</code>、
+      <code>run</code> 无 <code>--yes</code> 时都只干跑；<code>run --compile-only</code>
+      零 LLM。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1223">main.py:1223 <span class="ref-line">evalset</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/evalset_cmds.py#L637">evalset_cmds.py:637 <span class="ref-line">main_evalset</span></a>
     </p>
 
     <h2 id="repl">REPL 斜杠命令</h2>
