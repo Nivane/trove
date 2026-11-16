@@ -431,13 +431,16 @@ flowchart TB
     </p>
 
     <p>
-      声明式接口 <code>POST /v1/semantic/query</code> 不经过工作流，但授权并不因此少一道：
-      它在路由内用<strong>同一个 <code>build_authorizer</code></strong> 跑 A1 / A3，用
-      <strong>同一个 <code>authorize_and_scope</code></strong> 叠加行/列 scope，再用
-      <strong>同一个 <code>build_masker</code></strong> 做交付脱敏。差别只在 HITL、反思回滚、
+      声明式接口 <code>POST /v1/semantic/query</code> 与 MCP <code>query_metrics</code> 不经过
+      工作流，但授权并不因此少一道：两者共用<strong>同一条执行路径</strong>
+      （<code>trove/services/semantic_query.py</code>），用<strong>同一个
+      <code>build_authorizer</code></strong> 跑 A1 / A3，用<strong>同一个
+      <code>authorize_and_scope</code></strong> 叠加行/列 scope，再用<strong>同一个
+      <code>build_masker</code></strong> 做交付脱敏。差别只在 HITL、反思回滚、
       答案生成这些工作流节点不在路径上。拒绝时返回 403 且响应体<strong>不含行</strong>——
       这个端点没有 answer 通道，「拒绝了但照样执行」在这里与主链一样不可接受。
-      它的定位仍是严格契约（未声明即 422），不是一条旁路。
+      它的定位仍是严格契约（未声明即 422），不是一条旁路。两个入口共用一份代码
+      而不是各写一遍：第二份手写的执行路径正是历史上绕过授权闸的方式。
     </p>
 
     <p>
@@ -447,10 +450,10 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L181">semantic_query.py:181 <span class="ref-line">require_datasource</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L215">semantic_query.py:215 <span class="ref-line">authorize_and_scope</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L251">semantic_query.py:251 <span class="ref-line">build_masker</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L236">semantic_query.py:236 <span class="ref-line">execute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L164">semantic_query.py:164 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_query.py#L163">semantic_query.py:163 <span class="ref-line">authorize_and_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_query.py#L192">semantic_query.py:192 <span class="ref-line">build_masker</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_query.py#L181">semantic_query.py:181 <span class="ref-line">execute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L116">config.py:116 <span class="ref-line">require_principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L200">enforcer.py:200 <span class="ref-line">require_principal</span></a>
     </p>
@@ -1031,7 +1034,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 309499d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5fc766d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
