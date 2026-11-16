@@ -119,13 +119,15 @@ async def test_semantic_query_masking_refusal_returns_no_rows(
     """脱敏失败 = 拒绝这次查询:HTTP 错误,响应体里没有行(降级放行即泄漏)。"""
     from trove.services.authz.masking import MaskingError
 
-    import trove.api.routers.semantic_query as sq
+    import trove.services.semantic_query as sq
 
     def _failing_masker(*, semantic_layer=None, config=None):
         def apply(rows, columns, **kwargs):
             raise MaskingError("salt 读不出来")
         return apply
 
+    # 脱敏与执行一样在共享模块里(HTTP 与 MCP 同一条路径),补丁必须打在
+    # 真正调用 build_masker 的模块上。
     monkeypatch.setattr(sq, "build_masker", _failing_masker)
     resp = await client.post("/v1/semantic/query", json={
         "datasource": "test_db",

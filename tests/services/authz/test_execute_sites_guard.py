@@ -46,6 +46,9 @@ _SITES: dict[str, tuple[str, str]] = {
         "scoped", "归因 hop:引擎经编译器产出(声明 RLS 已注入),叠加主体 grant"),
     "trove/workflow/nodes/refuse.py": (
         "scoped", "自动确认试跑:越权 = 试跑失败 → pending 人工"),
+    "trove/services/semantic_query.py": (
+        "scoped", "语义查询唯一执行路径(HTTP /api + MCP query_metrics):"
+        "compile → Authorizer + scope → 有界执行 → masking"),
     # ── 系统 / 管理通道(非目标,v1 不接)──────────────────────
     "trove/services/decision/service.py": (
         "system", "判定引擎:admin 配置的只读通道,只接 admin owner"),

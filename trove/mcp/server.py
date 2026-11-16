@@ -6,6 +6,11 @@
   会话用 ``session_id`` 参数复用(进程内会话注册表;缺失则新建)。
 - ``list_datasources``:已连接且 KB 已初始化的数据源(用户端可见性规则)。
 - ``kb_status``:数据源连接 / KB 初始化 / 语义模型文件状态。
+- ``list_objects`` / ``describe_object``:语义模型的结构化上下文(对象、
+  属性、关系、指标、层级、主题域)。与 ``semantics`` 资源的区别是**定向**:
+  agent 先看对象清单,再展开一个对象,而不是把整份 YAML 塞进上下文。
+- ``query_metrics``:确定性指标查询(编译 → 授权/scope → 有界执行 → 脱敏),
+  与 ``POST /v1/semantic/query`` 走**同一条** `services.semantic_query` 路径。
 - ``list_proposals`` / ``fetch_proposal`` / ``ack_proposal``:行动提案的
   **拉通道**(P3,与 webhook 推送并列的第二条出口)。拉取已批准的提案、
   取回 payload、回执 —— **审批本身不在这里**:approve / reject / dispatch
@@ -52,12 +57,30 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
 from trove.core.clock import parse_utc, utc_now_iso
+from trove.core.serialize import json_safe
 from trove.services.action.models import PROPOSAL_STATUSES
 from trove.services.authz.policy import (
     LOCAL_SUBJECT,
     Policy,
     Principal,
     visible_datasources,
+)
+from trove.services.semantic_layer.agent_context import (
+    ObjectAmbiguous,
+    ObjectNotFound,
+    build_model_overview,
+    build_object_detail,
+    resolve_object,
+)
+from trove.services.semantic_layer.query import SemanticQuery, SemanticQueryError
+from trove.services.semantic_query import (
+    SemanticQueryDenied,
+    SemanticQueryExecutionFailed,
+    SemanticQueryMaskingFailed,
+    SemanticQueryTimeout,
+    execute_semantic_query,
+    semantic_provider,
+    timeout_seconds_from_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +91,12 @@ _SESSION_CACHE_MAX = 200
 _PROPOSAL_LIMIT_MAX = 100
 #: 拉通道的默认取件状态:已批准 = 等人取走的那些。
 _PULL_STATUS = "approved"
+
+#: ``query_metrics`` 的取数硬上限。超限**报错而不是静默截断** —— 静默截断
+#: 会让 agent 把「前 1000 行」当成完整答案。不设默认 limit:编译器的
+#: ``LIMIT`` 必须配 ``ORDER BY``(否则行序不确定),强行加默认值会让每个
+#: 不带排序的查询都编译失败。
+_QUERY_LIMIT_MAX = 1000
 
 
 def build_mcp_server(
@@ -249,6 +278,60 @@ def build_mcp_server(
             return path.read_text(encoding="utf-8")
         except Exception as e:
             return f"(unreadable KB file: {e})"
+
+    # ── 语义上下文(对象/指标的结构化视图)──────────────────────────
+    # 与资源面的区别:``trove://{ds}/semantics`` 是整份 YAML(适合人读/比对),
+    # tool 返回的是**定向**上下文 —— agent 先 list_objects 再 describe_object,
+    # 不必把整份模型塞进上下文窗口。
+
+    async def _dialect_for(ds: str) -> str:
+        try:
+            adapter = await connector_registry.get(ds)
+            return adapter.dialect() or "sqlite"
+        except Exception as e:
+            logger.debug("MCP: dialect lookup failed for %r: %s", ds, e)
+            return "sqlite"
+
+    async def _semantic_for(ds: str):
+        """(provider, model | None, dialect) — 与 HTTP 侧同一份 provider 构造。"""
+        try:
+            await kb.ensure_synced(ds)
+        except Exception as e:
+            logger.debug("MCP: kb.ensure_synced failed for %r: %s", ds, e)
+        dialect = await _dialect_for(ds)
+        provider = semantic_provider(kb=kb, datasource=ds, dialect=dialect)
+        return provider, provider.model(), dialect
+
+    def _no_model(ds: str) -> dict[str, Any]:
+        return {
+            "datasource": ds,
+            "kind": "no_semantic_model",
+            "error": f"no semantic model for datasource: {ds}",
+            "hint": "initialize the KB first (`trove kb init` or /kb init)",
+        }
+
+    async def _target(
+        datasource: str | None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        target = await _authorize_datasource(datasource)
+        if target is not None:
+            return target, None
+        requested = (
+            (datasource or "").strip() or connector_registry.default_name or ""
+        )
+        return None, {
+            "datasource": requested,
+            "kind": "not_allowed",
+            "error": f"datasource not allowed for this MCP identity: {requested}",
+        }
+
+    def _visible_topics(principal: Principal, ds: str,
+                        topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """主题域按 ``topic_grants`` 过滤 —— 与 ``/semantic/topics`` 同一条面。"""
+        return [
+            t for t in topics
+            if principal.allows_topic(ds, str(t.get("name") or ""))
+        ]
 
     # ── resources(MCP 三原语之一:只读数据——schema/语义模型)─────────────
     # 对应"MCP × 数仓工具"结合点:把元数据暴露成 MCP server,成为 agent
@@ -481,6 +564,170 @@ def build_mcp_server(
                 "error": f"datasource not allowed: {ds}",
             }
         return _kb_status(ds)
+
+    @mcp.tool()
+    async def list_objects(datasource: str | None = None) -> dict[str, Any]:
+        """List the governed semantic model as objects, links, metrics, hierarchies
+        and topic domains — the authoritative answerability boundary.
+
+        Start here, then call ``describe_object`` for one object's fields,
+        metrics and relationships. This is a deterministic projection of the
+        KB semantic model (no LLM): the same objects the console shows.
+        Topic domains are filtered by the caller's topic grants.
+        """
+        ds, err = await _target(datasource)
+        if err is not None:
+            return err
+        assert ds is not None  # _target 的 err 为空时 target 必在
+        _, model, _ = await _semantic_for(ds)
+        if model is None:
+            return _no_model(ds)
+        principal = await _principal()
+        overview = build_model_overview(model)
+        overview["topics"] = _visible_topics(
+            principal, ds, overview.get("topics", []),
+        )
+        return {"datasource": ds, **overview}
+
+    @mcp.tool()
+    async def describe_object(
+        object_name: str, datasource: str | None = None,
+    ) -> dict[str, Any]:
+        """Describe one object: fields (with datatype / role / legal values /
+        synonyms / masking), anchored metrics, incoming and outgoing links,
+        hierarchies and topic domains.
+
+        ``object_name`` resolves case-insensitively by dataset name, entity
+        display name, entity alias or dataset synonym. Ambiguous references
+        return ``kind="object_ambiguous"`` with the candidates — never a guess.
+        """
+        name = (object_name or "").strip()
+        if not name:
+            return {"kind": "invalid_request", "error": "object_name is required"}
+        ds, err = await _target(datasource)
+        if err is not None:
+            return err
+        assert ds is not None
+        _, model, _ = await _semantic_for(ds)
+        if model is None:
+            return _no_model(ds)
+        try:
+            dataset = resolve_object(model, name)
+        except ObjectNotFound as e:
+            return {
+                "datasource": ds, "kind": "object_not_found",
+                "error": str(e), "available": e.available,
+            }
+        except ObjectAmbiguous as e:
+            return {
+                "datasource": ds, "kind": "object_ambiguous",
+                "error": str(e), "candidates": e.candidates,
+            }
+        principal = await _principal()
+        detail = build_object_detail(model, dataset)
+        detail["topics"] = _visible_topics(
+            principal, ds, detail.get("topics", []),
+        )
+        return {"datasource": ds, **detail}
+
+    @mcp.tool()
+    async def query_metrics(
+        metrics: list[str],
+        datasource: str | None = None,
+        dimensions: list[str] | None = None,
+        time_grain: dict[str, Any] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        order_by: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Run a deterministic metric query against the semantic model.
+
+        Same compile → authorize/scope → bounded execute → mask path as
+        ``POST /v1/semantic/query``. Returns the executed SQL, output columns,
+        rows and the applied data scope, so the answer is reproducible.
+        ``limit`` is optional and capped at 1000 (an over-limit request errors
+        instead of being silently truncated); the compiler requires
+        ``order_by`` whenever ``limit`` is given.
+
+        Filters are ``[{field, op?, value}]``; ``order_by`` is
+        ``[{column, direction?}]``; ``time_grain`` is ``{field, grain}``.
+        """
+        metrics = [str(m).strip() for m in (metrics or []) if str(m).strip()]
+        if not metrics:
+            return {"kind": "invalid_request", "error": "metrics is required"}
+        if limit is not None:
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+                return {
+                    "kind": "invalid_request",
+                    "error": "limit must be a positive integer",
+                }
+            if limit > _QUERY_LIMIT_MAX:
+                return {
+                    "kind": "invalid_request",
+                    "error": f"limit exceeds the MCP maximum of {_QUERY_LIMIT_MAX}",
+                }
+        for f in filters or []:
+            if not isinstance(f, dict):
+                return {
+                    "kind": "invalid_request",
+                    "error": "each filter must be an object: {field, op?, value}",
+                }
+        for o in order_by or []:
+            if not isinstance(o, dict):
+                return {
+                    "kind": "invalid_request",
+                    "error": "each order_by entry must be an object: {column, direction?}",
+                }
+        ds, err = await _target(datasource)
+        if err is not None:
+            return err
+        assert ds is not None
+        provider, model, dialect = await _semantic_for(ds)
+        if model is None:
+            return _no_model(ds)
+        principal = await _principal()
+        query = SemanticQuery(
+            metrics=metrics,
+            dimensions=list(dimensions or []),
+            time_grain=dict(time_grain) if time_grain else None,
+            filters=[dict(f) for f in (filters or [])],
+            order_by=[dict(o) for o in (order_by or [])],
+            limit=limit,
+        )
+        try:
+            outcome = await execute_semantic_query(
+                model=model,
+                query=query,
+                provider=provider,
+                datasource=ds,
+                dialect=dialect,
+                connectors=connector_registry,
+                config=config,
+                principal=principal,
+                timeout_s=timeout_seconds_from_config(config),
+            )
+        except SemanticQueryError as e:
+            return {"datasource": ds, "kind": "compile_error", "error": str(e)}
+        except SemanticQueryDenied as e:
+            return {
+                "datasource": ds, "kind": "denied",
+                "error": e.scope_error.render(),
+            }
+        except SemanticQueryTimeout as e:
+            return {"datasource": ds, "kind": "timeout", "error": str(e)}
+        except SemanticQueryExecutionFailed as e:
+            return {
+                "datasource": ds, "kind": "execution_failed", "error": str(e),
+            }
+        except SemanticQueryMaskingFailed as e:
+            # 拒绝 = 没有行。降级放行即泄漏。
+            return {
+                "datasource": ds, "kind": "masking_refused", "error": str(e),
+            }
+        payload = outcome.to_dict()
+        payload["datasource"] = ds
+        payload["rows"] = [json_safe(row) for row in payload["rows"]]
+        return payload
 
     @mcp.tool()
     async def list_proposals(

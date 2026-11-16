@@ -21,7 +21,6 @@ execution surface that bypassed the gate — and the first one a script would hi
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -33,19 +32,16 @@ from trove.api.deps import (
     require_datasource,
 )
 from trove.api.schemas import SemanticQueryRequest
-from trove.core.metrics import record_authz_deny, record_masking_applied
-from trove.services.authz.enforcer import build_authorizer
-from trove.services.authz.masking import MaskingError, build_masker
-from trove.services.authz.policy import principal_to_wire
-from trove.services.authz.scope import (
-    ScopeError,
-    authorize_and_scope,
-    has_column_denials,
-)
-from trove.services.semantic_layer.query import (
-    SemanticQuery,
-    SemanticQueryError,
-    build_and_compile,
+from trove.services.authz.scope import ScopeError
+from trove.services.semantic_layer.query import SemanticQuery, SemanticQueryError
+from trove.services.semantic_query import (
+    SemanticQueryDenied,
+    SemanticQueryExecutionFailed,
+    SemanticQueryMaskingFailed,
+    SemanticQueryTimeout,
+    execute_semantic_query,
+    semantic_provider,
+    timeout_seconds_from_config,
 )
 
 router = APIRouter()
@@ -60,16 +56,7 @@ def _registry(request: Request):
 
 
 def _provider_for(kb, datasource: str, dialect: str):
-    from pathlib import Path
-
-    from trove.services.semantic_layer.provider import SemanticLayerProvider
-
-    return SemanticLayerProvider(
-        directory=Path.cwd() / ".trove" / "semantic" / datasource,
-        datasource=datasource,
-        dialect=dialect,
-        kb_semantics_path=kb.semantics_path(datasource),
-    )
+    return semantic_provider(kb=kb, datasource=datasource, dialect=dialect)
 
 
 def _model_for(provider, datasource: str):
@@ -89,13 +76,9 @@ def _execute_timeout_s(request: Request) -> float:
     入口没有,一条慢查询能把 worker 占到进程重启。取不到配置就回到 30s 缺省
     (与 ``BudgetConfig.timeout_ms`` 同值),而不是无界。
     """
-    config = getattr(request.app.state, "config", None)
-    raw = getattr(getattr(config, "budget", None), "timeout_ms", 0)
-    try:
-        ms = int(raw)
-    except (TypeError, ValueError):
-        ms = 0
-    return (ms if ms > 0 else 30_000) / 1000.0
+    return timeout_seconds_from_config(
+        getattr(request.app.state, "config", None),
+    )
 
 
 async def _audit_deny(
@@ -202,84 +185,32 @@ async def semantic_query(
         order_by=list(body.order_by or []),
         limit=body.limit,
     )
-    try:
-        compiled = build_and_compile(model, query, dialect=dialect)
-    except SemanticQueryError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # 执行前授权门(与图管线同一份构造)+ 行/列 scope。编译器已把声明层
-    # ``row_filter`` 注进 SQL(``include_declared_rls=False``),这里只叠加
-    # 主体 grant。拒绝 = 403 且响应体**不含行** —— 端点没有 answer 通道,
+    # 编译 → 授权/scope → 有界执行 → 脱敏全部在 services.semantic_query 里,
+    # 与 MCP ``query_metrics`` 走**同一条**路径。这里只把阶段化异常映射成
+    # HTTP 状态:拒绝 = 403 且响应体**不含行** —— 端点没有 answer 通道,
     # 「拒绝了但照样执行」在这里与图里一样都是不可接受的失败模式。
     try:
-        scoped = authorize_and_scope(
-            compiled["sql"],
-            authorizer=build_authorizer(
-                getattr(request.app.state, "config", None), provider),
-            principal=principal,
+        outcome = await execute_semantic_query(
             model=model,
+            query=query,
+            provider=provider,
             datasource=ds,
             dialect=dialect,
-            default=getattr(_registry(request), "default_name", None),
-            include_declared_rls=False,
+            connectors=_registry(request),
+            config=getattr(request.app.state, "config", None),
+            principal=principal,
+            timeout_s=_execute_timeout_s(request),
         )
-    except ScopeError as e:
-        record_authz_deny(e.reason)
-        await _audit_deny(request, user, ds, e)
-        raise HTTPException(status_code=403, detail=e.render())
+    except SemanticQueryError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except SemanticQueryDenied as e:
+        await _audit_deny(request, user, ds, e.scope_error)
+        raise HTTPException(status_code=403, detail=e.scope_error.render())
+    except SemanticQueryTimeout as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except (SemanticQueryExecutionFailed, SemanticQueryMaskingFailed) as e:
+        # 脱敏失败没有下层的 answer 通道可承载拒绝(节点会清 rows 并在回答里
+        # 写 [ERR:MASKING]),所以拒绝 = HTTP 错误 + 响应体里没有行。
+        raise HTTPException(status_code=500, detail=str(e))
 
-    try:
-        # 有界执行:超时取消走与图管线同一条解栈(适配器的 CancelledError
-        # 分支会发 interrupt/KILL,服务端查询真的停下),然后折成 504 ——
-        # 「我们等不下去了」与「语句本身出错」(500)是两回事。
-        result = await asyncio.wait_for(
-            _registry(request).execute(scoped.sql, ds),
-            timeout=_execute_timeout_s(request),
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=f"execution timed out after {_execute_timeout_s(request):g}s",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"execution failed: {e}")
-
-    rows: list[list[Any]] = result.rows
-    masking_applied: dict[str, Any] | None = None
-    # 构造走 build_masker(与节点/select 预览同一份规则);``None`` = 部署级
-    # 关闭,整段跳过 —— 开关语义只在 build_masker 里读。
-    apply_masking = build_masker(
-        semantic_layer=provider,
-        config=getattr(request.app.state, "config", None),
-    )
-    if apply_masking is not None:
-        try:
-            rows, masking_applied = apply_masking(
-                rows, compiled["columns"],
-                principal=principal_to_wire(principal),
-                sql=scoped.sql,
-            )
-        except MaskingError as e:
-            # 没有下层的 answer 通道可承载拒绝(节点会清 rows 并在回答里写
-            # [ERR:MASKING]),所以拒绝 = HTTP 错误 + 响应体里没有行。失败
-            # 方向取严:降级放行即泄漏。
-            raise HTTPException(status_code=500, detail=f"masking refused: {e}")
-        for field, mode in (masking_applied.get("fields") or {}).items():
-            record_masking_applied(field, str(mode))
-
-    return {
-        # scope 后的 SQL(行过滤是派生表重写)—— 返回编译原串会让调用方
-        # 以为执行的与看到的是同一条,而它们可能差一个 `WHERE`。
-        "sql": scoped.sql,
-        "data_scope": {
-            "row_filters": list(scoped.row_filters),
-            "rewritten": scoped.rewritten,
-            "column_policy": has_column_denials(principal, ds),
-        },
-        "columns": compiled["columns"],
-        "datasets": compiled["datasets"],
-        "version": compiled["version"],
-        "rows": rows,
-        "row_count": len(rows),
-        "masking_applied": masking_applied,
-    }
+    return outcome.to_dict()
