@@ -822,3 +822,65 @@ metrics:
     p = SemanticLayerProvider(semantic_dir, "financial")
     # metrics() 返回校验后列表(model() 是未校验的解析结果)
     assert all(m.name != "bad_derived" for m in p.metrics())
+
+
+# ── 合并路径的模型级扩展面 ────────────────────────────────────────
+
+def test_merge_keeps_directory_masking_policy(tmp_path, semantic_dir):
+    """KB 没声明 masking 时,补充源声明的 default_policy 不能被合并丢掉。
+
+    丢掉的方向是**放行**(默认脱敏策略回落),不是拒绝 —— 与 provider 的
+    last-known-good 同一类静默安全回归。
+    """
+    _write(semantic_dir, """
+version: "0.2.0.dev0"
+name: x
+masking:
+  default_policy: apply
+datasets:
+  - name: loan
+    source: loan
+""")
+    kb = tmp_path / "kb.yml"
+    kb.write_text("""
+version: "0.2.0.dev0"
+name: x
+datasets:
+  - name: loan
+    source: loan
+""", encoding="utf-8")
+    p = SemanticLayerProvider(
+        semantic_dir, "financial", kb_semantics_path=kb,
+    )
+    model = p.model()
+    assert model.masking is not None
+    assert model.masking.default_policy == "apply"
+
+
+def test_kb_masking_declaration_wins_over_directory(tmp_path, semantic_dir):
+    """KB 是真源:它声明了 masking 就整体覆盖补充源的同名策略。"""
+    _write(semantic_dir, """
+version: "0.2.0.dev0"
+name: x
+masking:
+  default_policy: apply
+datasets:
+  - name: loan
+    source: loan
+""")
+    kb = tmp_path / "kb.yml"
+    kb.write_text("""
+version: "0.2.0.dev0"
+name: x
+masking:
+  default_policy: bypass
+datasets:
+  - name: loan
+    source: loan
+""", encoding="utf-8")
+    p = SemanticLayerProvider(
+        semantic_dir, "financial", kb_semantics_path=kb,
+    )
+    model = p.model()
+    assert model.masking is not None
+    assert model.masking.default_policy == "bypass"

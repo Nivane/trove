@@ -197,6 +197,12 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 - **单一 UTC 时钟 `trove/core/clock.py`** — 写侧一律 aware UTC（`utc_now` / `utc_now_iso` / `iso_utc`），读侧经 `parse_utc` 容忍旧 naive 值（解释为本地时区）与不可解析值（`None`，绝不猜成 now）；**不做数据迁移**。不变量 `persisted-timestamps-utc` 扫描 `trove/storage/`、本批迁移模块与 `api/app.py`；跨纪元比较必须先解析再比，不能字符串比。
 - **记录接线分类** — `configure_run_records` 只接 `trove/main.py` 与 `scripts/offline_eval.py`；**刻意不接**的入口（eval graph_runner / evalset 试跑 / eval_bird / lang_ab / 定时 decision·scan）逐条登记理由，机检断言入口仍存在（改名/删除会报警复核）。**jobs 假成功已修**：`start_run` 只接受 `status="running"` 且 `finished_at` 落 NULL（写端闭集，终态只能经 `finish_run`）；`reconcile_interrupted_runs` 在 serve lifespan 与 `trove-cli schedule` 第一次 tick **之前**把 `finished_at IS NULL OR ''` 的滞留行收成 `error` + `verdict='interrupted'`（幂等；旧版本的假成功行也在这里暴露）。部署前提是单 store 单调度进程（serve tick 与 CLI daemon 二选一），共享 store 的双进程不在支持范围。前端 jobs 页有 `running` 筛选与中性 pill。
 
+### Agent 面（MCP）与语义上下文 / 查询面
+
+- **`trove/mcp/server.py`** 暴露九个 tool / 四个 resource / 两个 prompt：`ask_data`（完整问数链路）、`list_objects` / `describe_object`（语义模型的**定向**上下文投影，不是把整份 YAML 塞给 agent）、`query_metrics`（确定性指标查询）、`list_datasources` / `kb_status`（数据源与 KB 状态）、`list_proposals` / `fetch_proposal` / `ack_proposal`（行动层拉通道：签收 ≠ 批准，审批动词不进 MCP）。
+- **`trove/services/semantic_layer/agent_context.py`** — agent 面的纯投影（零 I/O / 零 LLM，声明序保持，可选键缺席即省略）：`build_model_overview` 给对象/链接/层级/指标/主题域总览，`build_object_detail` 给单对象的字段/锚定指标/入出边（`direction`）/层级/主题域/主键/row_filter。对象名按数据集名、entity display_name、别名、数据集 synonyms 解析，**多命中报歧义、零命中报候选清单，绝不猜**。
+- **`trove/services/semantic_query.py`** — HTTP `POST /v1/semantic/query` 与 MCP `query_metrics` 的**唯一执行路径**：`build_and_compile` → `authorize_and_scope`（拒绝写审计）→ 有界超时执行 → masking（脱敏失败即清空行并报错）。手写第二份执行路径正是历史 HTTP 路由绕过授权闸的方式，故两个入口共用这一份；执行点以 `scoped` 登记在 execute-sites guard。MCP 侧主题域按 `topic_grants` 过滤，编译错/越权/超时/脱敏拒绝都返回带 `kind` 的结构化错误，`limit` 超上限报错而非截断。
+
 ### LLM and tests
 
 - `trove/llm/agent_loop.py` — shared agent-loop harness (`run_agent_loop`): parallel tool dispatch, per-tool timeout/retry, round/time/token budgets, loop-steering feedback, and a `ToolRegistry` (defs + handlers + observer middleware hooks: tracing happens here). The `finish(answer)` protocol lets the model deliver a validated final payload instead of relying on "no tool calls = done"; guard/empty results call back into the caller's degradation chain (gen_sql → classic subgraph). The query_sketch node is not agentic — it calls plain `llm.chat` with JSON output. `chat_full` returns best-effort `usage` for token budgets.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove MCP 集成：三种 transport（stdio / sse / streamable-http）、网络绑定的 fail-closed 鉴权、六个 tool、四个 resource 与两个 prompt。">
+<meta name="description" content="Trove MCP 集成：三种 transport（stdio / sse / streamable-http）、网络绑定的 fail-closed 鉴权、九个 tool、四个 resource 与两个 prompt。">
 <title>MCP 集成 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -30,7 +30,7 @@
       <p class="lede">
         Trove 可以把问数能力作为 <strong>MCP 服务</strong>暴露给 AI 客户端
         （Claude Desktop / Cursor / Claude Code 等）。这一页讲三种传输方式、
-        鉴权边界，以及对外暴露的六个 tool、四个 resource、两个 prompt。
+        鉴权边界，以及对外暴露的九个 tool、四个 resource、两个 prompt。
       </p>
     </div>
 
@@ -45,7 +45,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1178">main.py:1178 <span class="ref-line">main_mcp</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L1021">main.py:1021 <span class="ref-line">--transport</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L94">server.py:94 <span class="ref-line">FastMCP</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L123">server.py:123 <span class="ref-line">FastMCP</span></a>
     </p>
 
     <div class="table-wrap">
@@ -144,7 +144,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L179">server.py:179 <span class="ref-line">_authorize_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L208">server.py:208 <span class="ref-line">_authorize_datasource</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
     </p>
 
@@ -183,7 +183,7 @@ flowchart TB
       </figcaption>
     </figure>
 
-    <h2 id="tools">六个 tool</h2>
+    <h2 id="tools">九个 tool</h2>
 
     <div class="table-wrap">
       <table>
@@ -195,6 +195,9 @@ flowchart TB
             <td class="mono">ask_data</td>
             <td>问一个问题，走完整链路</td>
           </tr>
+          <tr><td class="mono">list_objects</td><td>语义模型总览：对象、链接、层级、指标、主题域（定向投影，不是整份 YAML）</td></tr>
+          <tr><td class="mono">describe_object</td><td>一个对象的字段 / 锚定指标 / 关系 / 层级 / 主题域；按数据集名、显示名或别名解析</td></tr>
+          <tr><td class="mono">query_metrics</td><td>直接按语义模型查指标：编译 → 授权 / 作用域 → 有界执行 → 脱敏</td></tr>
           <tr><td class="mono">list_datasources</td><td>列出当前身份可见的数据源</td></tr>
           <tr><td class="mono">kb_status</td><td>看某个数据源的 KB 状态</td></tr>
           <tr><td class="mono">list_proposals</td><td>列出行动提案（只读；按状态 / 数据源过滤）</td></tr>
@@ -205,12 +208,26 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L396">server.py:396 <span class="ref-line">ask_data</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L465">server.py:465 <span class="ref-line">list_datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L472">server.py:472 <span class="ref-line">kb_status</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L486">server.py:486 <span class="ref-line">list_proposals</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L513">server.py:513 <span class="ref-line">fetch_proposal</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L549">server.py:549 <span class="ref-line">ack_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L479">server.py:479 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L569">server.py:569 <span class="ref-line">list_objects</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L593">server.py:593 <span class="ref-line">describe_object</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L634">server.py:634 <span class="ref-line">query_metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L548">server.py:548 <span class="ref-line">list_datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L555">server.py:555 <span class="ref-line">kb_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L733">server.py:733 <span class="ref-line">list_proposals</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L760">server.py:760 <span class="ref-line">fetch_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L796">server.py:796 <span class="ref-line">ack_proposal</span></a>
+    </p>
+
+    <p>
+      <code>list_objects</code> / <code>describe_object</code> / <code>query_metrics</code>
+      是<strong>语义层作为 agent 上下文</strong>的两个面：前两个给<em>定向</em>的模型知识
+      （对象有哪些、字段与取值、指标锚在哪、关系通向谁），<code>query_metrics</code> 给
+      <em>确定性</em>的取数面——它与 <code>POST /v1/semantic/query</code> 共用
+      <a href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_query.py">同一条执行路径</a>：
+      编译 → 授权与行级作用域 → 有界执行 → 脱敏。没有 LLM 参与，也没有第二条手写的执行路径。
+      主题域按 <code>topic_grants</code> 过滤；越权、编译失败、超时都返回带
+      <code>kind</code> 的结构化错误，<code>limit</code> 超上限报错而不是静默截断。
     </p>
 
     <p>
@@ -233,8 +250,8 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L65">server.py:65 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L235">server.py:235 <span class="ref-line">_ds_name_safe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L88">server.py:88 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L264">server.py:264 <span class="ref-line">_ds_name_safe</span></a>
     </p>
 
     <h2 id="resources">四个 resource</h2>
@@ -254,10 +271,10 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L257">server.py:257 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L277">server.py:277 <span class="ref-line">schema</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L283">server.py:283 <span class="ref-line">semantics</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L351">server.py:351 <span class="ref-line">proposals_resource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L341">server.py:341 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L361">server.py:361 <span class="ref-line">schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L367">server.py:367 <span class="ref-line">semantics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L434">server.py:434 <span class="ref-line">proposals_resource</span></a>
     </p>
 
     <p>
@@ -265,6 +282,9 @@ flowchart TB
       而语义模型是<strong>可以读的上下文</strong>。把语义模型作为 resource 暴露，
       意味着客户端可以把「这个库有哪些指标」直接放进模型上下文，
       从而在提问之前就知道边界在哪。
+      <code>trove://{datasource}/semantics</code> 给的是整份声明；
+      如果客户端要的是有针对性的那一片（一个对象的字段与锚定指标），
+      用 <code>list_objects</code> / <code>describe_object</code> 更省上下文。
     </p>
 
     <h2 id="prompts">两个 prompt</h2>
@@ -282,8 +302,8 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L370">server.py:370 <span class="ref-line">datasource_guide</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L385">server.py:385 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L454">server.py:454 <span class="ref-line">datasource_guide</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L469">server.py:469 <span class="ref-line">ask_data</span></a>
     </p>
 
     <h2 id="visible">语义优先也在这里生效</h2>
@@ -293,7 +313,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L190">server.py:190 <span class="ref-line">_datasources_visible</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L219">server.py:219 <span class="ref-line">_datasources_visible</span></a>
     </p>
 
     <p>
@@ -338,7 +358,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: e6c3705</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5fc766d</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

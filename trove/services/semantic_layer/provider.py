@@ -111,6 +111,10 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
         examples=override.examples or base.examples,
         custom_extensions=override.custom_extensions or base.custom_extensions,
         time_spine=override.time_spine or base.time_spine,
+        # 模型级脱敏策略同属「扩展面透传」:被合并路径丢掉时,KB 没声明
+        # masking 的部署会静默失去补充源声明的 default_policy（失败方向是
+        # 放行,不是拒绝）。KB 声明优先,与其余模型级块同一条规则。
+        masking=override.masking or base.masking,
         topics=list(topics.values()),
         # 新块必须**同时**出现在按名合并与显式重建两处:dataset.entity 与
         # relationship.display_name 随对象整体进 list(...)(同名替换是整
