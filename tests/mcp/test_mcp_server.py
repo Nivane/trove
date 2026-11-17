@@ -207,6 +207,10 @@ async def test_datasource_guide_prompt(mcp_components):
     assert "trove://test_db/schema" in text
     assert "trove://test_db/semantics" in text
     assert "ask_data" in text
+    # 引导词要指向定向上下文与确定性查询面,否则 agent 照旧只读整份 YAML
+    assert "list_objects" in text
+    assert "describe_object" in text
+    assert "query_metrics" in text
 
 
 async def test_datasource_guide_blocks_unsafe_name(mcp_components):

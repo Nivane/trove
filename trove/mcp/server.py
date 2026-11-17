@@ -28,8 +28,9 @@
 
 模板面(MCP 三原语之三:可复用提示词):
 
-- ``datasource_guide``:查数据源的规范工作流(先读 schema/semantics 资源
-  再 ask_data)。
+- ``datasource_guide``:查数据源的规范工作流(先定向取语义上下文
+  ``list_objects``/``describe_object``,声明指标走 ``query_metrics``,
+  其余再 ask_data)。
 - ``ask_data``:向数据源提问的模板。
 
 语义优先(Phase B)天然生效:无语义模型的数据源 ask_data 会明确拒绝并
@@ -459,10 +460,14 @@ def build_mcp_server(
             return "(invalid datasource name)"
         return (
             f"To answer questions about datasource '{ds}':\n"
-            f"1. Read trove://{ds}/schema and trove://{ds}/semantics "
-            f"(table/column/metric annotations and the semantic model).\n"
-            f"2. Check kb_status({ds}) for connection/KB state.\n"
-            f"3. Ask natural-language questions with ask_data."
+            f"1. Discover the semantic model: list_objects('{ds}') for the "
+            f"ontology overview, then describe_object('{ds}', <object>) for one "
+            f"object's fields, metrics, links and keys. Read "
+            f"trove://{ds}/semantics only when you need the raw YAML.\n"
+            f"2. Read trove://{ds}/schema for table/column annotations.\n"
+            f"3. Check kb_status('{ds}') for connection/KB state.\n"
+            f"4. For declared metrics prefer query_metrics('{ds}', metrics=[...]) "
+            f"— deterministic, no LLM; use ask_data for everything else."
         )
 
     @mcp.prompt("ask_data")
