@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Semantic model as agent context over MCP.** `list_objects` returns the
+  ontology overview (objects, links, hierarchies, metrics, topics, time spine);
+  `describe_object` drills into one object — fields, anchored metrics,
+  directional links, keys, row filter — resolved by dataset name, entity
+  display name, aliases, or synonyms. Ambiguous or unknown references return
+  structured errors instead of guessing, and topic grants filter what is
+  visible.
+- **`query_metrics`** answers declared-metric questions deterministically
+  through the same governed path as the HTTP API: compile → authorization +
+  row/column scope → bounded execution → masking. `limit` is optional (the
+  compiler requires `ORDER BY` for `LIMIT`, so no default limit is imposed);
+  values above 1000 are rejected rather than silently truncated.
+
+### Changed
+
+- `POST /v1/semantic/query` and MCP `query_metrics` now share a single
+  execution path (`trove/services/semantic_query.py`); the HTTP route is a
+  thin wrapper over it. Two hand-written copies are how an execution path
+  drifts away from its authorization gate.
+
 ### Security
 
 - Cleared the advisories flagged by the CI dependency scan: `filelock`
