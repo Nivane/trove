@@ -99,6 +99,30 @@ flowchart LR
 
     <pre><code>echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print</code></pre>
 
+    <h3><code>--print</code> 载荷里的 <code>outcome</code></h3>
+
+    <p>
+      JSON 的 <code>outcome</code> 是一次运行<strong>怎么结束</strong>的唯一字段，取值是六值闭集；
+      与 SSE <code>done</code>、历史回放、运行记录读的是同一份 summary 字段。缺席
+      （<code>null</code>）只可能来自更老的记录——不会按 <code>answered</code> 兜底。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>outcome</th><th>什么时候出现</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">answered</td><td>给出了答案。<strong>降级不是第七种结局</strong>：分析没做成 / 噪声带判不了只在自己的载荷里留标记，结局仍是 answered</td></tr>
+          <tr><td class="mono">refused</td><td>语义门禁拒绝（问题超出可答边界），拒绝载荷附确定性的 <code>next_actions</code></td></tr>
+          <tr><td class="mono">clarified</td><td>需要澄清（例如 join 路径二义、实体指代不明）</td></tr>
+          <tr><td class="mono">pending_approval</td><td>停在人工确认（HITL）之前，等待审批</td></tr>
+          <tr><td class="mono">cancelled</td><td>审批被拒，或运行被取消</td></tr>
+          <tr><td class="mono">failed</td><td>运行失败（错误优先于拒绝与澄清）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
     <div class="callout note">
       <span class="callout-tag">三个 workflow 分别是什么</span>
       <div>
