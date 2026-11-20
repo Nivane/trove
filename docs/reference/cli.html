@@ -123,6 +123,13 @@ flowchart LR
       </table>
     </div>
 
+    <p>
+      拒绝轮还带 <code>refusal</code>——拒绝的结构化产出（<code>reason</code> /
+      <code>message</code> / <code>next_actions</code>），与 SSE <code>done</code> 的
+      summary 同源；<code>--print</code> 原样带上，脚本可以直接执行一键下一步，不必解析
+      Markdown。非拒绝轮是 <code>null</code>。
+    </p>
+
     <div class="callout note">
       <span class="callout-tag">三个 workflow 分别是什么</span>
       <div>

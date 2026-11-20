@@ -640,6 +640,10 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
         "verdict": summary.get("verdict", ""),
         "error": summary.get("error", ""),
         "error_info": summary.get("error_info"),
+        # 拒绝轮的结构化产出(reason / message / next_actions…)。与 SSE 的
+        # done summary、历史回放同一份字段:脚本可以直接执行一键下一步,
+        # 不必解析 Markdown。缺省 = 非拒绝轮,不猜一个空 dict。
+        "refusal": summary.get("refusal"),
         "kb_hits": summary.get("kb_hits", []),
         "semantics": summary.get("semantics", ""),
         "insights": summary.get("insights", []),
