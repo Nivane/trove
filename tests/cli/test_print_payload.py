@@ -67,3 +67,19 @@ class TestFormatPrintPayload:
         assert payload["outcome"] == "refused"
         # 缺席 = 更老的 summary,不按 answered 兜底。
         assert format_print_payload(SUMMARY, [])["outcome"] is None
+
+    def test_refusal_included_when_present(self):
+        """拒绝轮的 next_actions 要能被脚本直接消费,而不是只给一段 Markdown。"""
+        refusal = {
+            "reason": "no_model",
+            "message": "该数据源还没有语义模型",
+            "next_actions": [
+                {"id": "init_kb", "kind": "navigate", "label": "去建语义模型",
+                 "href": "/admin/kb?ds=demo", "admin_only": True},
+            ],
+        }
+        payload = format_print_payload({**SUMMARY, "refusal": refusal}, [])
+        assert payload["refusal"] == refusal
+        # 非拒绝轮保持 None(缺席 ≠ 空对象),与 error_info 同一条纪律。
+        assert format_print_payload(SUMMARY, [])["refusal"] is None
+        json.dumps(payload)  # fully JSON-serializable
