@@ -187,6 +187,15 @@ flowchart TB
       </div>
     </div>
 
+    <p>
+      流结束时 <code>done</code> 事件在 summary 里带 <code>outcome</code>——一次运行
+      <strong>怎么结束</strong>的六值闭集（与历史回放、运行记录、CLI <code>--print</code>
+      读的是同一份字段）：<code>answered</code> / <code>refused</code> /
+      <code>clarified</code> / <code>pending_approval</code> / <code>cancelled</code> /
+      <code>failed</code>。逐值含义与「降级不是第七种结局」的边界见
+      <a href="cli.html#print-outcome">CLI 参考 · <code>--print</code> 载荷里的 outcome</a>。
+    </p>
+
     <h3>元数据与目录</h3>
 
     <div class="table-wrap">
