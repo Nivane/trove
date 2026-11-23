@@ -130,6 +130,14 @@ flowchart LR
       Markdown。非拒绝轮是 <code>null</code>。
     </p>
 
+    <p>
+      <strong>进程退出码</strong>只区分「这次运行有没有崩」：<code>outcome=failed</code>
+      时退出码 <code>1</code>，其余结局（含缺席的 <code>null</code>）都是 <code>0</code>。
+      <code>refused</code> / <code>clarified</code> / <code>pending_approval</code> /
+      <code>cancelled</code> 都是有终态的合法产物——脚本应按 JSON 里的
+      <code>outcome</code> / <code>refusal</code> 分支，不要用退出码猜语义。
+    </p>
+
     <div class="callout note">
       <span class="callout-tag">三个 workflow 分别是什么</span>
       <div>

@@ -656,6 +656,21 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
     }
 
 
+#: --print 的进程退出码只回答「这次运行有没有崩」，不回答「答案是否令人满意」。
+#: 拒绝/澄清/待审批/取消都是有终态的合法产物 —— 脚本读 payload 里的
+#: ``outcome`` / ``refusal`` 分支，不靠退出码猜语义。缺席（旧 summary）也不猜。
+_PRINT_FAILED_EXIT_CODE = 1
+
+
+def print_exit_code(payload: dict[str, Any]) -> int:
+    """Map a ``--print`` payload to the process exit code.
+
+    ``outcome == "failed"`` 是唯一非零：运行真的崩了。其余结局（含 ``None``
+    —— 更老的 summary 没带 outcome）一律 0，保持既有管道脚本的退出行为。
+    """
+    return _PRINT_FAILED_EXIT_CODE if payload.get("outcome") == "failed" else 0
+
+
 # ── Entry Points ──────────────────────────────────────────
 
 
@@ -863,10 +878,10 @@ async def async_main_cli():
                             summary = event["summary"]
 
                     import json
-                    print(json.dumps(
-                        format_print_payload(summary, events),
-                        ensure_ascii=False, indent=2,
-                    ))
+                    payload = format_print_payload(summary, events)
+                    print(json.dumps(payload, ensure_ascii=False, indent=2))
+                    # 载荷先落盘(管道消费方总能拿到 JSON),再按结局给退出码。
+                    return print_exit_code(payload)
             finally:
                 # 一次性进程没有别的收尾:不释放连接,进程在打印完的结果
                 # 之后一直挂着不退出(aiosqlite worker 线程非 daemon)。
@@ -880,10 +895,12 @@ async def async_main_cli():
 def main_cli():
     """Entry point for 'trove-cli' command."""
     try:
-        asyncio.run(async_main_cli())
+        code = asyncio.run(async_main_cli())
     except KeyboardInterrupt:
         print("\nGoodbye!")
         sys.exit(0)
+    # 只有 --print 分支会返回码；REPL/子命令返回 None(子命令自己 sys.exit)。
+    sys.exit(code or 0)
 
 
 # ── HTTP API (trove serve) ───────────────────────────────

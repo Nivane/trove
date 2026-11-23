@@ -2,7 +2,9 @@
 
 import json
 
-from trove.main import format_print_payload
+import pytest
+
+from trove.main import format_print_payload, print_exit_code
 
 SUMMARY = {
     "session_id": "s1",
@@ -83,3 +85,22 @@ class TestFormatPrintPayload:
         # 非拒绝轮保持 None(缺席 ≠ 空对象),与 error_info 同一条纪律。
         assert format_print_payload(SUMMARY, [])["refusal"] is None
         json.dumps(payload)  # fully JSON-serializable
+
+
+class TestPrintExitCode:
+    """退出码只区分「运行崩了」；其余结局由 payload 的 outcome/refusal 表达。"""
+
+    def test_failed_is_nonzero(self):
+        assert print_exit_code({"outcome": "failed"}) == 1
+
+    @pytest.mark.parametrize(
+        "outcome",
+        ["answered", "refused", "clarified", "pending_approval", "cancelled", None],
+    )
+    def test_terminal_outcomes_exit_zero(self, outcome):
+        assert print_exit_code({"outcome": outcome}) == 0
+
+    def test_absent_outcome_exits_zero(self):
+        """旧 summary 没带 outcome：不猜,保持既有管道的退出行为。"""
+        assert print_exit_code({}) == 0
+        assert print_exit_code(format_print_payload(SUMMARY, [])) == 0
