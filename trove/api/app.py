@@ -18,6 +18,8 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import FastAPI, Request
+
+from trove import __version__
 from fastapi.responses import JSONResponse, Response
 
 from trove.api.routers import (
@@ -620,7 +622,10 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         else:
             status, http_status = "ok", 200
         return JSONResponse(
-            status_code=http_status, content={"status": status, "checks": checks}
+            status_code=http_status,
+            # version 是进程实际版本：多容器/滚动升级时一眼答「这是哪一版」，
+            # 不靠镜像 tag 猜。
+            content={"status": status, "version": __version__, "checks": checks},
         )
 
     @app.get("/v1/metrics")

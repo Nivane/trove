@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from trove import __version__
 from trove.core.errors import SQLExecutionError
 from trove.core.metrics import (
     record_llm_call,
@@ -18,6 +19,8 @@ class TestHealth:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
+        # 部署排查要能直接问出「这是哪一版」，而不是从镜像 tag 反推。
+        assert body["version"] == __version__
         assert body["checks"]["storage"]["ok"] is True
         # sqlite_registry fixture: one connected in-memory adapter.
         # ``readonly`` 与 ``ok`` 并列而不折进去(见下面 writable 那条用例)。

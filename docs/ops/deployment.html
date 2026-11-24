@@ -172,12 +172,17 @@ docker compose down              <span class="cmt"># 停止并移除容器（保
     </div>
 
 <pre><code>$ curl -s localhost:8000/v1/health
-{"status":"ok",
+{"status":"ok","version":"0.1.0",
  "checks":{
    "storage":{"ok":true},
    "datasources":{"financial":{"ok":true,"readonly":{"basis":"grants"}},
                   "demo":{"ok":true,"readonly":{"verified":null,"basis":"not_probed"}}},
    "llm":{"mock":false,"target":"deepseek/deepseek-reasoner","providers":0}}}</code></pre>
+
+    <p>
+      顶层 <code>version</code> 是进程实际的 <code>trove.__version__</code>——滚动升级
+      或多副本时，用它核对每个容器跑的是哪一版，不靠镜像 tag 猜。
+    </p>
 
     <p>
       LLM 一栏只报事实（<code>mock</code> / <code>target</code> / <code>providers</code>），
