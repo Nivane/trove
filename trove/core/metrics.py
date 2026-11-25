@@ -18,6 +18,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from trove import __version__
 from trove.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -217,6 +218,16 @@ if _HAVE_CLIENT:
         "Semantic merges refused by optimistic concurrency (stale_change).",
         registry=_REGISTRY,
     )
+    # 版本暴露成 Prometheus 的 build_info 惯例（值恒为 1，版本在标签里）：
+    # 滚动升级/多副本时按 version 分组就能看出「还有几个旧副本在跑」。
+    # 与 /v1/health 的顶层 version 同源（trove.__version__）。
+    BUILD_INFO = Gauge(
+        "trove_build_info",
+        "Build metadata; the value is always 1 (version carried in the label).",
+        ["version"],
+        registry=_REGISTRY,
+    )
+    BUILD_INFO.labels(version=__version__).set(1)
 
 
 def _short_model(model: str) -> str:

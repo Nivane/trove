@@ -216,6 +216,7 @@ docker compose down              <span class="cmt"># 停止并移除容器（保
           <tr><td><code>trove_sql_degraded_total</code> / <code>trove_sql_kill_total</code></td><td>预算降级与 EXPLAIN 守卫拦截——回答质量与安全的先行指标</td></tr>
           <tr><td><code>trove_authz_deny_total</code> / <code>trove_authz_table_warn_total</code></td><td>越权拒绝与越表告警；异常升高说明有人在探边界</td></tr>
           <tr><td><code>trove_masking_applied_total</code></td><td>脱敏实际发生的次数</td></tr>
+          <tr><td><code>trove_build_info</code></td><td>进程版本（值恒 1，版本在 <code>version</code> 标签里）——滚动升级时看还有几个旧副本</td></tr>
         </tbody>
       </table>
     </div>

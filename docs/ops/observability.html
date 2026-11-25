@@ -144,6 +144,7 @@
           <tr><td class="mono">trove_authz_deny_total</td><td class="mono">reason</td><td>执行前授权门拒绝的原因分布（无主体 / 数据源 / 表 / 判不了）——两种处置方向相反：部署没接好，还是 grants 该加</td></tr>
           <tr><td class="mono">trove_authz_table_warn_total</td><td class="mono">datasource</td><td><code>warn</code> 期命中未声明表<strong>但放行</strong>的次数——「切 enforce 会打挂多少」的分母。与拒绝计数分家：混进去，告警率里会有一半根本没被拦的查询。<strong>表名不在标签上</strong>（基数无限），名字在审计行的 <code>authz.table_warn</code></td></tr>
           <tr><td class="mono">trove_masking_applied_total</td><td class="mono">field, mode</td><td>哪些字段在用哪种模式脱敏（字段名来自语义层声明，基数可控）</td></tr>
+          <tr><td class="mono">trove_build_info</td><td class="mono">version</td><td>这是哪一版：值恒 1，按 version 分组即知还剩几个旧副本（与 <code>/v1/health</code> 的顶层 <code>version</code> 同源）</td></tr>
           <tr><td class="mono">trove_prompt_isolation_total</td><td class="mono">channel, var, pattern</td><td>进入模型上下文之前被隔离的外部值（<code>render</code> 模板渲染 / <code>tool</code> 工具回喂 / <code>derive</code> 派生值出生点）——<strong>原文不进标签</strong>，原文正是要被隔离掉的东西</td></tr>
           <tr><td class="mono">trove_asset_runs_total</td><td class="mono">datasource, verdict, path</td><td>已验证资产（台账）被用了多少次、什么结局、走快径还是检索</td></tr>
           <tr><td class="mono">trove_asset_ledger_failures_total</td><td class="mono">datasource, reason</td><td>台账落账/读取失败——统计失败按设计<strong>不打断查询</strong>，所以这是它唯一的可见面；<code>reason</code> 分 <code>store</code>（存储）与 <code>invalid</code>（调用方传了域外的值），处置方向相反</td></tr>

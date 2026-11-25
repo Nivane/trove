@@ -201,6 +201,8 @@ class TestMetrics:
         assert "text/plain" in resp.headers["content-type"]
         assert "trove_http_requests_total" in resp.text
         assert 'path="/v1/health"' in resp.text
+        # build_info 惯例：值恒 1，版本在标签里（滚动升级时按 version 分组）。
+        assert f'trove_build_info{{version="{__version__}"}}' in resp.text
 
     async def test_middleware_counts_requests(self, anon_client):
         await anon_client.get("/v1/health")
