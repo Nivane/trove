@@ -107,6 +107,11 @@ flowchart LR
       （<code>null</code>）只可能来自更老的记录——不会按 <code>answered</code> 兜底。
     </p>
 
+    <p>
+      载荷顶层的 <code>session_id</code> 用于续聊，<code>run_id</code> 是脚本接着查
+      <code>GET /v1/runs/{id}</code> 回放（或管理端运行记录）的唯一把手。
+    </p>
+
     <div class="table-wrap">
       <table>
         <thead>
