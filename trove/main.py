@@ -634,6 +634,9 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
     ]
     return {
         "session_id": summary.get("session_id", ""),
+        # run_id 是脚本接着查回放/运行记录的唯一把手(``GET /v1/runs/{id}``、
+        # 管理端 run record)。问题本身调用方已经知道,这个它拿不到 —— 必须带。
+        "run_id": summary.get("run_id", ""),
         "response": summary.get("final_response", ""),
         "sql": summary.get("sql", ""),
         "row_count": summary.get("row_count", -1),

@@ -8,6 +8,7 @@ from trove.main import format_print_payload, print_exit_code
 
 SUMMARY = {
     "session_id": "s1",
+    "run_id": "r1",
     "question": "q",
     "sql": "SELECT 1",
     "row_count": 2,
@@ -27,11 +28,18 @@ class TestFormatPrintPayload:
         ]
         payload = format_print_payload(SUMMARY, events)
         assert payload["session_id"] == "s1"
+        # run_id 是脚本查回放/运行记录的唯一把手,必须随载荷出口。
+        assert payload["run_id"] == "r1"
         assert payload["response"] == "## Answer"
         assert payload["sql"] == "SELECT 1"
         assert payload["row_count"] == 2
         assert payload["verdict"] == "OK"
         assert payload["error"] == ""
+
+    def test_run_id_absent_falls_back_to_empty(self):
+        """旧 summary 没带 run_id → 空串,不猜一个假 id。"""
+        summary = {k: v for k, v in SUMMARY.items() if k != "run_id"}
+        assert format_print_payload(summary, [])["run_id"] == ""
 
     def test_events_are_serializable_and_drop_summary(self):
         events = [{"type": "done", "content": "x", "summary": SUMMARY}]
